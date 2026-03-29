@@ -232,9 +232,12 @@ public class Wine {
     private static func constructWineEnvironment(
         for bottle: Bottle, environment: [String: String] = [:]
     ) -> [String: String] {
+        let wineLibPath = WhiskyWineInstaller.libraryFolder
+            .appending(path: "Wine").appending(path: "lib").path
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-fixme+err+warn",
+            "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
             "GST_DEBUG": "1"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
@@ -247,9 +250,12 @@ public class Wine {
     private static func constructWineServerEnvironment(
         for bottle: Bottle, environment: [String: String] = [:]
     ) -> [String: String] {
+        let wineLibPath = WhiskyWineInstaller.libraryFolder
+            .appending(path: "Wine").appending(path: "lib").path
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-fixme+err+warn",
+            "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
             "GST_DEBUG": "1"
         ]
         guard !environment.isEmpty else { return result }

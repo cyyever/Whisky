@@ -42,7 +42,7 @@ arch -x86_64 env -i \
     CFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
     CPPFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
     ../configure \
-        --enable-win64 \
+        --enable-archs=i386,x86_64 \
         --with-vulkan \
         --without-gstreamer \
         --disable-tests \
@@ -68,6 +68,17 @@ mkdir -p "$INSTALL_DIR/Wine"
 cp -R "$WINE_INSTALL_ROOT/bin" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/lib" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/share" "$INSTALL_DIR/Wine/"
+
+# Bundle x86 dylibs so Wine finds them at runtime
+echo "=== Bundling runtime dylibs ==="
+for lib in freetype sdl2 molten-vk gnutls gettext/lib; do
+    LIBDIR="$X86_PREFIX/opt/$lib/lib"
+    if [ -d "$LIBDIR" ]; then
+        cp -n "$LIBDIR"/*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+    fi
+done
+# Also copy top-level lib dylibs
+cp -n "$X86_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 
 # Create wine64 symlink for Whisky compatibility
 cd "$INSTALL_DIR/Wine/bin"
