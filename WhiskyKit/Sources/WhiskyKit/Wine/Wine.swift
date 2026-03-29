@@ -39,6 +39,9 @@ public class Wine {
         process.environment = environment
         process.qualityOfService = .userInitiated
 
+        Logger.wineKit.info("Running: \(executableURL.path) \(args.joined(separator: " "))")
+        Logger.wineKit.info("Environment: \(environment.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+
         return try process.runStream(
             name: name ?? args.joined(separator: " "), fileHandle: fileHandle
         )
@@ -231,7 +234,7 @@ public class Wine {
     ) -> [String: String] {
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
-            "WINEDEBUG": "fixme-all",
+            "WINEDEBUG": "-fixme+err+warn",
             "GST_DEBUG": "1"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
@@ -246,7 +249,7 @@ public class Wine {
     ) -> [String: String] {
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
-            "WINEDEBUG": "fixme-all",
+            "WINEDEBUG": "-fixme+err+warn",
             "GST_DEBUG": "1"
         ]
         guard !environment.isEmpty else { return result }
