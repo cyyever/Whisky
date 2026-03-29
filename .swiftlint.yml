@@ -6,6 +6,10 @@ excluded:
   - .build
   - WhiskyKit/.build
 
+file_length:
+  warning: 500
+  error: 600
+
 file_header:
     severity: error
     required_pattern: |

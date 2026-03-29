@@ -39,6 +39,9 @@ public class Wine {
         process.environment = environment
         process.qualityOfService = .userInitiated
 
+        Logger.wineKit.info("Running: \(executableURL.path) \(args.joined(separator: " "))")
+        Logger.wineKit.info("Environment: \(environment.map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+
         return try process.runStream(
             name: name ?? args.joined(separator: " "), fileHandle: fileHandle
         )
@@ -229,9 +232,12 @@ public class Wine {
     private static func constructWineEnvironment(
         for bottle: Bottle, environment: [String: String] = [:]
     ) -> [String: String] {
+        let wineLibPath = WhiskyWineInstaller.libraryFolder
+            .appending(path: "Wine").appending(path: "lib").path
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
-            "WINEDEBUG": "fixme-all",
+            "WINEDEBUG": "-fixme+err+warn",
+            "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
             "GST_DEBUG": "1"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
@@ -244,9 +250,12 @@ public class Wine {
     private static func constructWineServerEnvironment(
         for bottle: Bottle, environment: [String: String] = [:]
     ) -> [String: String] {
+        let wineLibPath = WhiskyWineInstaller.libraryFolder
+            .appending(path: "Wine").appending(path: "lib").path
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
-            "WINEDEBUG": "fixme-all",
+            "WINEDEBUG": "-fixme+err+warn",
+            "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
             "GST_DEBUG": "1"
         ]
         guard !environment.isEmpty else { return result }
