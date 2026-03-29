@@ -28,23 +28,31 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
+ARM_BREW_PREFIX="$(brew --prefix)"
+CLEAN_PATH="$X86_BISON:$X86_PREFIX/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 echo "=== Configuring Wine (x86_64) ==="
-arch -x86_64 env \
-    PATH="$X86_BISON:$X86_PREFIX/bin:$PATH" \
-    LDFLAGS="-L$X86_PREFIX/lib -L$X86_PREFIX/opt/molten-vk/lib" \
-    CFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/molten-vk/include" \
+arch -x86_64 env -i \
+    HOME="$HOME" \
+    PATH="$CLEAN_PATH" \
+    PKG_CONFIG="$X86_PREFIX/bin/pkg-config" \
     PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \
+    PKG_CONFIG_LIBDIR="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \
+    LDFLAGS="-L$X86_PREFIX/lib -L$X86_PREFIX/opt/molten-vk/lib" \
+    CFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
+    CPPFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
     ../configure \
         --enable-win64 \
         --with-vulkan \
-        --with-gstreamer \
+        --without-gstreamer \
         --disable-tests \
         --without-x
 
 NCPU=$(sysctl -n hw.ncpu)
 echo "=== Building Wine (x86_64) with $NCPU cores ==="
-arch -x86_64 env \
-    PATH="$X86_BISON:$X86_PREFIX/bin:$PATH" \
+arch -x86_64 env -i \
+    HOME="$HOME" \
+    PATH="$CLEAN_PATH" \
     make -j"$NCPU"
 
 echo "=== Installing to $INSTALL_DIR ==="
