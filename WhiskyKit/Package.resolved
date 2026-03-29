@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "git@github.com:SwiftPackageIndex/SemanticVersion.git",
       "state" : {
-        "revision" : "45e2ec89fee3b76cd6dde3f9a507e4348f194b79",
-        "version" : "0.3.7"
+        "revision" : "b26e9fd30d8b19a70e680551103fa579b135aa4f",
+        "version" : "0.5.1"
       }
     }
   ],
