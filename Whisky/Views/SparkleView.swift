@@ -16,6 +16,7 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
+import Combine
 import SwiftUI
 import Sparkle
 
@@ -35,11 +36,13 @@ struct SparkleView: View {
 }
 
 // This view model class publishes when new updates can be checked by the user
+@MainActor
 final class CheckForUpdatesViewModel: ObservableObject {
     @Published var canCheckForUpdates = false
 
     init(updater: SPUUpdater) {
         updater.publisher(for: \.canCheckForUpdates)
+            .receive(on: DispatchQueue.main)
             .assign(to: &$canCheckForUpdates)
     }
 }
