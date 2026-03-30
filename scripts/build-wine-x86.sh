@@ -91,7 +91,7 @@ MINOR=$(echo "$WINE_VER" | cut -d. -f2)
 PATCH=$(echo "$WINE_VER" | cut -d. -f3)
 PATCH=${PATCH:-0}
 
-cat > "$INSTALL_DIR/WhiskyWineVersion.plist" << 'PLISTEOF'
+cat > "$INSTALL_DIR/WhiskyWineVersion.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -99,19 +99,19 @@ cat > "$INSTALL_DIR/WhiskyWineVersion.plist" << 'PLISTEOF'
 	<key>version</key>
 	<dict>
 		<key>major</key>
-		<integer>MAJOR_PLACEHOLDER</integer>
+		<integer>$MAJOR</integer>
 		<key>minor</key>
-		<integer>MINOR_PLACEHOLDER</integer>
+		<integer>$MINOR</integer>
 		<key>patch</key>
-		<integer>PATCH_PLACEHOLDER</integer>
+		<integer>$PATCH</integer>
+		<key>preRelease</key>
+		<string></string>
+		<key>build</key>
+		<string>0</string>
 	</dict>
 </dict>
 </plist>
 PLISTEOF
-
-sed -i '' "s/MAJOR_PLACEHOLDER/$MAJOR/" "$INSTALL_DIR/WhiskyWineVersion.plist"
-sed -i '' "s/MINOR_PLACEHOLDER/$MINOR/" "$INSTALL_DIR/WhiskyWineVersion.plist"
-sed -i '' "s/PATCH_PLACEHOLDER/$PATCH/" "$INSTALL_DIR/WhiskyWineVersion.plist"
 
 rm -rf "$TMPINSTALL"
 
