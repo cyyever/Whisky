@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 //
 //  PortableExecutable.swift
 //  WhiskyKit
@@ -22,7 +22,7 @@ import PackageDescription
 let package = Package(
     name: "WhiskyKit",
     platforms: [
-        .macOS(.v14)
+        .macOS("26.0")
     ],
     products: [
         .library(
