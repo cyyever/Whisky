@@ -142,7 +142,7 @@ public class Wine {
         alias winepath=\"wine64 winepath\"
         """
 
-        let env = constructWineEnvironment(for: bottle, environment: constructWineEnvironment(for: bottle))
+        let env = constructWineEnvironment(for: bottle)
         for environment in env {
             cmd += "\nexport \(environment.key)=\"\(environment.value)\""
         }
