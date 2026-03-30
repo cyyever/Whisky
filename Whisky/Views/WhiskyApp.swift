@@ -103,7 +103,7 @@ struct WhiskyApp: App {
                     }
                 }
                 Button("help.github") {
-                    if let url = URL(string: "https://github.com/Whisky-App/Whisky") {
+                    if let url = URL(string: "https://github.com/cyyever/Whisky") {
                         openURL(url)
                     }
                 }
