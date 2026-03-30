@@ -31,10 +31,21 @@ cd "$BUILD_DIR"
 ARM_BREW_PREFIX="$(brew --prefix)"
 CLEAN_PATH="$X86_BISON:$X86_PREFIX/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+# Use ccache if available
+CC_CMD="gcc"
+CXX_CMD="g++"
+if command -v ccache &>/dev/null; then
+    echo "=== Using ccache ==="
+    CC_CMD="ccache gcc"
+    CXX_CMD="ccache g++"
+fi
+
 echo "=== Configuring Wine (x86_64) ==="
 arch -x86_64 env -i \
     HOME="$HOME" \
     PATH="$CLEAN_PATH" \
+    CC="$CC_CMD" \
+    CXX="$CXX_CMD" \
     PKG_CONFIG="$X86_PREFIX/bin/pkg-config" \
     PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \
     PKG_CONFIG_LIBDIR="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \

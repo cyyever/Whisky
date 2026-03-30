@@ -5,9 +5,9 @@ X86_BREW := $(CURDIR)/vendor/homebrew-x86/bin/brew
 WINE_BIN := $(HOME)/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin/wine64
 APP_BUILD := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products/Debug/Whisky.app
 
-.PHONY: all app wine setup-x86-brew clean clean-wine help
+.PHONY: all app wine dxmt setup-x86-brew clean clean-wine help
 
-all: app wine  ## Build everything (app + Wine)
+all: app wine dxmt  ## Build everything (app + Wine + DXMT)
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -30,6 +30,11 @@ $(WINE_BIN): $(X86_BREW) $(WINE_SRC)/configure
 clean-wine:  ## Remove Wine build artifacts (keeps installed Wine)
 	rm -rf $(WINE_SRC)/build-x86_64
 	rm -rf $(WINE_SRC)/build
+
+# === DXMT ===
+
+dxmt: wine  ## Install DXMT (Metal-based D3D11) into Wine
+	$(SCRIPTS_DIR)/install-dxmt.sh
 
 # === Whisky App ===
 
