@@ -1,3 +1,6 @@
 [submodule "vendor/wine"]
 	path = vendor/wine
-	url = https://github.com/wine-mirror/wine.git
+	url = git@github.com:wine-mirror/wine.git
+[submodule "vendor/dxmt"]
+	path = vendor/dxmt
+	url = git@github.com:3Shain/dxmt.git
