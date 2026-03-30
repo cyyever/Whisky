@@ -54,7 +54,12 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
 
                 bottle.settings.windowsVersion = winVersion
                 bottle.settings.name = bottleName
-                try await Wine.changeWinVersion(bottle: bottle, win: winVersion)
+                // Disable winemac.drv during initial prefix creation to avoid
+                // wineboot hang on macOS 26+ (winemac.drv enters WM_TIMER loop)
+                try await Wine.changeWinVersion(
+                    bottle: bottle, win: winVersion,
+                    environment: ["WINEDLLOVERRIDES": "winemac.drv=d;winemenubuilder.exe=d"]
+                )
                 let wineVer = try await Wine.wineVersion()
                 bottle.settings.wineVersion = SemanticVersion(wineVer) ?? SemanticVersion(0, 0, 0)
                 // Add record
