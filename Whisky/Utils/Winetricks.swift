@@ -16,8 +16,8 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import Foundation
 import AppKit
+import Foundation
 import WhiskyKit
 
 enum WinetricksCategories: String {
@@ -62,7 +62,7 @@ class Winetricks {
         if let appleScript = NSAppleScript(source: script) {
             appleScript.executeAndReturnError(&error)
 
-            if let error = error {
+            if let error {
                 print(error)
                 if let description = error["NSAppleScriptErrorMessage"] as? String {
                     await MainActor.run {
@@ -101,7 +101,7 @@ class Winetricks {
             // Categories are label as "===== <name> ====="
             if line.starts(with: "=====") {
                 // If we have a current category, add it to the list
-                if let currentCategory = currentCategory {
+                if let currentCategory {
                     categories.append(currentCategory)
                 }
 
@@ -129,7 +129,7 @@ class Winetricks {
         }
 
         // Add the last category
-        if let currentCategory = currentCategory {
+        if let currentCategory {
             categories.append(currentCategory)
         }
 

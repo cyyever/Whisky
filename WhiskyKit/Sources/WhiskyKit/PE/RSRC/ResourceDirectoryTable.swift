@@ -30,7 +30,7 @@ public struct ResourceDirectoryTable: Hashable, Equatable {
     public let numberOfNameEntries: UInt16
     public let numberOfIdEntries: UInt16
 
-    public let subtables: [ResourceDirectoryTable]
+    public let subtables: [Self]
     public let entries: [ResourceDataEntry]
 
     /// Read the Resource Directory Table
@@ -75,7 +75,7 @@ public struct ResourceDirectoryTable: Hashable, Equatable {
         self.numberOfIdEntries = numberOfIdEntries
         offset += 2
 
-        var subtables: [ResourceDirectoryTable] = []
+        var subtables: [Self] = []
         var entries: [ResourceDataEntry] = []
 
         for _ in 0..<numberOfNameEntries {
@@ -96,7 +96,7 @@ public struct ResourceDirectoryTable: Hashable, Equatable {
             }
 
             if directoryEntry.isDirectory {
-                let subtable = ResourceDirectoryTable(
+                let subtable = Self(
                     handle: handle,
                     pointerToRawData: pointerToRawData,
                     offset: UInt64(directoryEntry.offset)

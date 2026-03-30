@@ -16,10 +16,10 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
+import SemanticVersion
 import SwiftUI
 import UniformTypeIdentifiers
 import WhiskyKit
-import SemanticVersion
 
 struct ContentView: View {
     @AppStorage("selectedBottleURL") private var selectedBottleURL: URL?

@@ -178,7 +178,7 @@ public class Wine {
         fileHandle.writeApplicaitonInfo()
         var environment = environment
 
-        if let bottle = bottle {
+        if let bottle {
             fileHandle.writeInfo(for: bottle)
             environment = constructWineEnvironment(for: bottle, environment: environment)
         }
@@ -220,11 +220,11 @@ public class Wine {
     public static func enableDXVK(bottle: Bottle) throws {
         try FileManager.default.replaceDLLs(
             in: bottle.url.appending(path: "drive_c").appending(path: "windows").appending(path: "system32"),
-            withContentsIn: Wine.dxvkFolder.appending(path: "x64")
+            withContentsIn: Self.dxvkFolder.appending(path: "x64")
         )
         try FileManager.default.replaceDLLs(
             in: bottle.url.appending(path: "drive_c").appending(path: "windows").appending(path: "syswow64"),
-            withContentsIn: Wine.dxvkFolder.appending(path: "x32")
+            withContentsIn: Self.dxvkFolder.appending(path: "x32")
         )
     }
 
@@ -374,7 +374,7 @@ extension Wine {
 
         let noPrefix = output.replacingOccurrences(of: "0x", with: "")
         let int = Int(noPrefix, radix: 16)
-        guard let int = int else { return nil }
+        guard let int else { return nil }
         return int
     }
 

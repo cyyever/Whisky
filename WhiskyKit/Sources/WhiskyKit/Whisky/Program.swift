@@ -17,8 +17,8 @@
 //
 
 import Foundation
-import SwiftUI
 import os.log
+import SwiftUI
 
 // swiftlint:disable:next todo
 // TODO: Should not be unchecked!

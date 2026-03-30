@@ -20,7 +20,7 @@ import SwiftUI
 import WhiskyKit
 
 struct WhiskyWineInstallView: View {
-    @State var installing: Bool = true
+    @State private var installing: Bool = true
     @Binding var tarLocation: URL
     @Binding var path: [SetupStage]
     @Binding var showSetup: Bool

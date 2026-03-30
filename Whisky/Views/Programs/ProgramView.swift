@@ -17,13 +17,13 @@
 //
 
 import SwiftUI
-import WhiskyKit
 import UniformTypeIdentifiers
+import WhiskyKit
 
 struct ProgramView: View {
     @ObservedObject var program: Program
-    @State var programLoading: Bool = false
-    @State var cachedIconImage: Image?
+    @State private var programLoading: Bool = false
+    @State private var cachedIconImage: Image?
     @AppStorage("configSectionExapnded") private var configSectionExpanded: Bool = true
     @AppStorage("envArgsSectionExpanded") private var envArgsSectionExpanded: Bool = true
 

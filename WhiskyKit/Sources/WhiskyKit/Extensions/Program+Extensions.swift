@@ -16,8 +16,8 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import Foundation
 import AppKit
+import Foundation
 import os.log
 
 extension Program {
@@ -67,7 +67,7 @@ extension Program {
             guard let appleScript = NSAppleScript(source: script) else { return }
             appleScript.executeAndReturnError(&error)
 
-            if let error = error {
+            if let error {
                 Logger.wineKit.error("Failed to run terminal script \(error)")
                 guard let description = error["NSAppleScriptErrorMessage"] as? String else { return }
                 await self.showRunError(message: String(describing: description))

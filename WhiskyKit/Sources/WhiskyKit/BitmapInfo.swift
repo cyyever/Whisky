@@ -16,8 +16,8 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import Foundation
 import AppKit
+import Foundation
 
 public struct BitmapInfoHeader: Hashable {
     public let size: UInt32

@@ -17,8 +17,8 @@
 //
 
 import Foundation
-import SwiftUI
 import os.log
+import SwiftUI
 
 // swiftlint:disable:next todo
 // TODO: Should not be unchecked!
@@ -67,7 +67,7 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
             let urlPath = url.path(percentEncoded: false)
             let volume: URL?
             do {
-                volume = try url.resourceValues(forKeys: [.volumeURLKey]).volume ?? nil
+                volume = try url.resourceValues(forKeys: [.volumeURLKey]).volume
             } catch {
                 volume = nil
             }

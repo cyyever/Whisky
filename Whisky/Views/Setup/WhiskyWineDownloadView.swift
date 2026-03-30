@@ -16,8 +16,8 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import SwiftUI
 import SemanticVersion
+import SwiftUI
 import WhiskyKit
 
 struct WhiskyWineDownloadView: View {
@@ -131,7 +131,7 @@ struct WhiskyWineDownloadView: View {
         downloadTask = URLSession(configuration: .ephemeral).downloadTask(with: url) { url, _, _ in
             Task.detached {
                 await MainActor.run {
-                    if let url = url {
+                    if let url {
                         tarLocation = url
                         proceed()
                     }

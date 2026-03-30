@@ -22,7 +22,7 @@ import WhiskyKit
 struct PinView: View {
     @ObservedObject var bottle: Bottle
     @ObservedObject var program: Program
-    @State var pin: PinnedProgram
+    @State var pin: PinnedProgram // swiftlint:disable:this private_swiftui_state
     @Binding var path: NavigationPath
 
     @State private var image: Image?
@@ -33,7 +33,7 @@ struct PinView: View {
     var body: some View {
         VStack {
             Group {
-                if let image = image {
+                if let image {
                     image
                         .resizable()
                 } else {

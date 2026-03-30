@@ -270,7 +270,7 @@ struct DPIConfigSheetView: View {
     @Binding var dpiConfig: Int
     @Binding var isRetinaMode: Bool
     @Binding var presented: Bool
-    @State var stagedChanges: Float
+    @State private var stagedChanges: Float
     @FocusState var textFocused: Bool
 
     init(dpiConfig: Binding<Int>, isRetinaMode: Binding<Bool>, presented: Binding<Bool>) {

@@ -71,15 +71,15 @@ public struct ProgramSettings: Codable {
     public var environment: [String: String] = [:]
     public var arguments: String = ""
 
-    static func decode(from settingsURL: URL) throws -> ProgramSettings {
+    static func decode(from settingsURL: URL) throws -> Self {
         guard FileManager.default.fileExists(atPath: settingsURL.path(percentEncoded: false)) else {
-            let settings = ProgramSettings()
+            let settings = Self()
             try settings.encode(to: settingsURL)
             return settings
         }
 
         let data = try Data(contentsOf: settingsURL)
-        return try PropertyListDecoder().decode(ProgramSettings.self, from: data)
+        return try PropertyListDecoder().decode(Self.self, from: data)
     }
 
     func encode(to settingsURL: URL) throws {

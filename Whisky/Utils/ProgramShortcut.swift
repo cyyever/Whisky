@@ -16,13 +16,13 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import Foundation
 import AppKit
+import Foundation
 import QuickLookThumbnailing
 import WhiskyKit
 
 class ProgramShortcut {
-    public static func createShortcut(_ program: Program, app: URL, name: String) async {
+    public static func createShortcut(_ program: Program, app: URL, name _: String) async {
         let contents = app.appending(path: "Contents")
         let macos = contents.appending(path: "MacOS")
         do {

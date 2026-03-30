@@ -34,7 +34,7 @@ struct WinetricksView: View {
             .padding(.bottom)
 
             // Tabbed view
-            if let winetricks = winetricks {
+            if let winetricks {
                 TabView {
                     ForEach(winetricks, id: \.category) { category in
                         Table(category.verbs, selection: $selectedTrick) {
@@ -55,7 +55,7 @@ struct WinetricksView: View {
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button("button.run") {
-                            guard let selectedTrick = selectedTrick else {
+                            guard let selectedTrick else {
                                 return
                             }
 

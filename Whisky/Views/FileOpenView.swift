@@ -24,7 +24,7 @@ struct FileOpenView: View {
     var currentBottle: URL?
     var bottles: [Bottle]
 
-    @State private var selection: URL = URL(filePath: "")
+    @State private var selection = URL(filePath: "")
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -60,7 +60,7 @@ struct FileOpenView: View {
         .onAppear {
             // Makes sure there are more than 0 bottles.
             // Otherwise, it will crash on the nil cascade
-            if bottles.count <= 0 {
+            if bottles.isEmpty {
                 dismiss()
                 return
             }

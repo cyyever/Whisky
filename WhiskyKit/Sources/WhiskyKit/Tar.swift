@@ -19,7 +19,7 @@
 import Foundation
 
 public class Tar {
-    static let tarBinary: URL = URL(fileURLWithPath: "/usr/bin/tar")
+    static let tarBinary = URL(fileURLWithPath: "/usr/bin/tar")
 
     public static func tar(folder: URL, toURL: URL) throws {
         let process = Process()
