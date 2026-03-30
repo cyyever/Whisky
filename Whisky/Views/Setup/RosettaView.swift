@@ -20,8 +20,8 @@ import SwiftUI
 import WhiskyKit
 
 struct RosettaView: View {
-    @State var installing: Bool = true
-    @State var successful: Bool = true
+    @State private var installing: Bool = true
+    @State private var successful: Bool = true
     @Binding var path: [SetupStage]
     @Binding var showSetup: Bool
 

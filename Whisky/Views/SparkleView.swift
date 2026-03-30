@@ -17,8 +17,8 @@
 //
 
 import Combine
-import SwiftUI
 import Sparkle
+import SwiftUI
 
 struct SparkleView: View {
     @ObservedObject private var checkForUpdatesViewModel: CheckForUpdatesViewModel

@@ -73,7 +73,7 @@ public struct BottleData: Codable {
         let decoder = PropertyListDecoder()
         do {
             let data = try Data(contentsOf: Self.bottleEntriesDir)
-            self = try decoder.decode(BottleData.self, from: data)
+            self = try decoder.decode(Self.self, from: data)
             if self.fileVersion != Self.currentVersion {
                 print("Invalid file version \(self.fileVersion)")
                 return false

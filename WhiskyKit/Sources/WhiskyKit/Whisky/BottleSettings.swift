@@ -17,8 +17,8 @@
 //
 
 import Foundation
-import SemanticVersion
 import os.log
+import SemanticVersion
 
 public struct PinnedProgram: Codable, Hashable, Equatable {
     public var name: String
@@ -241,21 +241,21 @@ public struct BottleSettings: Codable, Equatable {
     }
 
     @discardableResult
-    public static func decode(from metadataURL: URL) throws -> BottleSettings {
+    public static func decode(from metadataURL: URL) throws -> Self {
         guard FileManager.default.fileExists(atPath: metadataURL.path(percentEncoded: false)) else {
             let decoder = PropertyListDecoder()
-            let settings = try decoder.decode(BottleSettings.self, from: Data(contentsOf: metadataURL))
+            let settings = try decoder.decode(Self.self, from: Data(contentsOf: metadataURL))
             try settings.encode(to: metadataURL)
             return settings
         }
 
         let decoder = PropertyListDecoder()
         let data = try Data(contentsOf: metadataURL)
-        var settings = try decoder.decode(BottleSettings.self, from: data)
+        var settings = try decoder.decode(Self.self, from: data)
 
-        guard settings.fileVersion == BottleSettings.defaultFileVersion else {
+        guard settings.fileVersion == Self.defaultFileVersion else {
             Logger.wineKit.warning("Invalid file version `\(settings.fileVersion)`")
-            settings = BottleSettings()
+            settings = Self()
             try settings.encode(to: metadataURL)
             return settings
         }

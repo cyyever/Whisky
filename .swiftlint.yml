@@ -1,6 +1,39 @@
 opt_in_rules:
+  # Safety
   - force_unwrapping
+  - force_cast
+  - force_try
+  - implicitly_unwrapped_optional
+  - unowned_variable_capture
+
+  # Bug prevention
+  - duplicate_imports
+  - duplicate_enum_cases
+  - duplicate_conditions
+  - unused_parameter
+  - redundant_void_return
+  - redundant_nil_coalescing
+  - redundant_type_annotation
+  - unneeded_override
+  - identical_operands
+  - contains_over_first_not_nil
+  - first_where
+  - last_where
+  - empty_count
+  - empty_string
+
+  # Concurrency
+  - private_swiftui_state
+
+  # Style
   - file_header
+  - sorted_imports
+  - trailing_comma
+  - direct_return
+  - shorthand_optional_binding
+  - prefer_self_in_static_references
+  - toggle_bool
+  - yoda_condition
 
 excluded:
   - .build

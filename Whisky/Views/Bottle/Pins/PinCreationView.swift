@@ -78,7 +78,7 @@ struct PinCreationView: View {
                 }
             }
             .onChange(of: newPinURL, initial: true) { oldValue, newValue in
-                guard let newValue = newValue else { return }
+                guard let newValue else { return }
 
                 // Only reset newPinName if the textbox hasn't been modified
                 if newPinName.isEmpty ||

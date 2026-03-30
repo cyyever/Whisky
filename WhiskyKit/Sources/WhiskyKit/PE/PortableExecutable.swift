@@ -16,13 +16,13 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import Foundation
 import AppKit
+import Foundation
 
 public struct PEError: Error {
     public let message: String
 
-    static let invalidPEFile = PEError(message: "Invalid PE file")
+    static let invalidPEFile = Self(message: "Invalid PE file")
 }
 
 public enum Architecture: Hashable {

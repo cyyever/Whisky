@@ -70,7 +70,7 @@ public class WhiskyWineInstaller {
             remoteVersion = await withCheckedContinuation { continuation in
                 URLSession(configuration: .ephemeral).dataTask(with: URLRequest(url: remoteUrl)) { data, _, error in
                     do {
-                        if error == nil, let data = data {
+                        if error == nil, let data {
                             let decoder = PropertyListDecoder()
                             let remoteInfo = try decoder.decode(WhiskyWineVersion.self, from: data)
                             let remoteVersion = remoteInfo.version
@@ -78,7 +78,7 @@ public class WhiskyWineInstaller {
                             continuation.resume(returning: remoteVersion)
                             return
                         }
-                        if let error = error {
+                        if let error {
                             print(error)
                         }
                     } catch {
@@ -90,7 +90,7 @@ public class WhiskyWineInstaller {
             }
         }
 
-        if let localVersion = localVersion, let remoteVersion = remoteVersion {
+        if let localVersion, let remoteVersion {
             if localVersion < remoteVersion {
                 return (true, remoteVersion)
             }
@@ -117,5 +117,5 @@ public class WhiskyWineInstaller {
 }
 
 public struct WhiskyWineVersion: Codable {
-    public var version: SemanticVersion = SemanticVersion(1, 0, 0)
+    public var version = SemanticVersion(1, 0, 0)
 }

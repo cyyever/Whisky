@@ -16,12 +16,12 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
+import ArgumentParser
 import Foundation
-import WhiskyKit
-import SwiftyTextTable
 import Progress
 import SemanticVersion
-import ArgumentParser
+import SwiftyTextTable
+import WhiskyKit
 
 @main
 struct Whisky: ParsableCommand {
@@ -124,7 +124,7 @@ extension Whisky {
 
             // Should ask for confirmation
             let bottleToRemove = bottles.first(where: { $0.settings.name == name })
-            if let bottleToRemove = bottleToRemove {
+            if let bottleToRemove {
                 bottlesList.paths.removeAll(where: { $0 == bottleToRemove.url })
                 do {
                     try FileManager.default.removeItem(at: bottleToRemove.url)
@@ -149,7 +149,7 @@ extension Whisky {
             let bottles = bottlesList.loadBottles()
 
             let bottleToRemove = bottles.first(where: { $0.settings.name == name })
-            if let bottleToRemove = bottleToRemove {
+            if let bottleToRemove {
                 bottlesList.paths.removeAll(where: { $0 == bottleToRemove.url })
                 print("Removed \"\(name)\".")
             } else {

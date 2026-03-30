@@ -16,11 +16,11 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import Foundation
 import AppKit
+import Foundation
 
 public struct ShellLinkHeader {
-    public static func getProgram(url: URL, handle: FileHandle, bottle: Bottle) -> Program? {
+    public static func getProgram(url _: URL, handle: FileHandle, bottle: Bottle) -> Program? {
         var offset: UInt64 = 0
         let headerSize = handle.extract(UInt32.self) ?? 0
         // Move past headerSize and linkCLSID
@@ -52,9 +52,9 @@ public struct LinkFlags: OptionSet, Hashable, Sendable {
         self.rawValue = rawValue
     }
 
-    static let hasLinkTargetIDList = LinkFlags(rawValue: 1 << 0)
-    static let hasLinkInfo = LinkFlags(rawValue: 1 << 1)
-    static let hasIconLocation = LinkFlags(rawValue: 1 << 6)
+    static let hasLinkTargetIDList = Self(rawValue: 1 << 0)
+    static let hasLinkInfo = Self(rawValue: 1 << 1)
+    static let hasIconLocation = Self(rawValue: 1 << 6)
 }
 
 public struct LinkInfo: Hashable {
@@ -128,6 +128,6 @@ public struct LinkInfoFlags: OptionSet, Hashable, Sendable {
         self.rawValue = rawValue
     }
 
-    static let volumeIDAndLocalBasePath = LinkInfoFlags(rawValue: 1 << 0)
-    static let commonNetworkRelativeLinkAndPathSuffix = LinkInfoFlags(rawValue: 1 << 1)
+    static let volumeIDAndLocalBasePath = Self(rawValue: 1 << 0)
+    static let commonNetworkRelativeLinkAndPathSuffix = Self(rawValue: 1 << 1)
 }

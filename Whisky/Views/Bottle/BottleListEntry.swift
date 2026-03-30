@@ -17,8 +17,8 @@
 //
 
 import SwiftUI
-import WhiskyKit
 import UniformTypeIdentifiers
+import WhiskyKit
 
 struct BottleListEntry: View {
     let bottle: Bottle

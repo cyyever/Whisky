@@ -20,9 +20,9 @@ import SwiftUI
 import WhiskyKit
 
 struct WelcomeView: View {
-    @State var rosettaInstalled: Bool?
-    @State var whiskyWineInstalled: Bool?
-    @State var shouldCheckInstallStatus: Bool = false
+    @State private var rosettaInstalled: Bool?
+    @State private var whiskyWineInstalled: Bool?
+    @State private var shouldCheckInstallStatus: Bool = false
     @Binding var path: [SetupStage]
     @Binding var showSetup: Bool
     var firstTime: Bool
@@ -67,8 +67,8 @@ struct WelcomeView: View {
             }
             Spacer()
             HStack {
-                if let rosettaInstalled = rosettaInstalled,
-                   let whiskyWineInstalled = whiskyWineInstalled {
+                if let rosettaInstalled,
+                   let whiskyWineInstalled {
                     if !rosettaInstalled || !whiskyWineInstalled {
                         Button("setup.quit") {
                             exit(0)
@@ -105,9 +105,9 @@ struct WelcomeView: View {
 struct InstallStatusView: View {
     @Binding var isInstalled: Bool?
     @Binding var shouldCheckInstallStatus: Bool
-    @State var showUninstall: Bool = false
-    @State var name: String
-    @State var text: String = String(localized: "setup.install.checking")
+    @State var showUninstall: Bool = false // swiftlint:disable:this private_swiftui_state
+    @State var name: String // swiftlint:disable:this private_swiftui_state
+    @State private var text = String(localized: "setup.install.checking")
 
     var body: some View {
         HStack {

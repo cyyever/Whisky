@@ -16,13 +16,13 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import SwiftUI
 import Sparkle
+import SwiftUI
 import WhiskyKit
 
 @main
 struct WhiskyApp: App {
-    @State var showSetup: Bool = false
+    @State private var showSetup: Bool = false
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @Environment(\.openURL) var openURL
     private let updaterController: SPUStandardUpdaterController
@@ -42,7 +42,7 @@ struct WhiskyApp: App {
                     NSWindow.allowsAutomaticWindowTabbing = false
 
                     Task.detached {
-                        await WhiskyApp.deleteOldLogs()
+                        await Self.deleteOldLogs()
                     }
                 }
         }
@@ -84,16 +84,16 @@ struct WhiskyApp: App {
             }
             CommandGroup(after: .importExport) {
                 Button("open.logs") {
-                    WhiskyApp.openLogsFolder()
+                    Self.openLogsFolder()
                 }
                 .keyboardShortcut("L", modifiers: [.command])
                 Button("kill.bottles") {
-                    WhiskyApp.killBottles()
+                    Self.killBottles()
                 }
                 .keyboardShortcut("K", modifiers: [.command, .shift])
                 Button("wine.clearShaderCaches") {
-                    WhiskyApp.killBottles() // Better not make things more complicated for ourselves
-                    WhiskyApp.wipeShaderCaches()
+                    Self.killBottles() // Better not make things more complicated for ourselves
+                    Self.wipeShaderCaches()
                 }
             }
             CommandGroup(replacing: .help) {

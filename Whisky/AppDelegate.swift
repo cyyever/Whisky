@@ -22,7 +22,7 @@ import SwiftUI
 class AppDelegate: NSObject, NSApplicationDelegate {
     @AppStorage("hasShownMoveToApplicationsAlert") private var hasShownMoveToApplicationsAlert = false
 
-    func application(_ application: NSApplication, open urls: [URL]) {
+    func application(_: NSApplication, open urls: [URL]) {
         // Test if automatic window tabbing is enabled
         // as it is disabled when ContentView appears
         if NSWindow.allowsAutomaticWindowTabbing, let url = urls.first {
@@ -32,8 +32,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        if !hasShownMoveToApplicationsAlert && !AppDelegate.insideAppsFolder {
+    func applicationDidFinishLaunching(_: Notification) {
+        if !hasShownMoveToApplicationsAlert && !Self.insideAppsFolder {
             DispatchQueue.main.asyncAfter(deadline: .now()) {
                 NSApp.activate(ignoringOtherApps: true)
                 self.showAlertOnFirstLaunch()
@@ -42,13 +42,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    func applicationWillTerminate(_: Notification) {
         if UserDefaults.standard.bool(forKey: "killOnTerminate") {
             WhiskyApp.killBottles()
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
         return true
     }
 
@@ -79,8 +79,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let appURL = Bundle.main.bundleURL
 
             do {
-                _ = try FileManager.default.replaceItemAt(AppDelegate.expectedUrl, withItemAt: appURL)
-                NSWorkspace.shared.open(AppDelegate.expectedUrl)
+                _ = try FileManager.default.replaceItemAt(Self.expectedUrl, withItemAt: appURL)
+                NSWorkspace.shared.open(Self.expectedUrl)
             } catch {
                 print("Failed to move the app: \(error)")
             }

@@ -21,7 +21,7 @@ import os.log
 import SemanticVersion
 
 extension FileHandle {
-    func extract<T>(_ type: T.Type, offset: UInt64 = 0) -> T? {
+    func extract<T>(_: T.Type, offset: UInt64 = 0) -> T? {
         do {
             try self.seek(toOffset: offset)
             if let data = try self.read(upToCount: MemoryLayout<T>.size) {

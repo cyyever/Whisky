@@ -32,7 +32,7 @@ class Key: Identifiable {
         return lhs.id == rhs.id
     }
 
-    var id: UUID = UUID()
+    var id = UUID()
     @Published var key: String
     @Published var value: String
 
@@ -139,8 +139,8 @@ struct EnvironmentArgView: View {
 struct KeyItem: View {
     @FocusState var focus: Focusable?
     @Binding var environmentKeys: [Key]
-    @State var key: Key
-    @State var hovered: Bool = false
+    @State var key: Key // swiftlint:disable:this private_swiftui_state
+    @State private var hovered: Bool = false
 
     var body: some View {
         HStack {

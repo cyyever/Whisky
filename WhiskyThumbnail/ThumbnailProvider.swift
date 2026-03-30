@@ -16,9 +16,9 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
+import AppKit
 import Foundation
 import QuickLookThumbnailing
-import AppKit
 import WhiskyKit
 
 class ThumbnailProvider: QLThumbnailProvider {
@@ -49,8 +49,8 @@ class ThumbnailProvider: QLThumbnailProvider {
             let peFile = try PEFile(url: request.fileURL)
             image = peFile.bestIcon()
 
-            let reply: QLThumbnailReply = QLThumbnailReply.init(contextSize: thumbnailSize) { () -> Bool in
-                if let image = image {
+            let reply = QLThumbnailReply.init(contextSize: thumbnailSize) { () -> Bool in
+                if let image {
                     image.draw(in: iconFrame)
                     let whiskyIcon = NSImage(named: NSImage.Name("Icon"))
                     whiskyIcon?.draw(in: whiskyIconFrame, from: .zero, operation: .sourceOver, fraction: 1)

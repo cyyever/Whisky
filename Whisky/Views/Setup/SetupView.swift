@@ -26,7 +26,7 @@ enum SetupStage {
 
 struct SetupView: View {
     @State private var path: [SetupStage] = []
-    @State var tarLocation: URL = URL(fileURLWithPath: "")
+    @State private var tarLocation = URL(fileURLWithPath: "")
     @Binding var showSetup: Bool
     var firstTime: Bool = true
 
