@@ -401,7 +401,9 @@ extension Wine {
     }
 
     @discardableResult
-    public static func changeWinVersion(bottle: Bottle, win: WinVersion) async throws -> String {
-        return try await Wine.runWine(["winecfg", "-v", win.rawValue], bottle: bottle)
+    public static func changeWinVersion(
+        bottle: Bottle, win: WinVersion, environment: [String: String] = [:]
+    ) async throws -> String {
+        return try await Wine.runWine(["winecfg", "-v", win.rawValue], bottle: bottle, environment: environment)
     }
 }
