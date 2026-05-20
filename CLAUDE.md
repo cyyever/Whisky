@@ -6,14 +6,14 @@ Fork of [Whisky-App/Whisky](https://github.com/Whisky-App/Whisky) (archived). A 
 ## Architecture
 - **Whisky app** — SwiftUI macOS app (Xcode project)
 - **WhiskyKit** — Local Swift package with Wine management, bottle settings, process execution
-- **Wine** — x86_64 Wine 11.5 built from source via Rosetta 2 (submodule at `vendor/wine`)
+- **Wine** — x86_64 Wine 11.9 built from source via Rosetta 2 (submodule at `vendor/wine`)
 - **DXMT** — Open-source Metal-based D3D11/D3D10 translation for Wine (submodule at `vendor/dxmt`)
 - **DXVK** — Optional DirectX→Vulkan→Metal path
 
 ## Build instructions
 ```bash
 make setup-x86-brew  # one-time: x86_64 Homebrew + deps in vendor/
-make wine            # build Wine 11.5 x86_64 from vendor/wine submodule
+make wine            # build Wine 11.9 x86_64 from vendor/wine submodule
 make dxmt            # install DXMT (Metal D3D11) into Wine
 make app             # build Whisky Swift app
 make all             # build everything
@@ -21,7 +21,7 @@ make run             # build app and launch
 ```
 
 ## Key paths
-- Wine submodule: `vendor/wine` (pinned to wine-11.5 tag)
+- Wine submodule: `vendor/wine` (pinned to wine-11.9 + rundll32 WS_VISIBLE fix)
 - DXMT submodule: `vendor/dxmt` (pinned to v0.74 tag)
 - x86 Homebrew: `vendor/homebrew-x86/` (gitignored)
 - Build scripts: `scripts/setup-x86-brew.sh`, `scripts/build-wine-x86.sh`, `scripts/install-dxmt.sh`

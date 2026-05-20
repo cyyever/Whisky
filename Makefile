@@ -22,7 +22,7 @@ $(X86_BREW):
 
 # === Wine ===
 
-wine: $(WINE_BIN)  ## Build Wine 11.5 x86_64 and install to Libraries
+wine: $(WINE_BIN)  ## Build Wine 11.9 x86_64 and install to Libraries
 
 $(WINE_BIN): $(X86_BREW) $(WINE_SRC)/configure
 	$(SCRIPTS_DIR)/build-wine-x86.sh
