@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
 WINE_LIB="$INSTALL_DIR/Wine/lib/wine"
-DXMT_VERSION="0.74"
+DXMT_VERSION="0.80"
 DXMT_URL="https://github.com/3Shain/dxmt/releases/download/v${DXMT_VERSION}/dxmt-v${DXMT_VERSION}-builtin.tar.gz"
 
 if [ ! -d "$WINE_LIB" ]; then
