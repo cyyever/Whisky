@@ -2,7 +2,8 @@ SHELL := /bin/bash
 SCRIPTS_DIR := $(CURDIR)/scripts
 WINE_SRC := $(CURDIR)/vendor/wine
 X86_BREW := $(CURDIR)/vendor/homebrew-x86/bin/brew
-WINE_BIN := $(HOME)/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin/wine64
+WINE_INSTALL := $(HOME)/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin/wine64
+WINE_STAMP := $(CURDIR)/vendor/.wine-installed
 APP_BUILD := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products/Debug/Whisky.app
 
 .PHONY: all app wine dxmt setup-x86-brew clean clean-wine help
@@ -22,14 +23,16 @@ $(X86_BREW):
 
 # === Wine ===
 
-wine: $(WINE_BIN)  ## Build Wine 11.9 x86_64 and install to Libraries
+wine: $(WINE_STAMP)  ## Build Wine 11.9 x86_64 and install to Libraries
 
-$(WINE_BIN): $(X86_BREW) $(WINE_SRC)/configure
+$(WINE_STAMP): $(X86_BREW) $(WINE_SRC)/configure
 	$(SCRIPTS_DIR)/build-wine-x86.sh
+	@touch $@
 
 clean-wine:  ## Remove Wine build artifacts (keeps installed Wine)
 	rm -rf $(WINE_SRC)/build-x86_64
 	rm -rf $(WINE_SRC)/build
+	rm -f $(WINE_STAMP)
 
 # === DXMT ===
 
@@ -68,5 +71,3 @@ submodule:  ## Init/update git submodules
 
 clean: clean-wine  ## Remove all build artifacts
 	xcodebuild -project Whisky.xcodeproj -scheme Whisky clean 2>/dev/null || true
-	rm -rf $(WINE_SRC)/build-x86_64
-	rm -rf $(WINE_SRC)/build

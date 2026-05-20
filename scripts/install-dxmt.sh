@@ -5,7 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
 WINE_LIB="$INSTALL_DIR/Wine/lib/wine"
-DXMT_VERSION="0.80"
+DXMT_VERSION=$(git -C "$PROJECT_DIR/vendor/dxmt" describe --tags --exact-match HEAD 2>/dev/null | sed 's/^v//')
+if [ -z "$DXMT_VERSION" ]; then
+    echo "ERROR: vendor/dxmt submodule is not on a tagged release."
+    echo "Initialize with: git submodule update --init vendor/dxmt"
+    echo "Or check out a tag: cd vendor/dxmt && git checkout v0.80"
+    exit 1
+fi
 DXMT_URL="https://github.com/3Shain/dxmt/releases/download/v${DXMT_VERSION}/dxmt-v${DXMT_VERSION}-builtin.tar.gz"
 
 if [ ! -d "$WINE_LIB" ]; then
