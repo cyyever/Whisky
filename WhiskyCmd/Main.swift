@@ -98,7 +98,8 @@ extension Whisky {
         mutating func run() throws {
             // Should be sanitised
             let bottleURL = URL(filePath: path)
-            let settings = try BottleSettings.decode(from: bottleURL)
+            let metadataURL = bottleURL.appending(path: "Metadata").appendingPathExtension("plist")
+            let settings = try BottleSettings.decode(from: metadataURL)
             var bottlesList = BottleData()
             bottlesList.paths.append(bottleURL)
             print("Bottle \"\(settings.name)\" added.")

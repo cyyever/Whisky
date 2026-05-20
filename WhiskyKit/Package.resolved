@@ -1,14 +1,15 @@
 {
+  "originHash" : "e5743cc23b68d9afdf6ec6f9d0d8ee3f76404193cf58556548dc447dc8d14b47",
   "pins" : [
     {
       "identity" : "semanticversion",
       "kind" : "remoteSourceControl",
       "location" : "git@github.com:SwiftPackageIndex/SemanticVersion.git",
       "state" : {
-        "revision" : "b26e9fd30d8b19a70e680551103fa579b135aa4f",
+        "revision" : "3b18d75a3cece558fb98e72d7dd5c83394d86d5b",
         "version" : "0.5.1"
       }
     }
   ],
-  "version" : 2
+  "version" : 3
 }
