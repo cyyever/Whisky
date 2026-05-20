@@ -22,7 +22,7 @@ make run             # build app and launch
 
 ## Key paths
 - Wine submodule: `vendor/wine` (pinned to wine-11.9 + rundll32 WS_VISIBLE fix)
-- DXMT submodule: `vendor/dxmt` (pinned to v0.74 tag)
+- DXMT submodule: `vendor/dxmt` (pinned to v0.80 tag)
 - x86 Homebrew: `vendor/homebrew-x86/` (gitignored)
 - Build scripts: `scripts/setup-x86-brew.sh`, `scripts/build-wine-x86.sh`, `scripts/install-dxmt.sh`
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`
