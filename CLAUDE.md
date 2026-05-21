@@ -6,15 +6,13 @@ Fork of [Whisky-App/Whisky](https://github.com/Whisky-App/Whisky) (archived). A 
 ## Architecture
 - **Whisky app** — SwiftUI macOS app (Xcode project)
 - **WhiskyKit** — Local Swift package with Wine management, bottle settings, process execution
-- **Wine** — x86_64 Wine 11.9 built from source via Rosetta 2 (submodule at `vendor/wine`)
-- **DXMT** — Open-source Metal-based D3D11/D3D10 translation for Wine (submodule at `vendor/dxmt`)
+- **Wine** — x86_64 Wine 11.9 built from source via Rosetta 2 (submodule at `vendor/wine`); D3D11/D3D10/DXGI use Wine's built-in wined3d
 - **DXVK** — Optional DirectX→Vulkan→Metal path
 
 ## Build instructions
 ```bash
 make setup-x86-brew  # one-time: x86_64 Homebrew + deps in vendor/
 make wine            # build Wine 11.9 x86_64 from vendor/wine submodule
-make dxmt            # install DXMT (Metal D3D11) into Wine
 make app             # build Whisky Swift app
 make all             # build everything
 make run             # build app and launch
@@ -22,9 +20,8 @@ make run             # build app and launch
 
 ## Key paths
 - Wine submodule: `vendor/wine` (pinned to wine-11.9 + rundll32 WS_VISIBLE fix)
-- DXMT submodule: `vendor/dxmt` (pinned to v0.80 tag)
 - x86 Homebrew: `vendor/homebrew-x86/` (gitignored)
-- Build scripts: `scripts/setup-x86-brew.sh`, `scripts/build-wine-x86.sh`, `scripts/install-dxmt.sh`
+- Build scripts: `scripts/setup-x86-brew.sh`, `scripts/build-wine-x86.sh`
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`
 - Bottles: `~/Library/Containers/com.isaacmarovitz.Whisky/Bottles/`
 
@@ -32,9 +29,8 @@ make run             # build app and launch
 - Native ARM64 Wine does NOT work on macOS (preloader_mac.c has no aarch64 support)
 - Must build x86_64 Wine and run via Rosetta 2
 - Use `--enable-archs=i386,x86_64` for WoW64 32-bit support (Steam is 32-bit)
-- Bundle FreeType, MoltenVK dylibs into Wine/lib; set DYLD_FALLBACK_LIBRARY_PATH
-- DXMT replaces Wine's built-in D3D11/D3D10/DXGI DLLs with Metal-based ones
-- Don't mix Apple's proprietary D3DMetal bridge DLLs with upstream Wine — use DXMT instead
+- Bundle FreeType, MoltenVK dylibs into Wine/lib; add @loader_path/../.. rpath to wine/x86_64-unix/*.so so dlopen finds them
+- D3D11/D3D10/DXGI use Wine's built-in wined3d (DXMT was removed: its `cross-process swapchain not supported yet` limit broke Steam's CEF)
 
 ## Distribution URLs
 - Version plist: `https://cyyever.github.io/Whisky/WhiskyWineVersion.plist`

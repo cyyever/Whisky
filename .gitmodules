@@ -1,6 +1,3 @@
 [submodule "vendor/wine"]
 	path = vendor/wine
 	url = git@github.com:cyyever/wine.git
-[submodule "vendor/dxmt"]
-	path = vendor/dxmt
-	url = git@github.com:3Shain/dxmt.git
