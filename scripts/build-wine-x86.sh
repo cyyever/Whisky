@@ -100,6 +100,30 @@ for so in "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/"*.so; do
     install_name_tool -add_rpath '@loader_path/../..' "$so" 2>/dev/null || true
 done
 
+# On macOS 26, Wine's auto-detect of the graphics driver via explorer's
+# desktop GUID does not work reliably and new bottles end up with no
+# display driver loaded (winecfg/etc. silently never show a window).
+# Patch wine.inf so wineboot writes the driver explicitly into HKLM
+# when initialising the prefix.
+echo "=== Patching wine.inf to set Graphics driver = mac ==="
+WINE_INF="$INSTALL_DIR/Wine/share/wine/wine.inf"
+if ! grep -q '^\[Drivers\]' "$WINE_INF"; then
+    # Append the new section and reference it from [BaseInstall]'s AddReg list.
+    cat >> "$WINE_INF" <<'INFEOF'
+
+[Drivers]
+HKLM,Software\Wine\Drivers,Graphics,,"mac"
+INFEOF
+    # Insert "Drivers,\" into the BaseInstall AddReg list, after the
+    # "AddReg=\" line that opens it.
+    awk '
+        /^\[BaseInstall\]/ { in_base = 1 }
+        /^\[/ && !/^\[BaseInstall\]/ { in_base = 0 }
+        in_base && /^AddReg=\\$/ { print; print "    Drivers,\\"; next }
+        { print }
+    ' "$WINE_INF" > "$WINE_INF.new" && mv "$WINE_INF.new" "$WINE_INF"
+fi
+
 # Create wine64 symlink for Whisky compatibility
 cd "$INSTALL_DIR/Wine/bin"
 [ ! -f wine64 ] && ln -s wine wine64
