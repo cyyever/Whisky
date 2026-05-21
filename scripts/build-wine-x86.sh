@@ -91,6 +91,15 @@ done
 # Also copy top-level lib dylibs
 cp -n "$X86_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 
+# Wine's x86_64-unix .so modules dlopen bundled dylibs by leaf name (e.g.
+# "libfreetype.6.dylib"); dyld won't find them in Wine/lib/ unless an rpath
+# points there. Each .so already has @loader_path/ (its own dir); add ../..
+# so the search reaches Wine/lib/.
+echo "=== Patching rpaths on Wine unix modules ==="
+for so in "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/"*.so; do
+    install_name_tool -add_rpath '@loader_path/../..' "$so" 2>/dev/null || true
+done
+
 # Create wine64 symlink for Whisky compatibility
 cd "$INSTALL_DIR/Wine/bin"
 [ ! -f wine64 ] && ln -s wine wine64
