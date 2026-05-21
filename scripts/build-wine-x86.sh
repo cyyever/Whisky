@@ -104,8 +104,9 @@ done
 cd "$INSTALL_DIR/Wine/bin"
 [ ! -f wine64 ] && ln -s wine wine64
 
-# Write version plist
-WINE_VER=$("$INSTALL_DIR/Wine/bin/wine64" --version 2>&1 | sed 's/wine-//')
+# Write version plist. wine64 --version may add a git-describe suffix like
+# "11.9-1-gede55241ff5"; strip it so the parts are plain integers.
+WINE_VER=$("$INSTALL_DIR/Wine/bin/wine64" --version 2>&1 | sed 's/^wine-//; s/-.*$//')
 MAJOR=$(echo "$WINE_VER" | cut -d. -f1)
 MINOR=$(echo "$WINE_VER" | cut -d. -f2)
 PATCH=$(echo "$WINE_VER" | cut -d. -f3)
