@@ -34,7 +34,8 @@ struct Whisky: ParsableCommand {
                       Delete.self,
                       Remove.self,
                       Run.self,
-                      Shellenv.self
+                      Shellenv.self,
+                      SteamFix.self
                       /*Install.self,
                       Uninstall.self*/])
 }
@@ -174,9 +175,33 @@ extension Whisky {
                 throw ValidationError("A bottle with that name doesn't exist.")
             }
 
+            // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
+            Steam.installWebhelperWrapper(in: bottle)
+
             let url = URL(fileURLWithPath: path)
             let program = Program(url: url, bottle: bottle)
             program.runInTerminal()
+        }
+    }
+
+    struct SteamFix: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "steam-fix",
+            abstract: "Install the Steam webhelper wrapper into a bottle (fixes the black Steam window)."
+        )
+
+        @Argument var bottleName: String
+
+        mutating func run() throws {
+            var bottlesList = BottleData()
+            let bottles = bottlesList.loadBottles()
+
+            guard let bottle = bottles.first(where: { $0.settings.name == bottleName }) else {
+                throw ValidationError("A bottle with that name doesn't exist.")
+            }
+
+            Steam.installWebhelperWrapper(in: bottle)
+            print("Steam webhelper wrapper installed for bottle \"\(bottleName)\".")
         }
     }
 

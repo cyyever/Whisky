@@ -6,9 +6,9 @@ WINE_INSTALL := $(HOME)/Library/Application Support/com.isaacmarovitz.Whisky/Lib
 WINE_STAMP := $(CURDIR)/vendor/.wine-installed
 APP_BUILD := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products/Debug/Whisky.app
 
-.PHONY: all app wine setup-x86-brew clean clean-wine help
+.PHONY: all app wine steam-helper setup-x86-brew clean clean-wine help
 
-all: app wine  ## Build everything (app + Wine)
+all: app wine steam-helper  ## Build everything (app + Wine + Steam helper)
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -33,6 +33,11 @@ clean-wine:  ## Remove Wine build artifacts (keeps installed Wine)
 	rm -rf $(WINE_SRC)/build-x86_64
 	rm -rf $(WINE_SRC)/build
 	rm -f $(WINE_STAMP)
+
+# === Steam helper ===
+
+steam-helper:  ## Build the Steam webhelper wrapper (fixes the black Steam window)
+	$(SCRIPTS_DIR)/build-webhelper-wrapper.sh
 
 # === Whisky App ===
 

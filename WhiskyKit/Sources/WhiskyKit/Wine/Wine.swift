@@ -107,6 +107,9 @@ public class Wine {
             try enableDXVK(bottle: bottle)
         }
 
+        // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
+        Steam.installWebhelperWrapper(in: bottle)
+
         for await _ in try Self.runWineProcess(
             name: url.lastPathComponent,
             args: ["start", "/unix", url.path(percentEncoded: false)] + args,
