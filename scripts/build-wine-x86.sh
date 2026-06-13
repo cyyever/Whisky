@@ -49,6 +49,8 @@ arch -x86_64 env -i \
     PKG_CONFIG="$X86_PREFIX/bin/pkg-config" \
     PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \
     PKG_CONFIG_LIBDIR="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \
+    SDL2_CFLAGS="-I$X86_PREFIX/include/SDL2 -D_THREAD_SAFE" \
+    SDL2_LIBS="-L$X86_PREFIX/lib -lSDL2" \
     LDFLAGS="-L$X86_PREFIX/lib -L$X86_PREFIX/opt/molten-vk/lib" \
     CFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
     CPPFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
