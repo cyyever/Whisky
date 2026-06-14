@@ -24,7 +24,7 @@ fi
 X86_PREFIX=$(arch -x86_64 "$X86_BREW" --prefix)
 X86_BISON="$X86_PREFIX/opt/bison/bin"
 
-rm -rf "$BUILD_DIR"
+# Incremental by default; run `make clean-wine` for a clean rebuild.
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
