@@ -73,6 +73,7 @@ public extension Process {
                 fileHandle?.write(line: line)
             }
 
+            // swiftlint:disable:next prefer_self_in_static_references
             terminationHandler = { (process: Process) in
                 do {
                     _ = try pipe.fileHandleForReading.readToEnd()

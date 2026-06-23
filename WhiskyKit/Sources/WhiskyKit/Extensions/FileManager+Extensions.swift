@@ -22,13 +22,13 @@ extension FileManager {
     func replaceDLLs(
         in destinationDirectory: URL, withContentsIn sourceDirectory: URL, makeOriginalCopy: Bool = false
     ) throws {
-        let enumerator = FileManager.default.enumerator(
+        let enumerator = Self.default.enumerator(
             at: sourceDirectory, includingPropertiesForKeys: [.isRegularFileKey])
 
         while let fileURL = enumerator?.nextObject() as? URL {
             guard fileURL.pathExtension == "dll" else { continue }
             let originalURL = destinationDirectory.appending(path: fileURL.lastPathComponent)
-            try FileManager.default.replaceFile(at: originalURL, with: fileURL, makeOriginalCopy: makeOriginalCopy)
+            try Self.default.replaceFile(at: originalURL, with: fileURL, makeOriginalCopy: makeOriginalCopy)
         }
     }
 
@@ -38,15 +38,15 @@ extension FileManager {
                 let copyURL = originalURL.appendingPathExtension("orig")
 
                 if fileExists(atPath: copyURL.path(percentEncoded: false)) {
-                    try FileManager.default.removeItem(at: copyURL)
+                    try Self.default.removeItem(at: copyURL)
                 }
 
-                try FileManager.default.moveItem(at: originalURL, to: copyURL)
+                try Self.default.moveItem(at: originalURL, to: copyURL)
             } else {
-                try FileManager.default.removeItem(at: originalURL)
+                try Self.default.removeItem(at: originalURL)
             }
 
-            try FileManager.default.copyItem(at: replacementURL, to: originalURL)
+            try Self.default.copyItem(at: replacementURL, to: originalURL)
         }
     }
 }

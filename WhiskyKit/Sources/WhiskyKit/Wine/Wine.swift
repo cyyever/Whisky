@@ -331,7 +331,7 @@ extension Wine {
     }
 
     public static func winVersion(bottle: Bottle) async throws -> WinVersion {
-        let output = try await Wine.runWine(["winecfg", "-v"], bottle: bottle)
+        let output = try await Self.runWine(["winecfg", "-v"], bottle: bottle)
         let lines = output.split(whereSeparator: \.isNewline)
 
         if let lastLine = lines.last {
@@ -346,7 +346,7 @@ extension Wine {
     }
 
     public static func buildVersion(bottle: Bottle) async throws -> String? {
-        return try await Wine.queryRegistryKey(
+        return try await Self.queryRegistryKey(
             bottle: bottle, key: RegistryKey.currentVersion.rawValue,
             name: "CurrentBuild", type: .string
         )
@@ -354,7 +354,7 @@ extension Wine {
 
     public static func retinaMode(bottle: Bottle) async throws -> Bool {
         let values: Set<String> = ["y", "n"]
-        guard let output = try await Wine.queryRegistryKey(
+        guard let output = try await Self.queryRegistryKey(
             bottle: bottle, key: RegistryKey.macDriver.rawValue, name: "RetinaMode", type: .string
         ), values.contains(output) else {
             try await changeRetinaMode(bottle: bottle, retinaMode: false)
@@ -364,14 +364,14 @@ extension Wine {
     }
 
     public static func changeRetinaMode(bottle: Bottle, retinaMode: Bool) async throws {
-        try await Wine.addRegistryKey(
+        try await Self.addRegistryKey(
             bottle: bottle, key: RegistryKey.macDriver.rawValue, name: "RetinaMode", data: retinaMode ? "y" : "n",
             type: .string
         )
     }
 
     public static func dpiResolution(bottle: Bottle) async throws -> Int? {
-        guard let output = try await Wine.queryRegistryKey(bottle: bottle, key: RegistryKey.desktop.rawValue,
+        guard let output = try await Self.queryRegistryKey(bottle: bottle, key: RegistryKey.desktop.rawValue,
                                                      name: "LogPixels", type: .dword
         ) else { return nil }
 
@@ -382,7 +382,7 @@ extension Wine {
     }
 
     public static func changeDpiResolution(bottle: Bottle, dpi: Int) async throws {
-        try await Wine.addRegistryKey(
+        try await Self.addRegistryKey(
             bottle: bottle, key: RegistryKey.desktop.rawValue, name: "LogPixels", data: String(dpi),
             type: .dword
         )
@@ -390,23 +390,23 @@ extension Wine {
 
     @discardableResult
     public static func control(bottle: Bottle) async throws -> String {
-        return try await Wine.runWine(["control"], bottle: bottle)
+        return try await Self.runWine(["control"], bottle: bottle)
     }
 
     @discardableResult
     public static func regedit(bottle: Bottle) async throws -> String {
-        return try await Wine.runWine(["regedit"], bottle: bottle)
+        return try await Self.runWine(["regedit"], bottle: bottle)
     }
 
     @discardableResult
     public static func cfg(bottle: Bottle) async throws -> String {
-        return try await Wine.runWine(["winecfg"], bottle: bottle)
+        return try await Self.runWine(["winecfg"], bottle: bottle)
     }
 
     @discardableResult
     public static func changeWinVersion(
         bottle: Bottle, win: WinVersion, environment: [String: String] = [:]
     ) async throws -> String {
-        return try await Wine.runWine(["winecfg", "-v", win.rawValue], bottle: bottle, environment: environment)
+        return try await Self.runWine(["winecfg", "-v", win.rawValue], bottle: bottle, environment: environment)
     }
 }
