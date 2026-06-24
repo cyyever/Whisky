@@ -232,7 +232,11 @@ public class Wine {
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-fixme+err+warn",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
-            "GST_DEBUG": "1"
+            "GST_DEBUG": "1",
+            // Keep DEP on for legacy 32-bit images so Wine doesn't force PROT_EXEC
+            // on data pages, which makes DXMT/Metal a slideshow on macOS Tahoe
+            // (3Shain/dxmt#161). Honoured by patches/wine/0002-nx-compat-env-var.patch.
+            "WINE_NX_COMPAT": "1"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
         guard !environment.isEmpty else { return result }

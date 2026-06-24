@@ -1,0 +1,28 @@
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 443b9841170..39023cbe367 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -1595,9 +1595,20 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
+ 
+     if (!(nt->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT))
+     {
+-        ULONG flags = MEM_EXECUTE_OPTION_ENABLE;
+-        WARN( "disabling no-exec because of %s\n", debugstr_w(wm->ldr.BaseDllName.Buffer) );
+-        NtSetInformationProcess( GetCurrentProcess(), ProcessExecuteFlags, &flags, sizeof(flags) );
++        /* WINE_NX_COMPAT keeps DEP enabled for legacy (non-NX_COMPAT) images.
++         * Disabling no-exec forces PROT_EXEC on data pages, which cripples
++         * Metal/DXMT on macOS Tahoe (placed buffers turn games into a
++         * slideshow); see 3Shain/dxmt#161. The env var opts into keeping NX on. */
++        UNICODE_STRING nx_name = RTL_CONSTANT_STRING( L"WINE_NX_COMPAT" );
++        WCHAR nx_buf[8];
++        UNICODE_STRING nx_value = { 0, sizeof(nx_buf), nx_buf };
++
++        if (RtlQueryEnvironmentVariable_U( NULL, &nx_name, &nx_value ) == STATUS_VARIABLE_NOT_FOUND)
++        {
++            ULONG flags = MEM_EXECUTE_OPTION_ENABLE;
++            WARN( "disabling no-exec because of %s\n", debugstr_w(wm->ldr.BaseDllName.Buffer) );
++            NtSetInformationProcess( GetCurrentProcess(), ProcessExecuteFlags, &flags, sizeof(flags) );
++        }
+     }
+     return wm;
+ }
