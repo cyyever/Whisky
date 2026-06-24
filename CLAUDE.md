@@ -8,6 +8,7 @@ Fork of [Whisky-App/Whisky](https://github.com/Whisky-App/Whisky) (archived). A 
 - **WhiskyKit** — Local Swift package with Wine management, bottle settings, process execution
 - **Wine** — x86_64 Wine 11.11 built from source via Rosetta 2 (submodule at `vendor/wine`)
 - **DXMT** — Metal-native D3D11/D3D10/DXGI (submodule `vendor/dxmt`, built via `make dxmt`, installed as the Wine builtin). Default D3D11 path; bottles enable it via `WINEDLLOVERRIDES=d3d11,d3d10core,dxgi,winemetal=b`. (DXVK was removed — upstream DXVK requires Vulkan `geometryShader`, which Apple GPUs/MoltenVK lack, so it can't initialize.)
+- See `docs/macos-gaming-stack.md` for the D3D11/D3D12 translation landscape, native-ARM Wine status, CrossOver/D3DMetal relationship, and performance findings (GPU-bound, audio underruns, the `WINE_NX_COMPAT` Tahoe fix).
 - **SteamHelper** — `webhelper_wrapper.c`, a PE launcher attached via IFEO that fixes Steam's black-window bug (see Steam notes)
 
 ## Build instructions
