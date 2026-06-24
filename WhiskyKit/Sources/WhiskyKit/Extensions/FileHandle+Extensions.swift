@@ -80,8 +80,7 @@ extension FileHandle {
         header += "Windows Version: \(bottle.settings.windowsVersion)\n"
         header += "Enhanced Sync: \(bottle.settings.enhancedSync)\n\n"
 
-        header += "Metal HUD: \(bottle.settings.metalHud)\n"
-        header += "Metal Trace: \(bottle.settings.metalTrace)\n\n"
+        header += "Metal HUD: \(bottle.settings.metalHud)\n\n"
 
         if bottle.settings.dxvk {
             header += "DXVK: \(bottle.settings.dxvk)\n"

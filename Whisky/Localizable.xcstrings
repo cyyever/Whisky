@@ -724,38 +724,6 @@
         }
       }
     },
-    "config.metalTrace": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Metal Trace"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Metal 性能分析"
-          }
-        }
-      }
-    },
-    "config.metalTrace.info": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Allows you to capture GPU workload in Xcode"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "允许你在 Xcode 中抓取 GPU 工作负载"
-          }
-        }
-      }
-    },
     "config.notAvailable": {
       "localizations": {
         "en": {

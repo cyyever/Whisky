@@ -113,7 +113,6 @@ public struct BottleWineConfig: Codable, Equatable {
 
 public struct BottleMetalConfig: Codable, Equatable {
     var metalHud: Bool = false
-    var metalTrace: Bool = false
     var dxrEnabled: Bool = false
 
     public init() {}
@@ -121,7 +120,6 @@ public struct BottleMetalConfig: Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.metalHud = try container.decodeIfPresent(Bool.self, forKey: .metalHud) ?? false
-        self.metalTrace = try container.decodeIfPresent(Bool.self, forKey: .metalTrace) ?? false
         self.dxrEnabled = try container.decodeIfPresent(Bool.self, forKey: .dxrEnabled) ?? false
     }
 }
@@ -224,11 +222,6 @@ public struct BottleSettings: Codable, Equatable {
         set { metalConfig.metalHud = newValue }
     }
 
-    public var metalTrace: Bool {
-        get { return metalConfig.metalTrace }
-        set { metalConfig.metalTrace = newValue }
-    }
-
     public var dxrEnabled: Bool {
         get { return metalConfig.dxrEnabled }
         set { metalConfig.dxrEnabled = newValue }
@@ -320,10 +313,6 @@ public struct BottleSettings: Codable, Equatable {
 
         if metalHud {
             wineEnv.updateValue("1", forKey: "MTL_HUD_ENABLED")
-        }
-
-        if metalTrace {
-            wineEnv.updateValue("1", forKey: "METAL_CAPTURE_ENABLED")
         }
 
         if avxEnabled {

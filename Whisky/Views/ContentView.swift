@@ -16,7 +16,6 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import SemanticVersion
 import SwiftUI
 import UniformTypeIdentifiers
 import WhiskyKit

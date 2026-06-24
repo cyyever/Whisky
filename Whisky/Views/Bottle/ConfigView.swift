@@ -141,10 +141,6 @@ struct ConfigView: View {
                 Toggle(isOn: $bottle.settings.metalHud) {
                     Text("config.metalHud")
                 }
-                Toggle(isOn: $bottle.settings.metalTrace) {
-                    Text("config.metalTrace")
-                    Text("config.metalTrace.info")
-                }
                 if let device = MTLCreateSystemDefaultDevice() {
                     // Represents the Apple family 9 GPU features that correspond to the Apple A17, M3, and M4 GPUs.
                     if device.supportsFamily(.apple9) {
