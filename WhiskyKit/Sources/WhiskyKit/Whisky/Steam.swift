@@ -46,11 +46,11 @@ public enum Steam {
 
     /// Registry key whose `Debugger` value tells Wine to launch the wrapper
     /// whenever `steamwebhelper.exe` starts.
-    public static let ifeoDebuggerKey =
+    private static let ifeoDebuggerKey =
         #"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\steamwebhelper.exe"#
 
     /// `Debugger` value: the wrapper's Windows path, quoted so spaces are safe.
-    public static let ifeoDebuggerValue = #""C:\windows\steamwebhelper_wrapper.exe""#
+    private static let ifeoDebuggerValue = #""C:\windows\steamwebhelper_wrapper.exe""#
 
     /// Relative paths inside `drive_c` where Steam may be installed.
     private static let steamRoots = [
@@ -58,14 +58,23 @@ public enum Steam {
         "Program Files/Steam"
     ]
 
-    /// Install (or refresh) the webhelper wrapper for the bottle and make sure
-    /// the genuine `steamwebhelper.exe` is in place. Idempotent and safe to call
-    /// on every launch: it is a no-op when Steam is absent.
-    ///
-    /// Returns `true` when Steam was found (and the caller should also register
-    /// the IFEO `Debugger` value via `Wine`).
+    /// Make a bottle ready to run Steam's CEF host under Wine: install the
+    /// webhelper wrapper and, when Steam is present, attach it via the image's
+    /// IFEO `Debugger` value (keeping `steamwebhelper.exe` genuine so Steam's
+    /// verification passes). Idempotent and a no-op when Steam is absent; safe to
+    /// call before launching any program.
+    public static func configure(in bottle: Bottle) async {
+        guard installWebhelperWrapper(in: bottle) else { return }
+        try? await Wine.addRegistryKey(
+            bottle: bottle, key: ifeoDebuggerKey, name: "Debugger",
+            data: ifeoDebuggerValue, type: .string
+        )
+    }
+
+    /// Install (or refresh) the webhelper wrapper and make sure the genuine
+    /// `steamwebhelper.exe` is in place. Returns `true` when Steam was found.
     @discardableResult
-    public static func installWebhelperWrapper(in bottle: Bottle) -> Bool {
+    private static func installWebhelperWrapper(in bottle: Bottle) -> Bool {
         let fileManager = FileManager.default
 
         guard fileManager.fileExists(atPath: wrapperBinary.path(percentEncoded: false)) else {
@@ -124,50 +133,46 @@ public enum Steam {
         let wrapperSize = fileSize(of: wrapperBinary)
 
         // Migration from the old approach: steamwebhelper.exe is our wrapper.
+        // Restore the genuine binary from the preserved copy so verification passes.
         if fileSize(of: helper) == wrapperSize {
-            guard fileManager.fileExists(atPath: real.path(percentEncoded: false)),
-                  fileSize(of: real) != wrapperSize else {
+            guard let realSize = fileSize(of: real), realSize != wrapperSize else {
                 Logger.wineKit.error(
                     "steamwebhelper.exe is the wrapper but no genuine copy to restore in \(cefDir.lastPathComponent)")
                 return
             }
-            do {
-                try fileManager.removeItem(at: helper)
-                try fileManager.copyItem(at: real, to: helper)
-                Logger.wineKit.info("Restored genuine steamwebhelper.exe in \(cefDir.lastPathComponent)")
-            } catch {
-                Logger.wineKit.error("Failed to restore steamwebhelper.exe: \(error)")
-                return
-            }
+            guard replace(at: helper, with: real, fileManager: fileManager) else { return }
+            Logger.wineKit.info("Restored genuine steamwebhelper.exe in \(cefDir.lastPathComponent)")
         }
 
-        // Keep steamwebhelper_real.exe in sync with the genuine binary.
-        if fileSize(of: real) != fileSize(of: helper) {
-            do {
-                if fileManager.fileExists(atPath: real.path(percentEncoded: false)) {
-                    try fileManager.removeItem(at: real)
-                }
-                try fileManager.copyItem(at: helper, to: real)
-                Logger.wineKit.info("Refreshed steamwebhelper_real.exe in \(cefDir.lastPathComponent)")
-            } catch {
-                Logger.wineKit.error("Failed to copy steamwebhelper_real.exe: \(error)")
-            }
+        // Keep steamwebhelper_real.exe (what the wrapper launches) in sync with
+        // the genuine binary.
+        if fileSize(of: real) != fileSize(of: helper),
+           replace(at: real, with: helper, fileManager: fileManager) {
+            Logger.wineKit.info("Refreshed steamwebhelper_real.exe in \(cefDir.lastPathComponent)")
         }
     }
 
     /// Copy `source` to `dest` (replacing) unless they are already the same size.
     private static func installFile(_ source: URL, to dest: URL, fileManager: FileManager) {
         if fileSize(of: dest) == fileSize(of: source) { return }
+        try? fileManager.createDirectory(
+            at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if replace(at: dest, with: source, fileManager: fileManager) {
+            Logger.wineKit.info("Installed \(dest.lastPathComponent)")
+        }
+    }
+
+    /// Replace `dest` with a fresh copy of `source`, removing any existing `dest`.
+    private static func replace(at dest: URL, with source: URL, fileManager: FileManager) -> Bool {
         do {
-            try fileManager.createDirectory(
-                at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
             if fileManager.fileExists(atPath: dest.path(percentEncoded: false)) {
                 try fileManager.removeItem(at: dest)
             }
             try fileManager.copyItem(at: source, to: dest)
-            Logger.wineKit.info("Installed \(dest.lastPathComponent)")
+            return true
         } catch {
-            Logger.wineKit.error("Failed to install \(dest.lastPathComponent): \(error)")
+            Logger.wineKit.error("Failed to write \(dest.lastPathComponent): \(error)")
+            return false
         }
     }
 

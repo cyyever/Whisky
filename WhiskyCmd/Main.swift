@@ -176,7 +176,7 @@ extension Whisky {
             }
 
             // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
-            await Wine.configureSteam(bottle: bottle)
+            await Steam.configure(in: bottle)
 
             let url = URL(fileURLWithPath: path)
             let program = Program(url: url, bottle: bottle)
@@ -200,7 +200,7 @@ extension Whisky {
                 throw ValidationError("A bottle with that name doesn't exist.")
             }
 
-            await Wine.configureSteam(bottle: bottle)
+            await Steam.configure(in: bottle)
             print("Steam webhelper wrapper installed for bottle \"\(bottleName)\".")
         }
     }

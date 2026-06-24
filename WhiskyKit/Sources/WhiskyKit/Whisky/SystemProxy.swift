@@ -70,7 +70,7 @@ public enum SystemProxy {
         }
 
         // Some clients only look for the uppercase spellings; provide both.
-        for (key, value) in result {
+        for (key, value) in Array(result) {
             result[key.uppercased()] = value
         }
         return result

@@ -66,16 +66,10 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Append all original arguments with bounds checking
+    // Append all original arguments with bounds checking (quote if it has spaces)
     for (int i = 2; i < argc; i++) {
-        int needed;
-        if (strchr(argv[i], ' ')) {
-            needed = snprintf(cmdline + offset, sizeof(cmdline) - offset,
-                              " \"%s\"", argv[i]);
-        } else {
-            needed = snprintf(cmdline + offset, sizeof(cmdline) - offset,
-                              " %s", argv[i]);
-        }
+        const char *fmt = strchr(argv[i], ' ') ? " \"%s\"" : " %s";
+        int needed = snprintf(cmdline + offset, sizeof(cmdline) - offset, fmt, argv[i]);
         if (needed < 0 || (size_t)(offset + needed) >= sizeof(cmdline)) return 1;
         offset += needed;
     }
