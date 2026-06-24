@@ -175,8 +175,8 @@ extension Whisky {
                 throw ValidationError("A bottle with that name doesn't exist.")
             }
 
-            // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
-            await Steam.configure(in: bottle)
+            // Install DXVK (if enabled) and wire up Steam's CEF wrapper before launch.
+            await Wine.prepareForLaunch(bottle: bottle)
 
             let url = URL(fileURLWithPath: path)
             let program = Program(url: url, bottle: bottle)

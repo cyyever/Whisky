@@ -21,7 +21,6 @@ import WhiskyKit
 
 struct WelcomeView: View {
     @State private var rosettaInstalled: Bool?
-    @State private var shouldCheckInstallStatus: Bool = false
     @Binding var path: [SetupStage]
     @Binding var showSetup: Bool
     var firstTime: Bool
@@ -48,16 +47,11 @@ struct WelcomeView: View {
             .padding(.horizontal)
             Spacer()
             Form {
-                InstallStatusView(isInstalled: $rosettaInstalled,
-                                  shouldCheckInstallStatus: $shouldCheckInstallStatus,
-                                  name: "Rosetta")
+                InstallStatusView(isInstalled: $rosettaInstalled, name: "Rosetta")
             }
             .formStyle(.grouped)
             .scrollDisabled(true)
             .onAppear {
-                checkInstallStatus()
-            }
-            .onChange(of: shouldCheckInstallStatus) {
                 checkInstallStatus()
             }
             Spacer()
@@ -92,7 +86,6 @@ struct WelcomeView: View {
 
 struct InstallStatusView: View {
     @Binding var isInstalled: Bool?
-    @Binding var shouldCheckInstallStatus: Bool
     @State var name: String // swiftlint:disable:this private_swiftui_state
     @State private var text = String(localized: "setup.install.checking")
 

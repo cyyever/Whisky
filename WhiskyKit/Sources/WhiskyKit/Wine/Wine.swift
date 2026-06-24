@@ -99,16 +99,27 @@ public class Wine {
         )
     }
 
-    /// Execute a `wine start /unix {url}` command returning the output result
-    public static func runProgram(
-        at url: URL, args: [String] = [], bottle: Bottle, environment: [String: String] = [:]
-    ) async throws {
+    /// Bottle preparation shared by every launch path (GUI `runProgram` and the
+    /// CLI, which launches via Terminal and so bypasses `runProgram`): install
+    /// DXVK when enabled and wire up Steam's CEF wrapper. Safe to call always.
+    public static func prepareForLaunch(bottle: Bottle) async {
         if bottle.settings.dxvk {
-            try enableDXVK(bottle: bottle)
+            do {
+                try enableDXVK(bottle: bottle)
+            } catch {
+                Logger.wineKit.error("Failed to enable DXVK: \(error)")
+            }
         }
 
         // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
         await Steam.configure(in: bottle)
+    }
+
+    /// Execute a `wine start /unix {url}` command returning the output result
+    public static func runProgram(
+        at url: URL, args: [String] = [], bottle: Bottle, environment: [String: String] = [:]
+    ) async throws {
+        await prepareForLaunch(bottle: bottle)
 
         for await _ in try Self.runWineProcess(
             name: url.lastPathComponent,

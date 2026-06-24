@@ -27,6 +27,12 @@ enum LoadingState {
 }
 
 struct ConfigView: View {
+    /// Apple family 9 GPUs (A17, M3, M4) support hardware ray tracing. The
+    /// capability is fixed for the machine, so resolve it once instead of
+    /// allocating a Metal device on every body re-render.
+    private static let supportsRaytracing =
+        MTLCreateSystemDefaultDevice()?.supportsFamily(.apple9) ?? false
+
     @ObservedObject var bottle: Bottle
     @State private var buildVersion: Int = 0
     @State private var retinaMode: Bool = false
@@ -141,13 +147,10 @@ struct ConfigView: View {
                 Toggle(isOn: $bottle.settings.metalHud) {
                     Text("config.metalHud")
                 }
-                if let device = MTLCreateSystemDefaultDevice() {
-                    // Represents the Apple family 9 GPU features that correspond to the Apple A17, M3, and M4 GPUs.
-                    if device.supportsFamily(.apple9) {
-                        Toggle(isOn: $bottle.settings.dxrEnabled) {
-                            Text("config.dxr")
-                            Text("config.dxr.info")
-                        }
+                if Self.supportsRaytracing {
+                    Toggle(isOn: $bottle.settings.dxrEnabled) {
+                        Text("config.dxr")
+                        Text("config.dxr.info")
                     }
                 }
             }
