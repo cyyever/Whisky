@@ -1,0 +1,225 @@
+From 2db69f4b062b6b416634c39ebabac9fc30c793b7 Mon Sep 17 00:00:00 2001
+From: Yuanyuan Chen <cyyever@outlook.com>
+Date: Wed, 24 Jun 2026 11:49:24 +0800
+Subject: [PATCH] kernelbase: Support the Image File Execution Options
+ debugger.
+
+When an executable has a "Debugger" value under its Image File Execution
+Options registry key, Windows launches that debugger with the original
+image and command line appended, instead of launching the image itself.
+
+Implement this in CreateProcessInternalW and add a conformance test.
+
+Signed-off-by: Yuanyuan Chen <cyyever@outlook.com>
+---
+ dlls/kernel32/tests/process.c | 87 +++++++++++++++++++++++++++++++++++
+ dlls/kernelbase/process.c     | 67 +++++++++++++++++++++++++++
+ 2 files changed, 154 insertions(+)
+
+diff --git a/dlls/kernel32/tests/process.c b/dlls/kernel32/tests/process.c
+index 942af51e7dd..a062df557e5 100644
+--- a/dlls/kernel32/tests/process.c
++++ b/dlls/kernel32/tests/process.c
+@@ -29,6 +29,7 @@
+ #define WIN32_NO_STATUS
+ #include "windef.h"
+ #include "winbase.h"
++#include "winreg.h"
+ #include "winuser.h"
+ #include "wincon.h"
+ #include "winnls.h"
+@@ -5725,6 +5726,74 @@ static void test_GetProcessInformation(void)
+     }
+ }
+ 
++static void test_IFEO_debugger(void)
++{
++    char tmp_path[MAX_PATH], child[MAX_PATH];
++    static const char child_name[] = "winetest_ifeo_child.exe";
++    char key_name[MAX_PATH], debugger[2 * MAX_PATH], cmdline[2 * MAX_PATH], buffer[MAX_PATH], *file_part;
++    PROCESS_INFORMATION info;
++    STARTUPINFOA startup;
++    DWORD count;
++    HKEY key;
++    LONG res;
++    BOOL ret;
++
++    /* A private copy of the test binary under a distinct name, so the IFEO entry
++     * only affects this test and not the test's own child invocations. */
++    GetTempPathA(sizeof(tmp_path), tmp_path);
++    sprintf(child, "%s%s", tmp_path, child_name);
++    ret = CopyFileA(selfname, child, FALSE);
++    ok(ret, "failed to copy %s, error %lu\n", selfname, GetLastError());
++    if (!ret) return;
++
++    sprintf(key_name, "Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\%s",
++            child_name);
++    res = RegCreateKeyExA(HKEY_LOCAL_MACHINE, key_name, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL);
++    if (res == ERROR_ACCESS_DENIED)
++    {
++        skip("not enough privileges to set Image File Execution Options\n");
++        DeleteFileA(child);
++        return;
++    }
++    ok(!res, "failed to create IFEO key, error %ld\n", res);
++
++    get_file_name(resfile);
++    sprintf(debugger, "\"%s\" process debugger \"%s\"", selfname, resfile);
++    res = RegSetValueExA(key, "Debugger", 0, REG_SZ, (const BYTE *)debugger, strlen(debugger) + 1);
++    ok(!res, "failed to set Debugger value, error %ld\n", res);
++
++    /* Launching the child should instead run the debugger, with the child's
++     * image and arguments appended to the debugger command line. */
++    memset(&startup, 0, sizeof(startup));
++    startup.cb = sizeof(startup);
++    sprintf(cmdline, "\"%s\" process exit", child);
++    ret = CreateProcessA(child, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &info);
++    ok(ret, "CreateProcess failed, error %lu\n", GetLastError());
++    if (ret)
++    {
++        WaitForSingleObject(info.hProcess, 10000);
++        CloseHandle(info.hThread);
++        CloseHandle(info.hProcess);
++
++        reload_child_info(resfile);
++        count = GetPrivateProfileIntA("debugger", "argc", 0, resfile);
++        ok(count >= 1, "debugger was not invoked (argc %lu)\n", count);
++
++        buffer[0] = 0;
++        GetPrivateProfileStringA("debugger", "arg0", "", buffer, sizeof(buffer), resfile);
++        file_part = strrchr(buffer, '\\');
++        file_part = file_part ? file_part + 1 : buffer;
++        ok(!lstrcmpiA(file_part, child_name),
++           "debugger received image %s, expected %s\n", buffer, child_name);
++    }
++
++    DeleteFileA(resfile);
++    RegDeleteValueA(key, "Debugger");
++    RegCloseKey(key);
++    RegDeleteKeyA(HKEY_LOCAL_MACHINE, key_name);
++    DeleteFileA(child);
++}
++
+ START_TEST(process)
+ {
+     HANDLE job, hproc, h, h2;
+@@ -5761,6 +5830,23 @@ START_TEST(process)
+         {
+             return;
+         }
++        else if (!strcmp(myARGV[2], "debugger") && myARGC >= 4)
++        {
++            /* Invoked as the Image File Execution Options debugger: record the
++             * command line the loader handed us (original image + args) so the
++             * parent can verify the redirect happened. */
++            HANDLE hFile = CreateFileA(myARGV[3], GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
++            int i;
++
++            if (hFile != INVALID_HANDLE_VALUE)
++            {
++                childPrintf(hFile, "[debugger]\nargc=%d\n", myARGC - 4);
++                for (i = 4; i < myARGC; i++)
++                    childPrintf(hFile, "arg%d=%s\n", i - 4, myARGV[i]);
++                CloseHandle(hFile);
++            }
++            return;
++        }
+         else if (!strcmp(myARGV[2], "nested") && myARGC >= 4)
+         {
+             char                buffer[MAX_PATH + 26];
+@@ -5826,6 +5912,7 @@ START_TEST(process)
+     test_Environment();
+     test_SuspendFlag();
+     test_DebuggingFlag();
++    test_IFEO_debugger();
+     test_Console();
+     test_ExitCode();
+     test_OpenProcess();
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index d16035fd68b..eb199e56d07 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -501,6 +501,40 @@ done:
+     return ret;
+ }
+ 
++/***********************************************************************
++ *           get_image_file_debugger
++ *
++ * Return the "Debugger" string configured in the Image File Execution
++ * Options for the given image (matched by leaf name), or NULL if none.
++ * Used to wrap a process with a launcher at creation time. Caller frees.
++ */
++static WCHAR *get_image_file_debugger( const WCHAR *image )
++{
++    UNICODE_STRING image_str;
++    WCHAR *buffer;
++    ULONG size = 0;
++
++    if (!image) return NULL;
++    RtlInitUnicodeString( &image_str, image );
++    // Probe for the value's size. A present value reports its length via `size`
++    // (the status is BUFFER_OVERFLOW, not a fixed code), so just check `size`.
++    LdrQueryImageFileExecutionOptions( &image_str, L"Debugger", REG_SZ, NULL, 0, &size );
++    if (!size) return NULL;
++    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, size + sizeof(WCHAR) ))) return NULL;
++    if (LdrQueryImageFileExecutionOptions( &image_str, L"Debugger", REG_SZ, buffer, size, &size ))
++    {
++        RtlFreeHeap( GetProcessHeap(), 0, buffer );
++        return NULL;
++    }
++    buffer[size / sizeof(WCHAR)] = 0;
++    if (!buffer[0])
++    {
++        RtlFreeHeap( GetProcessHeap(), 0, buffer );
++        return NULL;
++    }
++    return buffer;
++}
++
+ /**********************************************************************
+  *           CreateProcessInternalW   (kernelbase.@)
+  */
+@@ -542,6 +576,39 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+         app_name = name;
+     }
+ 
++    /* Honour a launcher configured in the image's Image File Execution Options
++     * "Debugger" value: prepend it to the command line and run it instead. This
++     * lets a wrapper inject extra arguments without modifying the target binary.
++     * Skipped when the caller is starting its own debuggee. */
++    if (!(flags & (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS)))
++    {
++        WCHAR *debugger = get_image_file_debugger( app_name );
++
++        if (debugger)
++        {
++            SIZE_T len = lstrlenW( debugger ) + lstrlenW( tidy_cmdline ) + 2;
++            WCHAR *combined = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) );
++
++            if (combined)
++            {
++                WCHAR *resolved;
++
++                swprintf( combined, len, L"%s %s", debugger, tidy_cmdline );
++                if ((resolved = get_file_name( combined, name, ARRAY_SIZE(name) )))
++                {
++                    TRACE( "IFEO debugger %s wrapping %s\n",
++                           debugstr_w(debugger), debugstr_w(app_name) );
++                    if (tidy_cmdline != cmd_line) RtlFreeHeap( GetProcessHeap(), 0, tidy_cmdline );
++                    if (resolved != combined) RtlFreeHeap( GetProcessHeap(), 0, combined );
++                    tidy_cmdline = resolved;
++                    app_name = name;
++                }
++                else RtlFreeHeap( GetProcessHeap(), 0, combined );
++            }
++            RtlFreeHeap( GetProcessHeap(), 0, debugger );
++        }
++    }
++
+     /* Warn if unsupported features are used */
+ 
+     if (flags & (IDLE_PRIORITY_CLASS | HIGH_PRIORITY_CLASS | REALTIME_PRIORITY_CLASS |
+-- 
+2.54.0
+
