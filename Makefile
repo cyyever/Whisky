@@ -23,9 +23,9 @@ $(X86_BREW):
 
 # === Wine ===
 
-wine: $(WINE_STAMP)  ## Build Wine 11.9 x86_64 and install to Libraries
+wine: $(WINE_STAMP)  ## Build Wine 11.11 x86_64 and install to Libraries
 
-$(WINE_STAMP): $(X86_BREW) $(WINE_SRC)/configure
+$(WINE_STAMP): $(X86_BREW) $(WINE_SRC)/configure $(wildcard $(CURDIR)/patches/wine/*.patch)
 	$(SCRIPTS_DIR)/build-wine-x86.sh
 	@touch $@
 

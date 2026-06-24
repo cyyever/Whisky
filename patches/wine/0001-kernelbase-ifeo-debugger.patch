@@ -1,8 +1,8 @@
 diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
-index d16035fd68b..38b9a485a86 100644
+index d16035fd68b..eb199e56d07 100644
 --- a/dlls/kernelbase/process.c
 +++ b/dlls/kernelbase/process.c
-@@ -501,6 +501,39 @@ done:
+@@ -501,6 +501,40 @@ done:
      return ret;
  }
  
@@ -21,9 +21,10 @@ index d16035fd68b..38b9a485a86 100644
 +
 +    if (!image) return NULL;
 +    RtlInitUnicodeString( &image_str, image );
-+    if (LdrQueryImageFileExecutionOptions( &image_str, L"Debugger", REG_SZ,
-+                                           NULL, 0, &size ) != STATUS_BUFFER_TOO_SMALL || !size)
-+        return NULL;
++    // Probe for the value's size. A present value reports its length via `size`
++    // (the status is BUFFER_OVERFLOW, not a fixed code), so just check `size`.
++    LdrQueryImageFileExecutionOptions( &image_str, L"Debugger", REG_SZ, NULL, 0, &size );
++    if (!size) return NULL;
 +    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, size + sizeof(WCHAR) ))) return NULL;
 +    if (LdrQueryImageFileExecutionOptions( &image_str, L"Debugger", REG_SZ, buffer, size, &size ))
 +    {
@@ -42,7 +43,7 @@ index d16035fd68b..38b9a485a86 100644
  /**********************************************************************
   *           CreateProcessInternalW   (kernelbase.@)
   */
-@@ -542,6 +575,39 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+@@ -542,6 +576,39 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
          app_name = name;
      }
  
