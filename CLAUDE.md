@@ -6,8 +6,8 @@ Fork of [Whisky-App/Whisky](https://github.com/Whisky-App/Whisky) (archived). A 
 ## Architecture
 - **Whisky app** — SwiftUI macOS app (Xcode project)
 - **WhiskyKit** — Local Swift package with Wine management, bottle settings, process execution
-- **Wine** — x86_64 Wine 11.11 built from source via Rosetta 2 (submodule at `vendor/wine`); D3D11/D3D10/DXGI use Wine's built-in wined3d
-- **DXVK** — Optional DirectX→Vulkan→Metal path
+- **Wine** — x86_64 Wine 11.11 built from source via Rosetta 2 (submodule at `vendor/wine`)
+- **DXMT** — Metal-native D3D11/D3D10/DXGI (submodule `vendor/dxmt`, built via `make dxmt`, installed as the Wine builtin). Default D3D11 path; bottles enable it via `WINEDLLOVERRIDES=d3d11,d3d10core,dxgi,winemetal=b`. (DXVK was removed — upstream DXVK requires Vulkan `geometryShader`, which Apple GPUs/MoltenVK lack, so it can't initialize.)
 - **SteamHelper** — `webhelper_wrapper.c`, a PE launcher attached via IFEO that fixes Steam's black-window bug (see Steam notes)
 
 ## Build instructions
@@ -34,10 +34,10 @@ make run             # build app and launch
 - Must build x86_64 Wine and run via Rosetta 2
 - Use `--enable-archs=i386,x86_64` for WoW64 32-bit support (Steam is 32-bit)
 - Bundle FreeType, MoltenVK dylibs into Wine/lib; add @loader_path/../.. rpath to wine/x86_64-unix/*.so so dlopen finds them
-- D3D11/D3D10/DXGI use Wine's built-in wined3d (DXMT was removed: its `cross-process swapchain not supported yet` limit broke Steam's CEF)
+- D3D11/D3D10/DXGI use DXMT (Metal-native, `make dxmt` installs it as the Wine builtin); wined3d remains the fallback. DXMT's earlier Steam-CEF conflict (ANGLE SwapChain11) is moot now that the webhelper wrapper forces CEF to `--disable-gpu` software rendering.
 
 ## Steam notes
-- **Black-window fix**: Steam's CEF host (`steamwebhelper.exe`) renders a black window under Wine — its sandbox hooks the NT kernel and its out-of-process GPU can't reset the D3D device (`problems[10]: Some drivers are unable to reset the D3D device in the GPU process sandbox`). Neither wined3d nor DXVK fixes this; Steam's own `--disable-gpu` fallback is insufficient.
+- **Black-window fix**: Steam's CEF host (`steamwebhelper.exe`) renders a black window under Wine — its sandbox hooks the NT kernel and its out-of-process GPU can't reset the D3D device (`problems[10]: Some drivers are unable to reset the D3D device in the GPU process sandbox`). Neither wined3d nor DXMT fixes this; Steam's own `--disable-gpu` fallback is insufficient.
 - **Solution (IFEO launcher)**: `SteamHelper/webhelper_wrapper.c` re-launches the genuine binary (a copy kept as `steamwebhelper_real.exe`) with `--no-sandbox --in-process-gpu --disable-gpu --disable-gpu-compositing` (`--no-sandbox` + `--in-process-gpu` are the flags Steam's fallback misses). It is attached via the image's **Image File Execution Options `Debugger`** value, NOT by overwriting `steamwebhelper.exe` — so the on-disk binary stays byte-identical to Valve's and passes Steam's startup verification. (Overwriting it tripped `BVerifyInstalledFiles` → Steam re-downloaded the client every launch.)
   - Requires Wine to honour the IFEO `Debugger` value at `CreateProcess`, which stock Wine does not — added by `patches/wine/0001-kernelbase-ifeo-debugger.patch`.
   - The wrapper launches `steamwebhelper_real.exe` (different name) so the IFEO redirect doesn't recurse. CEF propagates the flags to its child processes itself.

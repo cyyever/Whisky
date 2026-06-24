@@ -20,8 +20,6 @@ import Foundation
 import os.log
 
 public class Wine {
-    /// URL to the installed `DXVK` folder
-    private static let dxvkFolder: URL = WhiskyWineInstaller.libraryFolder.appending(path: "DXVK")
     /// Path to the `wine64` binary
     public static let wineBinary: URL = WhiskyWineInstaller.binFolder.appending(path: "wine64")
     /// Parth to the `wineserver` binary
@@ -100,17 +98,10 @@ public class Wine {
     }
 
     /// Bottle preparation shared by every launch path (GUI `runProgram` and the
-    /// CLI, which launches via Terminal and so bypasses `runProgram`): install
-    /// DXVK when enabled and wire up Steam's CEF wrapper. Safe to call always.
+    /// CLI, which launches via Terminal and so bypasses `runProgram`). Wires up
+    /// Steam's CEF wrapper; the DXMT D3D11 path is a builtin selected via
+    /// WINEDLLOVERRIDES (see BottleSettings), so it needs nothing installed here.
     public static func prepareForLaunch(bottle: Bottle) async {
-        if bottle.settings.dxvk {
-            do {
-                try enableDXVK(bottle: bottle)
-            } catch {
-                Logger.wineKit.error("Failed to enable DXVK: \(error)")
-            }
-        }
-
         // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
         await Steam.configure(in: bottle)
     }
@@ -229,17 +220,6 @@ public class Wine {
         Task.detached(priority: .userInitiated) {
             try await runWineserver(["-k"], bottle: bottle)
         }
-    }
-
-    public static func enableDXVK(bottle: Bottle) throws {
-        try FileManager.default.replaceDLLs(
-            in: bottle.url.appending(path: "drive_c").appending(path: "windows").appending(path: "system32"),
-            withContentsIn: Self.dxvkFolder.appending(path: "x64")
-        )
-        try FileManager.default.replaceDLLs(
-            in: bottle.url.appending(path: "drive_c").appending(path: "windows").appending(path: "syswow64"),
-            withContentsIn: Self.dxvkFolder.appending(path: "x32")
-        )
     }
 
     /// Construct an environment merging the bottle values with the given values

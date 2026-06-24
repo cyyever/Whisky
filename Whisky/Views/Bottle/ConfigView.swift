@@ -43,7 +43,6 @@ struct ConfigView: View {
     @State private var dpiConfigLoadingState: LoadingState = .loading
     @State private var dpiSheetPresented: Bool = false
     @AppStorage("wineSectionExpanded") private var wineSectionExpanded: Bool = true
-    @AppStorage("dxvkSectionExpanded") private var dxvkSectionExpanded: Bool = true
     @AppStorage("metalSectionExpanded") private var metalSectionExpanded: Bool = true
 
     var body: some View {
@@ -127,23 +126,11 @@ struct ConfigView: View {
                     }
                 }
             }
-            Section("config.title.dxvk", isExpanded: $dxvkSectionExpanded) {
-                Toggle(isOn: $bottle.settings.dxvk) {
-                    Text("config.dxvk")
-                }
-                Toggle(isOn: $bottle.settings.dxvkAsync) {
-                    Text("config.dxvk.async")
-                }
-                .disabled(!bottle.settings.dxvk)
-                Picker("config.dxvkHud", selection: $bottle.settings.dxvkHud) {
-                    Text("config.dxvkHud.full").tag(DXVKHUD.full)
-                    Text("config.dxvkHud.partial").tag(DXVKHUD.partial)
-                    Text("config.dxvkHud.fps").tag(DXVKHUD.fps)
-                    Text("config.dxvkHud.off").tag(DXVKHUD.off)
-                }
-                .disabled(!bottle.settings.dxvk)
-            }
             Section("config.title.metal", isExpanded: $metalSectionExpanded) {
+                Toggle(isOn: $bottle.settings.dxmt) {
+                    Text("config.dxmt")
+                    Text("config.dxmt.info")
+                }
                 Toggle(isOn: $bottle.settings.metalHud) {
                     Text("config.metalHud")
                 }
@@ -157,7 +144,6 @@ struct ConfigView: View {
         }
         .formStyle(.grouped)
         .animation(.whiskyDefault, value: wineSectionExpanded)
-        .animation(.whiskyDefault, value: dxvkSectionExpanded)
         .animation(.whiskyDefault, value: metalSectionExpanded)
         .bottomBar {
             HStack {

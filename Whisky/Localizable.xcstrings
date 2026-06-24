@@ -450,6 +450,38 @@
         }
       }
     },
+    "config.dxmt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DXMT (Metal D3D11)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DXMT(Metal D3D11)"
+          }
+        }
+      }
+    },
+    "config.dxmt.info": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metal-native Direct3D 11 for modern games"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为现代游戏提供 Metal 原生 Direct3D 11"
+          }
+        }
+      }
+    },
     "config.dxr": {
       "extractionState": "manual",
       "localizations": {
@@ -480,118 +512,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "在DirectX 12 游戏中启用光线追踪 "
-          }
-        }
-      }
-    },
-    "config.dxvk": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DXVK"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DXVK"
-          }
-        }
-      }
-    },
-    "config.dxvk.async": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DXVK Async"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "异步 DXVK"
-          }
-        }
-      }
-    },
-    "config.dxvkHud": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DXVK HUD"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DXVK HUD"
-          }
-        }
-      }
-    },
-    "config.dxvkHud.fps": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "FPS"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "FPS"
-          }
-        }
-      }
-    },
-    "config.dxvkHud.full": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Full"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "全部"
-          }
-        }
-      }
-    },
-    "config.dxvkHud.off": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Off"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "关闭"
-          }
-        }
-      }
-    },
-    "config.dxvkHud.partial": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Partial"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "部分"
           }
         }
       }
@@ -768,22 +688,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Retina 模式"
-          }
-        }
-      }
-    },
-    "config.title.dxvk": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DXVK"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DXVK"
           }
         }
       }

@@ -80,13 +80,8 @@ extension FileHandle {
         header += "Windows Version: \(bottle.settings.windowsVersion)\n"
         header += "Enhanced Sync: \(bottle.settings.enhancedSync)\n\n"
 
-        header += "Metal HUD: \(bottle.settings.metalHud)\n\n"
-
-        if bottle.settings.dxvk {
-            header += "DXVK: \(bottle.settings.dxvk)\n"
-            header += "DXVK Async: \(bottle.settings.dxvkAsync)\n"
-            header += "DXVK HUD: \(bottle.settings.dxvkHud)\n\n"
-        }
+        header += "Metal HUD: \(bottle.settings.metalHud)\n"
+        header += "DXMT: \(bottle.settings.dxmt)\n\n"
 
         write(line: header)
     }

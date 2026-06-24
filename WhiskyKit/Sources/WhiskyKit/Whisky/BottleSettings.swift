@@ -114,6 +114,9 @@ public struct BottleWineConfig: Codable, Equatable {
 public struct BottleMetalConfig: Codable, Equatable {
     var metalHud: Bool = false
     var dxrEnabled: Bool = false
+    /// DXMT: Metal-native D3D11 (builtin via `make dxmt`). On by default — it is
+    /// the working D3D11 path for modern games on Apple Silicon.
+    var dxmt: Bool = true
 
     public init() {}
 
@@ -121,25 +124,7 @@ public struct BottleMetalConfig: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.metalHud = try container.decodeIfPresent(Bool.self, forKey: .metalHud) ?? false
         self.dxrEnabled = try container.decodeIfPresent(Bool.self, forKey: .dxrEnabled) ?? false
-    }
-}
-
-public enum DXVKHUD: Codable, Equatable {
-    case full, partial, fps, off
-}
-
-public struct BottleDXVKConfig: Codable, Equatable {
-    var dxvk: Bool = true
-    var dxvkAsync: Bool = true
-    var dxvkHud: DXVKHUD = .off
-
-    public init() {}
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.dxvk = try container.decodeIfPresent(Bool.self, forKey: .dxvk) ?? true
-        self.dxvkAsync = try container.decodeIfPresent(Bool.self, forKey: .dxvkAsync) ?? true
-        self.dxvkHud = try container.decodeIfPresent(DXVKHUD.self, forKey: .dxvkHud) ?? .off
+        self.dxmt = try container.decodeIfPresent(Bool.self, forKey: .dxmt) ?? true
     }
 }
 
@@ -150,13 +135,11 @@ public struct BottleSettings: Codable, Equatable {
     private var info: BottleInfo
     private var wineConfig: BottleWineConfig
     private var metalConfig: BottleMetalConfig
-    private var dxvkConfig: BottleDXVKConfig
 
     public init() {
         self.info = BottleInfo()
         self.wineConfig = BottleWineConfig()
         self.metalConfig = BottleMetalConfig()
-        self.dxvkConfig = BottleDXVKConfig()
     }
 
     // swiftlint:disable line_length
@@ -166,7 +149,6 @@ public struct BottleSettings: Codable, Equatable {
         self.info = try container.decodeIfPresent(BottleInfo.self, forKey: .info) ?? BottleInfo()
         self.wineConfig = try container.decodeIfPresent(BottleWineConfig.self, forKey: .wineConfig) ?? BottleWineConfig()
         self.metalConfig = try container.decodeIfPresent(BottleMetalConfig.self, forKey: .metalConfig) ?? BottleMetalConfig()
-        self.dxvkConfig = try container.decodeIfPresent(BottleDXVKConfig.self, forKey: .dxvkConfig) ?? BottleDXVKConfig()
     }
     // swiftlint:enable line_length
 
@@ -227,19 +209,10 @@ public struct BottleSettings: Codable, Equatable {
         set { metalConfig.dxrEnabled = newValue }
     }
 
-    public var dxvk: Bool {
-        get { return dxvkConfig.dxvk }
-        set { dxvkConfig.dxvk = newValue }
-    }
-
-    public var dxvkAsync: Bool {
-        get { return dxvkConfig.dxvkAsync }
-        set { dxvkConfig.dxvkAsync = newValue }
-    }
-
-    public var dxvkHud: DXVKHUD {
-        get {  return dxvkConfig.dxvkHud }
-        set { dxvkConfig.dxvkHud = newValue }
+    /// DXMT: Metal-native D3D11. On by default.
+    public var dxmt: Bool {
+        get { return metalConfig.dxmt }
+        set { metalConfig.dxmt = newValue }
     }
 
     @discardableResult
@@ -278,24 +251,10 @@ public struct BottleSettings: Codable, Equatable {
         try data.write(to: metadataUrl)
     }
 
-    // swiftlint:disable:next cyclomatic_complexity
     public func environmentVariables(wineEnv: inout [String: String]) {
-        if dxvk {
-            wineEnv.updateValue("dxgi,d3d9,d3d10core,d3d11=n,b", forKey: "WINEDLLOVERRIDES")
-            switch dxvkHud {
-            case .full:
-                wineEnv.updateValue("full", forKey: "DXVK_HUD")
-            case .partial:
-                wineEnv.updateValue("devinfo,fps,frametimes", forKey: "DXVK_HUD")
-            case .fps:
-                wineEnv.updateValue("fps", forKey: "DXVK_HUD")
-            case .off:
-                break
-            }
-        }
-
-        if dxvkAsync {
-            wineEnv.updateValue("1", forKey: "DXVK_ASYNC")
+        if dxmt {
+            // Use the Metal-native DXMT D3D11 builtin (installed by `make dxmt`).
+            wineEnv.updateValue("d3d11,d3d10core,dxgi,winemetal=b", forKey: "WINEDLLOVERRIDES")
         }
 
         switch enhancedSync {
