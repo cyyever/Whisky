@@ -90,11 +90,12 @@ public enum EnhancedSync: Codable, Equatable {
 }
 
 public struct BottleWineConfig: Codable, Equatable {
-    static let defaultWineVersion = SemanticVersion(11, 9, 0)
+    static let defaultWineVersion = SemanticVersion(11, 11, 0)
     var wineVersion: SemanticVersion = Self.defaultWineVersion
     var windowsVersion: WinVersion = .win10
     var enhancedSync: EnhancedSync = .msync
     var avxEnabled: Bool = false
+    var followSystemProxy: Bool = false
 
     public init() {}
 
@@ -105,6 +106,7 @@ public struct BottleWineConfig: Codable, Equatable {
         self.windowsVersion = try container.decodeIfPresent(WinVersion.self, forKey: .windowsVersion) ?? .win10
         self.enhancedSync = try container.decodeIfPresent(EnhancedSync.self, forKey: .enhancedSync) ?? .msync
         self.avxEnabled = try container.decodeIfPresent(Bool.self, forKey: .avxEnabled) ?? false
+        self.followSystemProxy = try container.decodeIfPresent(Bool.self, forKey: .followSystemProxy) ?? false
     }
     // swiftlint:enable line_length
 }
@@ -191,6 +193,13 @@ public struct BottleSettings: Codable, Equatable {
     public var avxEnabled: Bool {
         get { return wineConfig.avxEnabled }
         set { wineConfig.avxEnabled = newValue }
+    }
+
+    /// When enabled, the bottle inherits macOS's system proxy configuration so
+    /// HTTP(S) clients under Wine (e.g. Steam's self-updater) route through it.
+    public var followSystemProxy: Bool {
+        get { return wineConfig.followSystemProxy }
+        set { wineConfig.followSystemProxy = newValue }
     }
 
     /// The pinned programs on this bottle
@@ -323,6 +332,12 @@ public struct BottleSettings: Codable, Equatable {
 
         if dxrEnabled {
             wineEnv.updateValue("1", forKey: "D3DM_SUPPORT_DXR")
+        }
+
+        if followSystemProxy {
+            for (key, value) in SystemProxy.environmentVariables() {
+                wineEnv.updateValue(value, forKey: key)
+            }
         }
     }
 }

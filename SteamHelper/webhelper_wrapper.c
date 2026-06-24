@@ -3,19 +3,28 @@
  *
  * This file is part of Whisky.
  *
- * A drop-in replacement for Steam's steamwebhelper.exe (CEF host). It forwards
- * all original arguments to the genuine binary (renamed steamwebhelper_real.exe
- * in the same directory) and appends the flags required for Steam's CEF to
- * render under Wine on macOS:
+ * A launcher for Steam's steamwebhelper.exe (CEF host), wired up through the
+ * image's "Debugger" Image File Execution Options value (see Steam.swift). When
+ * Steam starts steamwebhelper.exe, Wine instead runs:
+ *
+ *     steamwebhelper_wrapper.exe  <full path to steamwebhelper.exe>  <original args...>
+ *
+ * We launch the genuine binary (kept untouched on disk as steamwebhelper.exe and
+ * copied alongside as steamwebhelper_real.exe) and append the flags Steam's CEF
+ * needs to render under Wine on macOS:
  *
  *     --no-sandbox          CEF's sandbox hooks into the NT kernel and breaks under Wine
  *     --in-process-gpu      avoids the out-of-process GPU sandbox "cannot reset D3D device" failure
  *     --disable-gpu         force the software render path
  *     --disable-gpu-compositing
  *
- * Without these flags steamwebhelper renders a black window. Built as a GUI
- * subsystem app (-mwindows) so no console window appears; the child is spawned
- * with CREATE_NO_WINDOW for the same reason.
+ * We launch steamwebhelper_real.exe (a copy under a different name) rather than
+ * steamwebhelper.exe so the IFEO Debugger redirect does not recurse, and so the
+ * on-disk steamwebhelper.exe stays byte-identical to Valve's binary and passes
+ * Steam's startup file verification (otherwise Steam re-downloads it every launch).
+ *
+ * Built as a GUI subsystem app (-mwindows) so no console window appears; the
+ * child is spawned with CREATE_NO_WINDOW for the same reason.
  *
  * Whisky is free software: you can redistribute it and/or modify it under the
  * terms of the GNU General Public License as published by the Free Software
@@ -29,22 +38,28 @@
 
 int main(int argc, char *argv[]) {
     char cmdline[32768];
-    char exepath[MAX_PATH];
+    char realdir[MAX_PATH];
     char *lastslash;
     int offset;
 
-    // Get directory of this exe
-    GetModuleFileNameA(NULL, exepath, MAX_PATH);
-    lastslash = strrchr(exepath, '\\');
-    if (lastslash) *(lastslash + 1) = '\0';
+    // argv[1] is the genuine steamwebhelper.exe path Steam tried to launch
+    // (injected by the IFEO Debugger redirect). Its directory holds our copy
+    // steamwebhelper_real.exe. argv[2..] are Steam's original arguments.
+    if (argc < 2) return 1;
 
-    // Build command: real exe + original args + our extra flags
-    offset = snprintf(cmdline, sizeof(cmdline), "\"%ssteamwebhelper_real.exe\"", exepath);
+    strncpy(realdir, argv[1], MAX_PATH - 1);
+    realdir[MAX_PATH - 1] = '\0';
+    lastslash = strrchr(realdir, '\\');
+    if (lastslash) *(lastslash + 1) = '\0';
+    else realdir[0] = '\0';
+
+    // Build command: real exe + original args (argv[2..]) + our extra flags
+    offset = snprintf(cmdline, sizeof(cmdline), "\"%ssteamwebhelper_real.exe\"", realdir);
     if (offset < 0 || (size_t)offset >= sizeof(cmdline)) return 1;
 
-    // Check if flags are already present (child process re-invocation)
+    // Check if flags are already present (defensive; child re-invocation)
     int already_patched = 0;
-    for (int i = 1; i < argc; i++) {
+    for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--in-process-gpu") == 0) {
             already_patched = 1;
             break;
@@ -52,7 +67,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Append all original arguments with bounds checking
-    for (int i = 1; i < argc; i++) {
+    for (int i = 2; i < argc; i++) {
         int needed;
         if (strchr(argv[i], ' ')) {
             needed = snprintf(cmdline + offset, sizeof(cmdline) - offset,

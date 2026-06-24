@@ -11,6 +11,24 @@ X86_BREW="$X86_BREW_HOME/bin/brew"
 
 echo "=== Building Wine x86_64 from $WINE_SRC ==="
 
+# Apply out-of-tree Wine patches, kept as files so the submodule stays clean.
+# Idempotent: skip a patch that is already applied, fail loudly on conflicts.
+PATCH_DIR="$PROJECT_DIR/patches/wine"
+if [ -d "$PATCH_DIR" ]; then
+    for patch in "$PATCH_DIR"/*.patch; do
+        [ -e "$patch" ] || continue
+        if git -C "$WINE_SRC" apply --reverse --check "$patch" >/dev/null 2>&1; then
+            echo "=== Patch already applied: $(basename "$patch") ==="
+        elif git -C "$WINE_SRC" apply --check "$patch" >/dev/null 2>&1; then
+            echo "=== Applying Wine patch: $(basename "$patch") ==="
+            git -C "$WINE_SRC" apply "$patch"
+        else
+            echo "ERROR: cannot apply $(basename "$patch") (conflict or partial apply)"
+            exit 1
+        fi
+    done
+fi
+
 export HOMEBREW_BREW_GIT_REMOTE=https://mirrors.ustc.edu.cn/brew.git
 export HOMEBREW_CORE_GIT_REMOTE=https://mirrors.ustc.edu.cn/homebrew-core.git
 export HOMEBREW_BOTTLE_DOMAIN=https://mirrors.ustc.edu.cn/homebrew-bottles

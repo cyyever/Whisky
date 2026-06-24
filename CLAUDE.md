@@ -6,14 +6,14 @@ Fork of [Whisky-App/Whisky](https://github.com/Whisky-App/Whisky) (archived). A 
 ## Architecture
 - **Whisky app** — SwiftUI macOS app (Xcode project)
 - **WhiskyKit** — Local Swift package with Wine management, bottle settings, process execution
-- **Wine** — x86_64 Wine 11.9 built from source via Rosetta 2 (submodule at `vendor/wine`); D3D11/D3D10/DXGI use Wine's built-in wined3d
+- **Wine** — x86_64 Wine 11.11 built from source via Rosetta 2 (submodule at `vendor/wine`); D3D11/D3D10/DXGI use Wine's built-in wined3d
 - **DXVK** — Optional DirectX→Vulkan→Metal path
-- **SteamHelper** — `webhelper_wrapper.c`, a PE shim that fixes Steam's black-window bug (see Steam notes)
+- **SteamHelper** — `webhelper_wrapper.c`, a PE launcher attached via IFEO that fixes Steam's black-window bug (see Steam notes)
 
 ## Build instructions
 ```bash
 make setup-x86-brew  # one-time: x86_64 Homebrew + deps in vendor/
-make wine            # build Wine 11.9 x86_64 from vendor/wine submodule
+make wine            # build Wine 11.11 x86_64 from vendor/wine submodule (auto-applies patches/wine/*.patch)
 make steam-helper    # cross-compile the Steam webhelper wrapper (mingw)
 make app             # build Whisky Swift app
 make all             # build everything (app + Wine + steam-helper)
@@ -21,7 +21,8 @@ make run             # build app and launch
 ```
 
 ## Key paths
-- Wine submodule: `vendor/wine` (pinned to wine-11.9 + rundll32 WS_VISIBLE fix)
+- Wine submodule: `vendor/wine` (branch `dxmt-fixes-11.11`: wine-11.11 + rundll32 WS_VISIBLE fix + winemac macdrv export for DXMT)
+- Wine patches: `patches/wine/*.patch` — out-of-tree, applied by `build-wine-x86.sh` so the submodule stays clean (currently: kernelbase IFEO `Debugger` support for the Steam wrapper)
 - x86 Homebrew: `vendor/homebrew-x86/` (gitignored)
 - Build scripts: `scripts/setup-x86-brew.sh`, `scripts/build-wine-x86.sh`, `scripts/build-webhelper-wrapper.sh`
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`
@@ -37,10 +38,13 @@ make run             # build app and launch
 
 ## Steam notes
 - **Black-window fix**: Steam's CEF host (`steamwebhelper.exe`) renders a black window under Wine — its sandbox hooks the NT kernel and its out-of-process GPU can't reset the D3D device (`problems[10]: Some drivers are unable to reset the D3D device in the GPU process sandbox`). Neither wined3d nor DXVK fixes this; Steam's own `--disable-gpu` fallback is insufficient.
-- **Solution**: `SteamHelper/webhelper_wrapper.c` replaces `steamwebhelper.exe`, re-launching the genuine binary (renamed `steamwebhelper_real.exe`) with `--no-sandbox --in-process-gpu --disable-gpu --disable-gpu-compositing`. `--no-sandbox` + `--in-process-gpu` are the flags Steam's fallback misses.
-- Built GUI-subsystem (`-mwindows`) so no console window appears; child spawned with `CREATE_NO_WINDOW`.
-- `WhiskyKit/.../Whisky/Steam.swift` auto-installs/refreshes it into a bottle's 64-bit CEF dirs on every launch (hooked in `Wine.runProgram`); re-installs after Steam updates overwrite it. CLI: `whisky steam-fix <bottle>`.
-- Installed into 64-bit CEF dirs only (`cef.win64` / `cef.win7x64`); a 32-bit Steam client (`-cef-force-32bit`) would need an i686 wrapper build.
+- **Solution (IFEO launcher)**: `SteamHelper/webhelper_wrapper.c` re-launches the genuine binary (a copy kept as `steamwebhelper_real.exe`) with `--no-sandbox --in-process-gpu --disable-gpu --disable-gpu-compositing` (`--no-sandbox` + `--in-process-gpu` are the flags Steam's fallback misses). It is attached via the image's **Image File Execution Options `Debugger`** value, NOT by overwriting `steamwebhelper.exe` — so the on-disk binary stays byte-identical to Valve's and passes Steam's startup verification. (Overwriting it tripped `BVerifyInstalledFiles` → Steam re-downloaded the client every launch.)
+  - Requires Wine to honour the IFEO `Debugger` value at `CreateProcess`, which stock Wine does not — added by `patches/wine/0001-kernelbase-ifeo-debugger.patch`.
+  - The wrapper launches `steamwebhelper_real.exe` (different name) so the IFEO redirect doesn't recurse. CEF propagates the flags to its child processes itself.
+  - Built GUI-subsystem (`-mwindows`) so no console window appears; child spawned with `CREATE_NO_WINDOW`.
+  - `Steam.swift` (hooked in `Wine.configureSteam`, called from `Wine.runProgram`) on every launch: installs the wrapper at `C:\windows\steamwebhelper_wrapper.exe`, restores a genuine `steamwebhelper.exe` (migrating old bottles where it was overwritten), refreshes the `steamwebhelper_real.exe` copy, and sets the IFEO `Debugger` registry value. CLI: `whisky steam-fix <bottle>`.
+  - Installed into 64-bit CEF dirs only (`cef.win64` / `cef.win7x64`); a 32-bit Steam client (`-cef-force-32bit`) would need an i686 wrapper build.
+- **Update-stuck fix (proxy)**: Steam's self-update connects directly to its CDN; behind a proxy/GFW that stalls (`http error 0`). `Process.environment` doesn't inherit the host proxy, so enable the bottle's **"Follow System Proxy"** toggle (`BottleSettings.followSystemProxy`) — `SystemProxy.swift` reads the macOS system proxy (resolving PAC) and injects `http_proxy`/`https_proxy`/`no_proxy` into the Wine env. Does not apply to VPN/TUN tunnels (those route transparently and need nothing).
 - WoW64 caveat: a hand-driven `wineboot --init` may not populate `syswow64` (32-bit DLLs) — Steam's 32-bit `steam.exe` then fails with `c0000135`. The GUI/`WhiskyCmd` bottle-creation path handles this; if hitting it manually, copy `Wine/lib/wine/i386-windows/*.dll` into the bottle's `syswow64`.
 
 ## Distribution URLs

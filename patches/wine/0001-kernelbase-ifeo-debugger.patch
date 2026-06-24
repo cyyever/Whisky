@@ -1,0 +1,84 @@
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index d16035fd68b..38b9a485a86 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -501,6 +501,39 @@ done:
+     return ret;
+ }
+ 
++/***********************************************************************
++ *           get_image_file_debugger
++ *
++ * Return the "Debugger" string configured in the Image File Execution
++ * Options for the given image (matched by leaf name), or NULL if none.
++ * Used to wrap a process with a launcher at creation time. Caller frees.
++ */
++static WCHAR *get_image_file_debugger( const WCHAR *image )
++{
++    UNICODE_STRING image_str;
++    WCHAR *buffer;
++    ULONG size = 0;
++
++    if (!image) return NULL;
++    RtlInitUnicodeString( &image_str, image );
++    if (LdrQueryImageFileExecutionOptions( &image_str, L"Debugger", REG_SZ,
++                                           NULL, 0, &size ) != STATUS_BUFFER_TOO_SMALL || !size)
++        return NULL;
++    if (!(buffer = RtlAllocateHeap( GetProcessHeap(), 0, size + sizeof(WCHAR) ))) return NULL;
++    if (LdrQueryImageFileExecutionOptions( &image_str, L"Debugger", REG_SZ, buffer, size, &size ))
++    {
++        RtlFreeHeap( GetProcessHeap(), 0, buffer );
++        return NULL;
++    }
++    buffer[size / sizeof(WCHAR)] = 0;
++    if (!buffer[0])
++    {
++        RtlFreeHeap( GetProcessHeap(), 0, buffer );
++        return NULL;
++    }
++    return buffer;
++}
++
+ /**********************************************************************
+  *           CreateProcessInternalW   (kernelbase.@)
+  */
+@@ -542,6 +575,39 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR
+         app_name = name;
+     }
+ 
++    /* Honour a launcher configured in the image's Image File Execution Options
++     * "Debugger" value: prepend it to the command line and run it instead. This
++     * lets a wrapper inject extra arguments without modifying the target binary.
++     * Skipped when the caller is starting its own debuggee. */
++    if (!(flags & (DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS)))
++    {
++        WCHAR *debugger = get_image_file_debugger( app_name );
++
++        if (debugger)
++        {
++            SIZE_T len = lstrlenW( debugger ) + lstrlenW( tidy_cmdline ) + 2;
++            WCHAR *combined = RtlAllocateHeap( GetProcessHeap(), 0, len * sizeof(WCHAR) );
++
++            if (combined)
++            {
++                WCHAR *resolved;
++
++                swprintf( combined, len, L"%s %s", debugger, tidy_cmdline );
++                if ((resolved = get_file_name( combined, name, ARRAY_SIZE(name) )))
++                {
++                    TRACE( "IFEO debugger %s wrapping %s\n",
++                           debugstr_w(debugger), debugstr_w(app_name) );
++                    if (tidy_cmdline != cmd_line) RtlFreeHeap( GetProcessHeap(), 0, tidy_cmdline );
++                    if (resolved != combined) RtlFreeHeap( GetProcessHeap(), 0, combined );
++                    tidy_cmdline = resolved;
++                    app_name = name;
++                }
++                else RtlFreeHeap( GetProcessHeap(), 0, combined );
++            }
++            RtlFreeHeap( GetProcessHeap(), 0, debugger );
++        }
++    }
++
+     /* Warn if unsupported features are used */
+ 
+     if (flags & (IDLE_PRIORITY_CLASS | HIGH_PRIORITY_CLASS | REALTIME_PRIORITY_CLASS |

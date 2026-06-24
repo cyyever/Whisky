@@ -24,7 +24,7 @@ import SwiftyTextTable
 import WhiskyKit
 
 @main
-struct Whisky: ParsableCommand {
+struct Whisky: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "A CLI interface for Whisky.",
         subcommands: [List.self,
@@ -160,14 +160,14 @@ extension Whisky {
         }
     }
 
-    struct Run: ParsableCommand {
+    struct Run: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Run a program with Whisky.")
 
         @Argument var bottleName: String
         @Argument var path: String
         @Argument var args: [String] = []
 
-        mutating func run() throws {
+        mutating func run() async throws {
             var bottlesList = BottleData()
             let bottles = bottlesList.loadBottles()
 
@@ -176,7 +176,7 @@ extension Whisky {
             }
 
             // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
-            Steam.installWebhelperWrapper(in: bottle)
+            await Wine.configureSteam(bottle: bottle)
 
             let url = URL(fileURLWithPath: path)
             let program = Program(url: url, bottle: bottle)
@@ -184,7 +184,7 @@ extension Whisky {
         }
     }
 
-    struct SteamFix: ParsableCommand {
+    struct SteamFix: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "steam-fix",
             abstract: "Install the Steam webhelper wrapper into a bottle (fixes the black Steam window)."
@@ -192,7 +192,7 @@ extension Whisky {
 
         @Argument var bottleName: String
 
-        mutating func run() throws {
+        mutating func run() async throws {
             var bottlesList = BottleData()
             let bottles = bottlesList.loadBottles()
 
@@ -200,7 +200,7 @@ extension Whisky {
                 throw ValidationError("A bottle with that name doesn't exist.")
             }
 
-            Steam.installWebhelperWrapper(in: bottle)
+            await Wine.configureSteam(bottle: bottle)
             print("Steam webhelper wrapper installed for bottle \"\(bottleName)\".")
         }
     }

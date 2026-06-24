@@ -99,6 +99,10 @@ struct ConfigView: View {
                         )
                     }
                 }
+                Toggle(isOn: $bottle.settings.followSystemProxy) {
+                    Text("config.followSystemProxy")
+                    Text("config.followSystemProxy.info")
+                }
                 if #available(macOS 15, *) {
                     Toggle(isOn: $bottle.settings.avxEnabled) {
                         VStack(alignment: .leading) {

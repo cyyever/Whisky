@@ -108,7 +108,7 @@ public class Wine {
         }
 
         // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
-        Steam.installWebhelperWrapper(in: bottle)
+        await configureSteam(bottle: bottle)
 
         for await _ in try Self.runWineProcess(
             name: url.lastPathComponent,
@@ -300,6 +300,17 @@ extension Wine {
         case currentVersion = #"HKLM\Software\Microsoft\Windows NT\CurrentVersion"#
         case macDriver = #"HKCU\Software\Wine\Mac Driver"#
         case desktop = #"HKCU\Control Panel\Desktop"#
+    }
+
+    /// Install the Steam webhelper wrapper and, when Steam is present, attach it
+    /// via the image's IFEO "Debugger" value. Keeping `steamwebhelper.exe`
+    /// untouched lets it pass Steam's startup verification. Safe to call always.
+    public static func configureSteam(bottle: Bottle) async {
+        guard Steam.installWebhelperWrapper(in: bottle) else { return }
+        try? await addRegistryKey(
+            bottle: bottle, key: Steam.ifeoDebuggerKey,
+            name: "Debugger", data: Steam.ifeoDebuggerValue, type: .string
+        )
     }
 
     private static func addRegistryKey(
