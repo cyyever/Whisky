@@ -97,7 +97,7 @@ int main(int argc, char *argv[]) {
 
     // Wait for it to exit and return its exit code
     WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exitCode;
+    DWORD exitCode = 1;
     GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
