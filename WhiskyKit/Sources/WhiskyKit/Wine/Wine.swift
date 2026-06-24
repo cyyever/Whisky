@@ -230,7 +230,7 @@ public class Wine {
             .appending(path: "Wine").appending(path: "lib").path
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
-            "WINEDEBUG": "-fixme+err+warn",
+            "WINEDEBUG": "-all",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
             "GST_DEBUG": "1",
             // Keep DEP on for legacy 32-bit images so Wine doesn't force PROT_EXEC
@@ -252,7 +252,7 @@ public class Wine {
             .appending(path: "Wine").appending(path: "lib").path
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
-            "WINEDEBUG": "-fixme+err+warn",
+            "WINEDEBUG": "-all",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
             "GST_DEBUG": "1"
         ]
