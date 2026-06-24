@@ -20,13 +20,10 @@ import SwiftUI
 
 enum SetupStage {
     case rosetta
-    case whiskyWineDownload
-    case whiskyWineInstall
 }
 
 struct SetupView: View {
     @State private var path: [SetupStage] = []
-    @State private var tarLocation = URL(fileURLWithPath: "")
     @Binding var showSetup: Bool
     var firstTime: Bool = true
 
@@ -39,10 +36,6 @@ struct SetupView: View {
                         switch stage {
                         case .rosetta:
                             RosettaView(path: $path, showSetup: $showSetup)
-                        case .whiskyWineDownload:
-                            WhiskyWineDownloadView(tarLocation: $tarLocation, path: $path)
-                        case .whiskyWineInstall:
-                            WhiskyWineInstallView(tarLocation: $tarLocation, path: $path, showSetup: $showSetup)
                         }
                     }
             }

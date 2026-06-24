@@ -20,9 +20,7 @@ import SwiftUI
 import WhiskyKit
 
 struct SettingsView: View {
-    @AppStorage("SUEnableAutomaticChecks") var whiskyUpdate = true
     @AppStorage("killOnTerminate") var killOnTerminate = true
-    @AppStorage("checkWhiskyWineUpdates") var checkWhiskyWineUpdates = true
     @AppStorage("defaultBottleLocation") var defaultBottleLocation = BottleData.defaultBottleDir
 
     var body: some View {
@@ -46,10 +44,6 @@ struct SettingsView: View {
                         }
                     }
                 }
-            }
-            Section("settings.updates") {
-                Toggle("settings.toggle.whisky.updates", isOn: $whiskyUpdate)
-                Toggle("settings.toggle.whiskywine.updates", isOn: $checkWhiskyWineUpdates)
             }
         }
         .formStyle(.grouped)
