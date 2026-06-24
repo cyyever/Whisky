@@ -30,7 +30,6 @@ struct BottleView: View {
     @ObservedObject var bottle: Bottle
     @State private var path = NavigationPath()
     @State private var programLoading: Bool = false
-    @State private var showWinetricksSheet: Bool = false
 
     private let gridLayout = [GridItem(.adaptive(minimum: 100, maximum: .infinity))]
 
@@ -68,9 +67,6 @@ struct BottleView: View {
                     }
                     Button("button.terminal") {
                         bottle.openTerminal()
-                    }
-                    Button("button.winetricks") {
-                        showWinetricksSheet.toggle()
                     }
                     Button("button.run") {
                         let panel = NSOpenPanel()
@@ -119,9 +115,6 @@ struct BottleView: View {
             }
             .disabled(!bottle.isAvailable)
             .navigationTitle(bottle.settings.name)
-            .sheet(isPresented: $showWinetricksSheet) {
-                WinetricksView(bottle: bottle)
-            }
             .onChange(of: bottle.settings) { oldValue, newValue in
                 guard oldValue != newValue else { return }
                 // Trigger a reload

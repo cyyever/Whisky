@@ -21,7 +21,6 @@ import WhiskyKit
 
 struct WelcomeView: View {
     @State private var rosettaInstalled: Bool?
-    @State private var whiskyWineInstalled: Bool?
     @State private var shouldCheckInstallStatus: Bool = false
     @Binding var path: [SetupStage]
     @Binding var showSetup: Bool
@@ -52,10 +51,6 @@ struct WelcomeView: View {
                 InstallStatusView(isInstalled: $rosettaInstalled,
                                   shouldCheckInstallStatus: $shouldCheckInstallStatus,
                                   name: "Rosetta")
-                InstallStatusView(isInstalled: $whiskyWineInstalled,
-                                  shouldCheckInstallStatus: $shouldCheckInstallStatus,
-                                  showUninstall: true,
-                                  name: "WhiskyWine")
             }
             .formStyle(.grouped)
             .scrollDisabled(true)
@@ -67,23 +62,17 @@ struct WelcomeView: View {
             }
             Spacer()
             HStack {
-                if let rosettaInstalled,
-                   let whiskyWineInstalled {
-                    if !rosettaInstalled || !whiskyWineInstalled {
+                if let rosettaInstalled {
+                    if !rosettaInstalled {
                         Button("setup.quit") {
                             exit(0)
                         }
                         .keyboardShortcut(.cancelAction)
                     }
                     Spacer()
-                    Button(rosettaInstalled && whiskyWineInstalled ? "setup.done" : "setup.next") {
+                    Button(rosettaInstalled ? "setup.done" : "setup.next") {
                         if !rosettaInstalled {
                             path.append(.rosetta)
-                            return
-                        }
-
-                        if !whiskyWineInstalled {
-                            path.append(.whiskyWineDownload)
                             return
                         }
 
@@ -98,14 +87,12 @@ struct WelcomeView: View {
 
     func checkInstallStatus() {
         rosettaInstalled = Rosetta2.isRosettaInstalled
-        whiskyWineInstalled = WhiskyWineInstaller.isWhiskyWineInstalled()
     }
 }
 
 struct InstallStatusView: View {
     @Binding var isInstalled: Bool?
     @Binding var shouldCheckInstallStatus: Bool
-    @State var showUninstall: Bool = false // swiftlint:disable:this private_swiftui_state
     @State var name: String // swiftlint:disable:this private_swiftui_state
     @State private var text = String(localized: "setup.install.checking")
 
@@ -123,13 +110,6 @@ struct InstallStatusView: View {
             .frame(width: 10)
             Text(String.init(format: text, name))
             Spacer()
-            if let installed = isInstalled {
-                if installed && showUninstall {
-                    Button("setup.uninstall") {
-                        uninstall()
-                    }
-                }
-            }
         }
         .onChange(of: isInstalled) {
             if let installed = isInstalled {
@@ -142,13 +122,5 @@ struct InstallStatusView: View {
                 text = String(localized: "setup.install.checking")
             }
         }
-    }
-
-    func uninstall() {
-        if name == "WhiskyWine" {
-            WhiskyWineInstaller.uninstall()
-        }
-
-        shouldCheckInstallStatus.toggle()
     }
 }
