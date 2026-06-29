@@ -1,0 +1,21 @@
+diff --git a/src/dxvk/dxvk_context.cpp b/src/dxvk/dxvk_context.cpp
+index c84cf342..2d70c835 100644
+--- a/src/dxvk/dxvk_context.cpp
++++ b/src/dxvk/dxvk_context.cpp
+@@ -7745,9 +7749,13 @@ namespace dxvk {
+ 
+         m_cmd->track(m_state.vi.vertexBuffers[binding].buffer(), DxvkAccess::Read);
+       } else {
+-        buffers[i] = VK_NULL_HANDLE;
+-        offsets[i] = 0;
+-        lengths[i] = 0;
++        /* MoltenVK has no nullDescriptor: binding an unbound vertex stream as
++           VK_NULL_HANDLE makes Metal fail "missing buffer binding" and lose the
++           device. Bind the zero-filled dummy buffer (stride 0) instead. */
++        auto dummy = m_common->dummyResources().bufferInfo();
++        buffers[i] = dummy.buffer;
++        offsets[i] = dummy.offset;
++        lengths[i] = dummy.size;
+         strides[i] = 0;
+       }
+     }
