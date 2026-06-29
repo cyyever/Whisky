@@ -1,0 +1,17 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm b/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm
+index dec4b45..bc39f1c 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm
+@@ -492,6 +492,12 @@ id<MTLCommandBuffer> MVKQueueCommandBufferSubmission::getActiveMTLCommandBuffer(
+ 			// Metal will be very unhappy if we destroy something we bound, even if it isn't used at runtime.
+ 			needsRetain = true;
+ 		}
++		if (_device->hasResidencySet()) {
++			// A residency set guarantees residency, not lifetime: without retained references a resource the
++			// app destroys is freed (in detachMemory) while this completed-but-not-yet-released command buffer
++			// still references it, which Metal rejects. Retain so bound resources outlive the command buffer.
++			needsRetain = true;
++		}
+ 		setActiveMTLCommandBuffer(_queue->getMTLCommandBuffer(_commandUse, needsRetain));
+ 	}
+ 	return _activeMTLCommandBuffer;
