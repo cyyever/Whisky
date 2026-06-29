@@ -4,3 +4,6 @@
 [submodule "vendor/dxmt"]
 	path = vendor/dxmt
 	url = https://github.com/3Shain/dxmt.git
+[submodule "vendor/dxvk"]
+	path = vendor/dxvk
+	url = https://github.com/doitsujin/dxvk.git
