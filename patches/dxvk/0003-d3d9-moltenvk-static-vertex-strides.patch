@@ -1,0 +1,17 @@
+diff --git a/src/dxvk/dxvk_context.cpp b/src/dxvk/dxvk_context.cpp
+index c84cf342..7b30ddd6 100644
+--- a/src/dxvk/dxvk_context.cpp
++++ b/src/dxvk/dxvk_context.cpp
+@@ -7717,7 +7717,11 @@ namespace dxvk {
+     std::array<VkDeviceSize, MaxNumVertexBindings> strides;
+     
+     bool oldDynamicStrides = m_flags.test(DxvkContextFlag::GpDynamicVertexStrides);
+-    bool newDynamicStrides = true;
++    /* MoltenVK/Metal validates dynamic vertex-buffer strides strictly
++       (setVertexBufferOffset:attributeStride:) and loses the device on D3D9
++       vertex buffers, which have no VK_EXT_robustness2 to bound them. Force
++       static strides so the real stride is baked into the pipeline instead. */
++    bool newDynamicStrides = false;
+ 
+     // Set buffer handles and offsets for active bindings
+     for (uint32_t i = 0; i < m_state.gp.state.il.bindingCount(); i++) {
