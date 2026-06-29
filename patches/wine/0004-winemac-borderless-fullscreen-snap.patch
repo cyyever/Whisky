@@ -1,0 +1,33 @@
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 6b0ab117cd1..a11cdcd08ea 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -2009,6 +2009,28 @@ - (void) setFrameFromWine:(NSRect)contentRect
+            (left, bottom) in a bottom-up space. */
+         [[WineApplicationController sharedController] flipRect:&contentRect];
+ 
++        /* A borderless window sized exactly to a display is a fullscreen game
++           window (e.g. Unity's -popupwindow).  Some apps position it at the
++           work area (below the menu bar) instead of the display origin, which
++           leaves the menu bar visible and clips the bottom.  Snap it to cover
++           the display; the frame-changed event generated at the end of this
++           method syncs the new origin back to the Win32 side, so input mapping
++           stays correct. */
++        if (!([self styleMask] & NSWindowStyleMaskTitled) && !NSIsEmptyRect(contentRect))
++        {
++            for (NSScreen* snapScreen in [NSScreen screens])
++            {
++                NSRect sf = [snapScreen frame];
++                if (fabs(contentRect.size.width - sf.size.width) < 1.0 &&
++                    fabs(contentRect.size.height - sf.size.height) < 1.0 &&
++                    !NSEqualPoints(contentRect.origin, sf.origin))
++                {
++                    contentRect.origin = sf.origin;
++                    break;
++                }
++            }
++        }
++
+         /* The back end is establishing a new window size and position.  It's
+            not interested in any stale events regarding those that may be sitting
+            in the queue. */

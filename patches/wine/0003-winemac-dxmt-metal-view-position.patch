@@ -1,0 +1,87 @@
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index b3ef6f73e9b..ba72f95f0e9 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1265,6 +1265,14 @@ LRESULT macdrv_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+ /***********************************************************************
+  *              DestroyWindow   (MACDRV.@)
+  */
++/* ===== DXMT compatibility shim (see bottom of file) =====
++ * The on-demand client view we attach for DXMT's Metal swapchain. DXMT only
++ * calls get_win_data() once (at swapchain creation), and the view is not a
++ * registered client surface, so nothing repositions it on resize. Track it
++ * here so macdrv_WindowPosChanged() can keep its frame in sync. */
++static HWND        dxmt_view_hwnd;
++static macdrv_view dxmt_view;
++
+ void macdrv_DestroyWindow(HWND hwnd)
+ {
+     struct macdrv_win_data *data;
+@@ -1276,6 +1284,8 @@ void macdrv_DestroyWindow(HWND hwnd)
+     if (hwnd == get_capture()) macdrv_SetCapture(0, 0);
+     if (data->drag_event) NtSetEvent(data->drag_event, NULL);
+ 
++    if (dxmt_view_hwnd == hwnd) { dxmt_view = NULL; dxmt_view_hwnd = NULL; }
++
+     destroy_cocoa_window(data);
+ 
+     CFDictionaryRemoveValue(win_datas, hwnd);
+@@ -1637,6 +1647,25 @@ BOOL macdrv_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *styl
+ }
+ 
+ 
++/* Position the DXMT client view over hwnd's client area, mirroring
++ * macdrv_client_surface_update(). Assumes the swapchain hwnd is its own
++ * toplevel (true for the game windows DXMT renders into). */
++static void dxmt_sync_view_position(HWND hwnd, struct macdrv_win_data *data)
++{
++    HWND toplevel;
++    RECT rect;
++
++    if (!dxmt_view || dxmt_view_hwnd != hwnd || data->client_view != dxmt_view) return;
++
++    toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
++    NtUserGetClientRect(hwnd, &rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
++    NtUserMapWindowPoints(hwnd, toplevel, (POINT *)&rect, 2, NtUserGetWinMonitorDpi(toplevel, MDT_RAW_DPI));
++    OffsetRect(&rect, data->rects.client.left - data->rects.visible.left,
++                      data->rects.client.top - data->rects.visible.top);
++    macdrv_set_view_frame(dxmt_view, cgrect_from_rect(rect));
++}
++
++
+ /***********************************************************************
+  *              WindowPosChanged   (MACDRV.@)
+  */
+@@ -1676,6 +1705,8 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
+         sync_window_position(data, swp_flags, &old_rects);
+         if (data->cocoa_window)
+             set_cocoa_window_properties(data);
++        /* keep DXMT's Metal client view glued to the (possibly resized) client area */
++        dxmt_sync_view_position(hwnd, data);
+     }
+ 
+     if (new_style & WS_VISIBLE)
+@@ -2243,16 +2274,20 @@ static struct dxmt_win_data *dxmt_get_win_data( HWND hwnd )
+      * one to already exist. Create and attach one to the window on demand. */
+     if (!data->client_view && data->cocoa_window)
+     {
+-        RECT rect;
+         macdrv_view view;
+-        NtUserGetClientRect( hwnd, &rect, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
+-        if ((view = macdrv_create_view( cgrect_from_rect( rect ) )))
++        if ((view = macdrv_create_view( CGRectNull )))
+         {
+             macdrv_set_view_superview( view, NULL, data->cocoa_window, NULL, NULL );
+             macdrv_set_view_hidden( view, FALSE );
+             data->client_view = view;
++            dxmt_view = view;
++            dxmt_view_hwnd = hwnd;
+         }
+     }
++    /* macdrv_create_view() makes a non-resizable view and DXMT only queries us
++     * once, so position it here over the current client area (with the
++     * non-client offset) and rely on macdrv_WindowPosChanged() for resizes. */
++    dxmt_sync_view_position( hwnd, data );
+     dxmt_wd.hwnd = hwnd;
+     dxmt_wd.cocoa_window = data->cocoa_window;
+     dxmt_wd.cocoa_view = data->client_view;

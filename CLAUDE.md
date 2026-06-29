@@ -23,7 +23,11 @@ make run             # build app and launch
 
 ## Key paths
 - Wine submodule: `vendor/wine` (branch `dxmt-fixes-11.11`: wine-11.11 + rundll32 WS_VISIBLE fix + winemac macdrv export for DXMT)
-- Wine patches: `patches/wine/*.patch` — out-of-tree, applied by `build-wine-x86.sh` so the submodule stays clean (currently: kernelbase IFEO `Debugger` support for the Steam wrapper)
+- Wine patches: `patches/wine/*.patch` — out-of-tree, applied by `build-wine-x86.sh` so the submodule stays clean:
+  - `0001` kernelbase IFEO `Debugger` support (for the Steam wrapper)
+  - `0002` `WINE_NX_COMPAT` env var (keeps DEP on for legacy images → fixes DXMT/Metal Tahoe slowness)
+  - `0003` winemac DXMT Metal client-view positioning + resize re-sync
+  - `0004` winemac borderless fullscreen window snap-to-display-origin (Unity `-popupwindow` Y-offset fix)
 - x86 Homebrew: `vendor/homebrew-x86/` (gitignored)
 - Build scripts: `scripts/setup-x86-brew.sh`, `scripts/build-wine-x86.sh`, `scripts/build-webhelper-wrapper.sh`
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`
@@ -36,6 +40,13 @@ make run             # build app and launch
 - Use `--enable-archs=i386,x86_64` for WoW64 32-bit support (Steam is 32-bit)
 - Bundle FreeType, MoltenVK dylibs into Wine/lib; add @loader_path/../.. rpath to wine/x86_64-unix/*.so so dlopen finds them
 - D3D11/D3D10/DXGI use DXMT (Metal-native, `make dxmt` installs it as the Wine builtin); wined3d remains the fallback. DXMT's earlier Steam-CEF conflict (ANGLE SwapChain11) is moot now that the webhelper wrapper forces CEF to `--disable-gpu` software rendering.
+- Debugging: winemac's WINEDEBUG channel is **`macdrv`** (not `winemac`). DXMT's PE dlls (`d3d11/dxgi/d3d10core/winemetal.dll`) are loaded as **builtins from the Wine lib** (`Wine/lib/wine/x86_64-windows/`) under `=b`, NOT from the bottle's `system32` — patch the Wine-lib copy when swapping a DXMT build. Rosetta caches an AOT translation (`/private/var/db/oah/.../*.so.aot`) keyed by binary hash, so a rebuilt dll is re-translated automatically.
+
+## Unity fullscreen / "empty top bar" (空栏) finding — Steam D3D11 games
+- Symptom: a Unity game (D3D11 → DXMT) set to **fullscreen** (FullScreenWindow/borderless mode 1 *or* ExclusiveFullScreen mode 0) shows a ~32px macOS **title bar at the top** ("空栏"), sits at the menu-bar Y offset, and overflows the bottom.
+- **Root cause is NOT DXMT.** The DXGI swapchain is windowed (`Windowed=1`); window styling is pure Win32. winemac correctly builds the borderless fullscreen window, then **Unity's own player reverts it** — `SetWindowLong` re-adds `WS_CAPTION` right after `WM_ACTIVATEAPP`, a fallback when its fullscreen "handshake" doesn't match a native Windows WM. Not cleanly fixable in winemac (Unity is closed-source; just suppressing the caption leaves Wine's caption geometry → a blank gap).
+- **Fix/workaround**: set the game's **Steam Launch Options** to `-popupwindow -screen-fullscreen 0` → Unity makes a genuinely borderless `WS_POPUP` window (no caption, no revert). Stored per-game in `…/Steam/userdata/<id>/config/localconfig.vdf` (`LaunchOptions`; edit with Steam closed). Caveat: overrides the in-game display setting (always borderless).
+- Patches `0003`/`0004` (above) make the borderless fullscreen window land edge-to-edge at the display origin (no title bar, no menu-bar offset, no overflow). Verify the on-screen window via CoreGraphics bounds (`CGWindowListCopyWindowInfo`): a clean fullscreen window is `0,0 — 1280×832` (logical), a reverted one is `…×864` (832 + 32 caption).
 
 ## Steam notes
 - **Black-window fix**: Steam's CEF host (`steamwebhelper.exe`) renders a black window under Wine — its sandbox hooks the NT kernel and its out-of-process GPU can't reset the D3D device (`problems[10]: Some drivers are unable to reset the D3D device in the GPU process sandbox`). Neither wined3d nor DXMT fixes this; Steam's own `--disable-gpu` fallback is insufficient.
