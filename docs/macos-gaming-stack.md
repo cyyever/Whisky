@@ -46,6 +46,35 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of June 2026.
   what lets gamers use D3DMetal legally. D3DMetal stays closed — it can't ship in
   an open-source fork like this one.
 
+## macOS 27+: the Rosetta deprecation question
+
+- WWDC 2025: Rosetta 2 stays **fully functional through macOS 26 and 27**; after
+  that Apple limits it to a **subset for older unmaintained games** (plus some
+  framework uses). So **macOS 28 is the inflection point, not 27** — nothing to do
+  until then.
+- **The binding constraint is the x86→ARM translation of the *game* code, not
+  Wine's architecture.** Even native-ARM Wine must translate the x86 Windows game,
+  and on macOS that translator is Apple Rosetta. Split by what upstream can fix:
+  - ✅ *Upstream can* (and likely will, given CodeWeavers' upstream-first model):
+    native-ARM macOS Wine — preloader `__aarch64__`, macdrv ARM, the WoW64 +
+    pluggable x86-emulator interface. Whisky gets this for free by tracking
+    upstream, and it needs **no** D3DMetal (uses open DXMT/DXVK), so that closed
+    piece is irrelevant here.
+  - ❌ *Upstream can't*: the game-code translation backend. On macOS that is Apple
+    Rosetta (the in-process hookup CrossOver uses is Apple-private, historically
+    not upstreamed) or the open **FEX-Emu** (mature on Linux-ARM, immature/unproven
+    on macOS). Neither is a Wine-upstream deliverable.
+- **So "if CrossOver upstreams it, we're fine" holds only for the Wine side.**
+  Surviving macOS 28 hinges on Apple keeping Rosetta usable for this workload
+  (likely — it's exactly the "older x86 game" case Apple is preserving — but
+  unconfirmed: the carve-out may be per-recognized-game, and a generic x86_64 Wine
+  process might not qualify), or on FEX-on-macOS maturing. The bottleneck is Apple,
+  not Wine.
+- **Plan:** nothing through macOS 27; when macOS 28 betas land, test whether the
+  x86_64 Wine still translates. If it breaks, the only open path is FEX-Emu on
+  macOS (large effort) — otherwise keep the host on macOS 27, or follow CrossOver
+  (Apple-licensed, adapts first).
+
 ## Performance: it's GPU-bound, not Wine
 
 Measured while running a Unity D3D11 game (阎罗索命/HellTakesYourLife, 64-bit):
