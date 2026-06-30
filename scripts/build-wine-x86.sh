@@ -40,14 +40,18 @@ if [ ! -f "$X86_BREW" ]; then
 fi
 
 X86_PREFIX=$(arch -x86_64 "$X86_BREW" --prefix)
-X86_BISON="$X86_PREFIX/opt/bison/bin"
+# Build tools (bison, the mingw-w64 cross-compiler, pkg-config) come from the ARM64
+# brew — they are arch-independent / target PE, so no x86_64 copies are needed. Only
+# the libraries linked into x86_64 Wine (freetype, gnutls, sdl2, gettext/libintl,
+# MoltenVK) must be x86_64, and those are picked up via PKG_CONFIG_PATH below.
 
 # Incremental by default; run `make clean-wine` for a clean rebuild.
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
 ARM_BREW_PREFIX="$(brew --prefix)"
-CLEAN_PATH="$X86_BISON:$X86_PREFIX/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# bison is keg-only (macOS ships an old one), so its keg bin must be on PATH explicitly.
+CLEAN_PATH="$ARM_BREW_PREFIX/opt/bison/bin:$ARM_BREW_PREFIX/bin:$X86_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # Use ccache if available
 CC_CMD="gcc"
@@ -64,7 +68,7 @@ arch -x86_64 env -i \
     PATH="$CLEAN_PATH" \
     CC="$CC_CMD" \
     CXX="$CXX_CMD" \
-    PKG_CONFIG="$X86_PREFIX/bin/pkg-config" \
+    PKG_CONFIG="$ARM_BREW_PREFIX/bin/pkg-config" \
     PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \
     PKG_CONFIG_LIBDIR="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \
     SDL2_CFLAGS="-I$X86_PREFIX/include/SDL2 -D_THREAD_SAFE" \
