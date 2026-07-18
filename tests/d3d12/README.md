@@ -14,18 +14,18 @@ after bumping `vendor/mesa` (KosmicKrisp) to see whether a wall has lifted.
 
 `d3d12_triangle` renders **black** (the draw produces no fragments), while a
 red *clear* reads back red — so clear / RT / copy / readback all work; only
-`DrawInstanced` rasterization output fails. This matches vkd3d-proton's runtime
-warning:
+`DrawInstanced` rasterization output fails.
 
-```
-VK_EXT_dynamic_rendering_unused_attachments not supported.
-The functionality in this EXT is required for correct operation.
-```
-
-vkd3d-proton renders D3D12 via Vulkan dynamic rendering; without that EXT the
-color-attachment binding is wrong and fragments aren't written. Lifting this is
-a **KosmicKrisp/Mesa** change, not something vkd3d-proton can relax. Beyond it
-lie the Metal-hardware gaps (transform feedback, geometry shaders).
+**Cause is not yet identified.** vkd3d-proton warns at init that
+`VK_EXT_dynamic_rendering_unused_attachments` is missing ("required for correct
+operation"), but that is almost certainly *not* this bug: the probe uses a
+single render target whose format matches the pipeline exactly, so there is no
+unused/mismatched attachment — vkd3d sets `colorAttachmentCount = 1` and
+KosmicKrisp already implements `VK_KHR_dynamic_rendering`. The black draw is
+therefore a different KosmicKrisp graphics-path issue (render encoding /
+rasterization / fragment output) that still needs diagnosing (Metal API
+Validation, checking the draw reaches Metal, etc.). Beyond it lie the
+Metal-hardware gaps (transform feedback, geometry shaders).
 
 Device creation itself needs two vkd3d-proton gates made non-fatal —
 `patches/vkd3d-proton/0001-optional-features-kosmickrisp.patch`.
