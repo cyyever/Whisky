@@ -98,3 +98,6 @@ vendor/ffmpeg-x86/
 vendor/kosmickrisp/
 vendor/vkd3d-proton/
 tests/d3d12/.build/
+# vkd3d-proton pipeline cache dropped in cwd when running D3D12 probes
+vkd3d-proton.cache
+vkd3d-proton.cache.write

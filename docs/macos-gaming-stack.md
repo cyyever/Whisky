@@ -10,7 +10,7 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
 | **DXMT** (`vendor/dxmt`) | D3D11/D3D10/DXGI → Metal | ✅ | Good — this repo's default D3D11 path |
 | **D3DMetal** (Apple GPTK) | D3D11 **and D3D12** → Metal | ❌ Apple proprietary | Best (covers D3D12); CrossOver-only |
 | **DXVK** | D3D9/10/11 → Vulkan | ✅ | D3D9-only in this repo: works on KosmicKrisp with `patches/dxvk` (optional-feature relaxations); upstream-stock still can't init (hard-requires `geometryShader`, absent on Apple GPUs) |
-| **vkd3d-proton + MoltenVK** | D3D12 → Vulkan → Metal | ✅ | ✗ Incomplete: MoltenVK lacks features vkd3d-proton needs |
+| **vkd3d-proton + KosmicKrisp** | D3D12 → Vulkan → Metal 4 | ✅ | ⚠️ Foothold only: device + compute + basic graphics work (2 `patches/vkd3d-proton` relaxations); real games blocked on Metal-hardware geometry stages (GS/transform-feedback) |
 
 - **DXVK's role here**: DXMT is the default D3D11/D3D10 path; DXVK
   (`vendor/dxvk` + `patches/dxvk`) covers **D3D9 only**, which DXMT does not
@@ -36,9 +36,20 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
   renders correctly with Mesa MR 42811 (present-queue residencySet,
   `patches/mesa/0001`) plus DXVK's `fillModeNonSolid` made optional. See
   CLAUDE.md "Vulkan backend: KosmicKrisp".
-- **D3D12 (e.g. Black Myth: Wukong, UE5):** no open-source path works well.
-  DXMT is D3D11-only (no `d3d12` in its source tree). Only Apple's closed
-  D3DMetal handles D3D12 on Mac, and only via CrossOver.
+- **D3D12 (e.g. Black Myth: Wukong, UE5):** DXMT is D3D11-only (no `d3d12` in
+  its source tree). Apple's closed **D3DMetal** (CrossOver-only) is still the
+  only *shipping* D3D12 path on Mac. The **open** path —
+  vkd3d-proton → winevulkan → KosmicKrisp/Metal 4 under Rosetta — now has a
+  **foothold** (verified 2026-07-18): D3D12 device creation, compute
+  (DXBC `cs_5_0` → dispatch → readback), and basic graphics (VS/PS triangle)
+  all work, after two device-init gates are relaxed
+  (`patches/vkd3d-proton/0001`: `transformFeedbackQueries` + single-texel
+  alignment made non-fatal). Probes: `tests/d3d12/` (+ a pure-Vulkan control in
+  `tests/vulkan/`). It is **not** playability: real D3D12 games hit the
+  **Metal-hardware geometry gaps** — no HW geometry shaders or transform
+  feedback (KosmicKrisp emulates these via its compute "poly" pipeline;
+  tessellation landed June 2026, GS still stubbed). Track with
+  `scripts/check-kosmickrisp-progress.sh`.
 
 ## Native ARM64 Wine (Rosetta-free): not viable here yet
 
@@ -131,7 +142,11 @@ menus too → Wine-audio side; only under load → underrun.
 ## Bottom line for this repo
 
 - ✅ **x86 D3D11 games** (Unity/UE4, etc.): fully working today on Wine 11.13 + DXMT.
-- ❌ **D3D12 games** (UE5/Black Myth): not feasible (needs closed D3DMetal).
+- ✅ **x86 D3D9 games**: DXVK → KosmicKrisp/Metal 4 (`patches/dxvk`), verified end-to-end.
+- ⚠️ **D3D12 games** (UE5/Black Myth): open path (vkd3d-proton → KosmicKrisp)
+  reaches device + compute + basic graphics, but not playable — blocked on
+  Metal-hardware geometry stages (GS/transform-feedback). Shipping D3D12 today
+  still needs closed D3DMetal (CrossOver).
 - ❌ **Rosetta-free / native ARM**: blocked on experimental upstream macOS-ARM
   Wine; wouldn't help GPU-bound titles anyway.
 - The practical ceiling for demanding/D3D12 titles on Mac remains **CrossOver
