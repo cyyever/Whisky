@@ -1,0 +1,264 @@
+From fcbde6f3c3691e932579f05d17e54dcaf3dc231a Mon Sep 17 00:00:00 2001
+From: Aitor Camacho <aitor@lunarg.com>
+Date: Thu, 9 Jul 2026 15:50:26 +0900
+Subject: [PATCH 1/3] wsi/metal: Make CAMetalLayer's residencySet resident for
+ presenting queue
+
+Metal4 requires making the residencySet where the drawables live resident
+for the queue that will be rendering to it.
+
+Reviewed-by: squidbus <squidbus@proton.me>
+Signed-off-by: Aitor Camacho <aitor@lunarg.com>
+---
+ src/kosmickrisp/vulkan/kk_wsi.c         | 12 +++++++++++
+ src/vulkan/wsi/wsi_common.h             |  4 ++++
+ src/vulkan/wsi/wsi_common_metal.c       | 12 +++++++++++
+ src/vulkan/wsi/wsi_common_metal_layer.h |  8 ++++++++
+ src/vulkan/wsi/wsi_common_metal_layer.m | 27 +++++++++++++++++++++++++
+ 5 files changed, 63 insertions(+)
+
+diff --git a/src/kosmickrisp/vulkan/kk_wsi.c b/src/kosmickrisp/vulkan/kk_wsi.c
+index 8114dfce5471..9fbb63ea6488 100644
+--- a/src/kosmickrisp/vulkan/kk_wsi.c
++++ b/src/kosmickrisp/vulkan/kk_wsi.c
+@@ -75,6 +75,17 @@ kk_encode_drawable_present(VkCommandBuffer vk_cmd, void *drawable)
+    cmd->drawable = drawable;
+ }
+ 
++static void *
++kk_get_mtl4_command_queue(VkDevice device)
++{
++   VK_FROM_HANDLE(kk_device, dev, device);
++   if (dev->has_queue) {
++      return dev->queue.mtl_handle;
++   }
++
++   return NULL;
++}
++
+ static struct vk_queue *
+ kk_get_blit_queue(VkDevice device)
+ {
+@@ -102,6 +113,7 @@ kk_init_wsi(struct kk_physical_device *pdev)
+ 
+    wsi->metal.bind_drawable_to_vkimage = kk_bind_drawable_to_vkimage;
+    wsi->metal.encode_drawable_present = kk_encode_drawable_present;
++   wsi->metal.get_mtl4_command_queue = kk_get_mtl4_command_queue;
+    wsi->get_blit_queue = kk_get_blit_queue;
+ 
+    pdev->vk.wsi_device = wsi;
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index 1ff9084ddf15..582fb1fee42f 100644
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -148,6 +148,10 @@ struct wsi_device {
+    } win32;
+ 
+    struct {
++      /* Metal4 requires making CAMetalLayer's residencySet resident for the
++       * queue that will render to it. We need a way to query the queue to
++       * make it possible. */
++      void *(*get_mtl4_command_queue)(VkDevice device);
+       VkResult (*bind_drawable_to_vkimage)(VkImage image, void *drawable);
+       /* Does not transfer the ownership to the command buffer. The command
+        * buffer must retain the drawable to ensure lifespan. */
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+index 14654b2b30a9..d0df54274c87 100644
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -680,6 +680,12 @@ wsi_metal_swapchain_destroy(struct wsi_swapchain *wsi_chain,
+    if (chain->base.wsi->sw)
+       wsi_destroy_metal_layer_blit_context(chain->blit_context);
+ 
++   if (chain->base.wsi->metal.get_mtl4_command_queue) {
++      void *mtl4_queue = chain->base.wsi->metal.get_mtl4_command_queue(chain->base.device);
++      if (mtl4_queue)
++         wsi_metal_layer_remove_queue_resident(chain->surface->pLayer, mtl4_queue);
++   }
++
+    wsi_swapchain_finish(&chain->base);
+ 
+    vk_free(pAllocator, chain);
+@@ -752,6 +758,12 @@ wsi_metal_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+    chain->surface = metal_surface;
+    chain->current_image_index = 0;
+ 
++   if (wsi_device->metal.get_mtl4_command_queue) {
++      void *mtl4_queue = wsi_device->metal.get_mtl4_command_queue(chain->base.device);
++      if (mtl4_queue)
++         wsi_metal_layer_make_queue_resident(metal_surface->pLayer, mtl4_queue);
++   }
++
+    uint32_t created_image_count = 0;
+    for (uint32_t i = 0; i < chain->base.image_count; i++) {
+       result = wsi_metal_create_image(chain, &chain->base.image_info,
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.h b/src/vulkan/wsi/wsi_common_metal_layer.h
+index e9473b129c85..c3cafccfe12f 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.h
++++ b/src/vulkan/wsi/wsi_common_metal_layer.h
+@@ -52,4 +52,12 @@ wsi_metal_layer_blit_and_present(struct wsi_metal_layer_blit_context *context,
+    CAMetalDrawable **drawable_ptr, void *buffer,
+    uint32_t width, uint32_t height, uint32_t row_pitch);
+ 
++void
++wsi_metal_layer_make_queue_resident(const CAMetalLayer *metal_layer,
++   void *mtl4_command_queue);
++
++void
++wsi_metal_layer_remove_queue_resident(const CAMetalLayer *metal_layer,
++   void *mtl4_command_queue);
++
+ #endif // WSI_COMMON_METAL_LAYER_H
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+index 67c3e7ff1cb5..39a1e613a210 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -343,3 +343,30 @@ wsi_metal_layer_blit_and_present(struct wsi_metal_layer_blit_context *context,
+       *drawable_ptr = nil;
+    }
+ }
++
++void
++wsi_metal_layer_make_queue_resident(const CAMetalLayer *metal_layer,
++   void *mtl4_command_queue)
++{
++/* Metal4 was introduced in macOS26 */
++#if __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_26_0
++   @autoreleasepool {
++      id<MTL4CommandQueue> queue = (id<MTL4CommandQueue>)mtl4_command_queue;
++      [queue addResidencySet:metal_layer.residencySet];
++      [metal_layer.residencySet requestResidency];
++   }
++#endif
++}
++
++void
++wsi_metal_layer_remove_queue_resident(const CAMetalLayer *metal_layer,
++   void *mtl4_command_queue)
++{
++/* Metal4 was introduced in macOS26 */
++#if __MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_26_0
++   @autoreleasepool {
++      id<MTL4CommandQueue> queue = (id<MTL4CommandQueue>)mtl4_command_queue;
++      [queue removeResidencySet:metal_layer.residencySet];
++   }
++#endif
++}
+-- 
+GitLab
+
+
+From 15226ccd9d68b1108b6b03294adfedca830b1729 Mon Sep 17 00:00:00 2001
+From: Aitor Camacho <aitor@lunarg.com>
+Date: Wed, 15 Jul 2026 22:08:33 +0900
+Subject: [PATCH 2/3] wsi/metal: always force 3 drawables for smoother
+ presentation
+
+Reviewed-by: squidbus <squidbus@proton.me>
+Signed-off-by: Aitor Camacho <aitor@lunarg.com>
+---
+ src/vulkan/wsi/wsi_common_metal_layer.m | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+index 39a1e613a210..3d19a4218494 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -166,7 +166,8 @@ wsi_metal_layer_configure(const CAMetalLayer *metal_layer,
+       /* So we can blit to the drawable */
+       metal_layer.framebufferOnly = NO;
+ 
+-      metal_layer.maximumDrawableCount = image_count;
++      /* Force recommended 3 drawables for smoother presentation */
++      metal_layer.maximumDrawableCount = 3u;
+       metal_layer.drawableSize = (CGSize){.width = width, .height = height};
+       metal_layer.opaque = enable_opaque;
+       metal_layer.displaySyncEnabled = !enable_immediate;
+-- 
+GitLab
+
+
+From 89350abda23628d69ddd17ea32bdc4ab1889e0fa Mon Sep 17 00:00:00 2001
+From: Aitor Camacho <aitor@lunarg.com>
+Date: Thu, 9 Jul 2026 15:52:50 +0900
+Subject: [PATCH 3/3] kk: Wait on drawable availability before rendering to it
+
+Reviewed-by: squidbus <squidbus@proton.me>
+Signed-off-by: Aitor Camacho <aitor@lunarg.com>
+---
+ src/kosmickrisp/bridge/mtl_command_queue.h       |  3 +++
+ src/kosmickrisp/bridge/mtl_command_queue.m       | 10 ++++++++++
+ src/kosmickrisp/bridge/stubs/mtl_command_queue.c |  5 +++++
+ src/kosmickrisp/vulkan/kk_queue.c                |  5 +++++
+ 4 files changed, 23 insertions(+)
+
+diff --git a/src/kosmickrisp/bridge/mtl_command_queue.h b/src/kosmickrisp/bridge/mtl_command_queue.h
+index 2aa6d289d248..a15de287674d 100644
+--- a/src/kosmickrisp/bridge/mtl_command_queue.h
++++ b/src/kosmickrisp/bridge/mtl_command_queue.h
+@@ -36,6 +36,9 @@ void mtl_command_queue_commit(mtl_command_queue *queue,
+                               mtl_command_buffer **command_buffers,
+                               uint32_t count, mtl_commit_options *options);
+ 
++void mtl_command_queue_wait_for_drawable(mtl_command_queue *queue,
++                                         void *drawable);
++
+ void mtl_command_queue_signal_drawable(mtl_command_queue *queue,
+                                        void *drawable);
+ 
+diff --git a/src/kosmickrisp/bridge/mtl_command_queue.m b/src/kosmickrisp/bridge/mtl_command_queue.m
+index 4f7cb9fbc7b3..f1d55d5861ff 100644
+--- a/src/kosmickrisp/bridge/mtl_command_queue.m
++++ b/src/kosmickrisp/bridge/mtl_command_queue.m
+@@ -130,6 +130,16 @@ mtl_command_queue_commit(mtl_command_queue *queue,
+    }
+ }
+ 
++void
++mtl_command_queue_wait_for_drawable(mtl_command_queue *queue, void *drawable)
++{
++   @autoreleasepool {
++      id<MTL4CommandQueue> q = (id<MTL4CommandQueue>)queue;
++      id<MTLDrawable> d = (id<MTLDrawable>)drawable;
++      [q waitForDrawable:d];
++   }
++}
++
+ void
+ mtl_command_queue_signal_drawable(mtl_command_queue *queue, void *drawable)
+ {
+diff --git a/src/kosmickrisp/bridge/stubs/mtl_command_queue.c b/src/kosmickrisp/bridge/stubs/mtl_command_queue.c
+index eaa30dacd9fd..0d9e2403e7e7 100644
+--- a/src/kosmickrisp/bridge/stubs/mtl_command_queue.c
++++ b/src/kosmickrisp/bridge/stubs/mtl_command_queue.c
+@@ -56,6 +56,11 @@ mtl_command_queue_commit(mtl_command_queue *queue,
+ {
+ }
+ 
++void
++mtl_command_queue_wait_for_drawable(mtl_command_queue *queue, void *drawable)
++{
++}
++
+ void
+ mtl_command_queue_signal_drawable(mtl_command_queue *queue, void *drawable)
+ {
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index 313a85af8a08..12341e2b444b 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -81,6 +81,11 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+       uint32_t count = util_dynarray_num_elements(&cmd_buffer->submit_cmd_bufs,
+                                                   mtl_command_buffer *);
+ 
++      if (cmd_buffer->drawable) {
++         mtl_command_queue_wait_for_drawable(queue->mtl_handle,
++                                             cmd_buffer->drawable);
++      }
++
+       /* Metal complains with empty submissions. */
+       if (count > 0u) {
+          mtl_commit_options_add_feedback_handler(queue->commit_options,
+-- 
+GitLab
+

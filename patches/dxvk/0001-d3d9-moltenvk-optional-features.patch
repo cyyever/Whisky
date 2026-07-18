@@ -1,9 +1,13 @@
 diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
-index 349ab3e5..73424987 100644
+index 349ab3e5..971a4715 100644
 --- a/src/dxvk/dxvk_device_info.cpp
 +++ b/src/dxvk/dxvk_device_info.cpp
-@@ -815,7 +815,7 @@ namespace dxvk {
-       ENABLE_FEATURE(core.features, fillModeNonSolid, true),
+@@ -812,10 +812,10 @@ namespace dxvk {
+       ENABLE_FEATURE(core.features, depthClamp, true),
+       ENABLE_FEATURE(core.features, drawIndirectFirstInstance, false),
+       ENABLE_FEATURE(core.features, dualSrcBlend, true),
+-      ENABLE_FEATURE(core.features, fillModeNonSolid, true),
++      ENABLE_FEATURE(core.features, fillModeNonSolid, false),
        ENABLE_FEATURE(core.features, fragmentStoresAndAtomics, true),
        ENABLE_FEATURE(core.features, fullDrawIndexUint32, true),
 -      ENABLE_FEATURE(core.features, geometryShader, true),

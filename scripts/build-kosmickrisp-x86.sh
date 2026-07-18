@@ -23,6 +23,25 @@ ARM_BREW_PREFIX="$(brew --prefix)"
 # off PATH). llvm is keg-only; phase 1 (mesa_clc) needs its llvm-config.
 export PATH="$ARM_BREW_PREFIX/opt/llvm/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+# Apply out-of-tree Mesa patches (same idempotent pattern as build-wine-x86.sh).
+# 0001 = Mesa MR 42811 (present-queue residencySet) — without it every frame
+# presents black under Metal 4; drop once merged upstream.
+PATCH_DIR="$PROJECT_DIR/patches/mesa"
+if [ -d "$PATCH_DIR" ]; then
+    for patch in "$PATCH_DIR"/*.patch; do
+        [ -e "$patch" ] || continue
+        if git -C "$MESA_SRC" apply --reverse --check "$patch" >/dev/null 2>&1; then
+            echo "=== Mesa patch already applied: $(basename "$patch") ==="
+        elif git -C "$MESA_SRC" apply --check "$patch" >/dev/null 2>&1; then
+            echo "=== Applying Mesa patch: $(basename "$patch") ==="
+            git -C "$MESA_SRC" apply "$patch"
+        else
+            echo "ERROR: cannot apply $(basename "$patch")"
+            exit 1
+        fi
+    done
+fi
+
 TOOLS_BUILD="$MESA_SRC/build-arm64-tools"
 TOOLS_BIN="$TOOLS_BUILD/staged-bin"
 if [ ! -x "$TOOLS_BIN/mesa_clc" ]; then

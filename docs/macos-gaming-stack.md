@@ -29,9 +29,12 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
   references), but **Mesa main's MTL4 rework also verified under Rosetta**
   (26.3.0-devel via `scripts/build-kosmickrisp-x86.sh` + `vendor/mesa`:
   Vulkan 1.4.354, MTL4 command queue/compiler in the binary, same GPU-submit
-  test passes) — so Metal 4 API is usable from Rosetta processes. Wiring it
-  into Wine would mean pointing winevulkan at `libvulkan_kosmickrisp.dylib`
-  instead of MoltenVK (untested).
+  test passes) — so Metal 4 API is usable from Rosetta processes. Wine wiring
+  verified with a real game (Witch on the Holy Night, 64-bit D3D9 → DXVK →
+  winevulkan → x86 Vulkan loader in place of libMoltenVK.dylib → KosmicKrisp):
+  renders correctly with Mesa MR 42811 (present-queue residencySet,
+  `patches/mesa/0001`) plus DXVK's `fillModeNonSolid` made optional. See
+  CLAUDE.md "Vulkan backend: KosmicKrisp".
 - **D3D12 (e.g. Black Myth: Wukong, UE5):** no open-source path works well.
   DXMT is D3D11-only (no `d3d12` in its source tree). Only Apple's closed
   D3DMetal handles D3D12 on Mac, and only via CrossOver.
