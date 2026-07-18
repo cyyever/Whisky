@@ -170,14 +170,6 @@ extension Bottle {
         }
     }
 
-    func exportAsArchive(destination: URL) {
-        do {
-            try Tar.tar(folder: url, toURL: destination)
-        } catch {
-            print("Failed to export bottle")
-        }
-    }
-
     @MainActor
     func remove(delete: Bool) {
         do {

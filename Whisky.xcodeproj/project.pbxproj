@@ -983,7 +983,7 @@
 		};
 		EB58FB532A499896002DC184 /* XCRemoteSwiftPackageReference "SemanticVersion" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/SwiftPackageIndex/SemanticVersion";
+			repositoryURL = "git@github.com:SwiftPackageIndex/SemanticVersion.git";
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 0.4.0;

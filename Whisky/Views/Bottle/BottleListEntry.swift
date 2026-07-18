@@ -17,7 +17,6 @@
 //
 
 import SwiftUI
-import UniformTypeIdentifiers
 import WhiskyKit
 
 struct BottleListEntry: View {
@@ -65,25 +64,6 @@ struct BottleListEntry: View {
 
                                 bottle.move(destination: newBottePath)
                                 selected = newBottePath
-                            }
-                        }
-                    }
-                }
-                .disabled(!bottle.isAvailable)
-                .labelStyle(.titleAndIcon)
-                Button("button.exportBottle", systemImage: "arrowshape.turn.up.right") {
-                    let panel = NSSavePanel()
-                    panel.canCreateDirectories = true
-                    panel.allowedContentTypes = [UTType.gzip]
-                    panel.allowsOtherFileTypes = false
-                    panel.isExtensionHidden = false
-                    panel.nameFieldStringValue = bottle.settings.name + ".tar"
-                    panel.begin { result in
-                        if result == .OK {
-                            if let url = panel.url {
-                                Task.detached(priority: .background) {
-                                    bottle.exportAsArchive(destination: url)
-                                }
                             }
                         }
                     }
