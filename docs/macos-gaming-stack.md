@@ -9,11 +9,12 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
 |-------|-------------------|--------------|-------------------------|
 | **DXMT** (`vendor/dxmt`) | D3D11/D3D10/DXGI → Metal | ✅ | Good — this repo's default D3D11 path |
 | **D3DMetal** (Apple GPTK) | D3D11 **and D3D12** → Metal | ❌ Apple proprietary | Best (covers D3D12); CrossOver-only |
-| **DXVK** | D3D9/10/11 → Vulkan | ✅ | ✗ Broken: needs Vulkan `geometryShader`, which Apple GPUs/MoltenVK lack |
+| **DXVK** | D3D9/10/11 → Vulkan | ✅ | D3D9-only in this repo: works on KosmicKrisp with `patches/dxvk` (optional-feature relaxations); upstream-stock still can't init (hard-requires `geometryShader`, absent on Apple GPUs) |
 | **vkd3d-proton + MoltenVK** | D3D12 → Vulkan → Metal | ✅ | ✗ Incomplete: MoltenVK lacks features vkd3d-proton needs |
 
-- **DXVK was removed** from this repo — upstream DXVK can't initialize on Apple
-  GPUs (no `geometryShader`). DXMT replaced it as the default.
+- **DXVK's role here**: DXMT is the default D3D11/D3D10 path; DXVK
+  (`vendor/dxvk` + `patches/dxvk`) covers **D3D9 only**, which DXMT does not
+  implement, and now runs on KosmicKrisp.
 - **Vulkan-on-Metal is shifting (July 2026):** LunarG's **KosmicKrisp** (in Mesa,
   Google-sponsored) is a fully **conformant** Vulkan 1.3/1.4 driver built on
   **Metal 4** (macOS 26+, Apple Silicon only), reached MoltenVK feature parity
