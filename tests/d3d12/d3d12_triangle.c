@@ -62,6 +62,7 @@ int main(void)
     pso.PS.pShaderBytecode = ID3D10Blob_GetBufferPointer(ps);
     pso.PS.BytecodeLength = ID3D10Blob_GetBufferSize(ps);
     pso.SampleMask = ~0u;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;

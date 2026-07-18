@@ -5,17 +5,16 @@ R8G8B8A8 image via core/KHR dynamic rendering and reads back the center pixel
 — as a **native x86_64 (Rosetta) process**, linking the Vulkan loader directly
 to KosmicKrisp/Metal, with **no Wine and no vkd3d/D3D** in the path.
 
-It is the discriminator for the `tests/d3d12` black-triangle wall:
+It was the discriminator that showed KosmicKrisp's graphics were fine while the
+`tests/d3d12` triangle rendered black — which turned out to be a bug in that
+probe (a zero `RenderTargetWriteMask`), not in KK or vkd3d. Both render green
+now.
 
 - **Result (2026-07-18, Mesa 26.3-dev): green — PASS.** KosmicKrisp's
   rasterization, fragment output, and dynamic rendering are correct.
-- Therefore the `tests/d3d12` black triangle is **not** a KosmicKrisp core
-  graphics bug (nor the missing `VK_EXT_dynamic_rendering_unused_attachments`,
-  nor `nir_lower_blend` #15344). It is specific to how **vkd3d-proton** drives
-  Vulkan on KosmicKrisp.
 
-If this control ever regresses to black after a `vendor/mesa` bump, the bug
-moved into KosmicKrisp itself.
+Kept as a fast KK graphics smoke test: if this ever regresses to black after a
+`vendor/mesa` bump, a real KosmicKrisp graphics regression landed.
 
 ## Build & run
 
