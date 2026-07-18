@@ -1,7 +1,7 @@
 # macOS gaming stack: D3D translation, native ARM, and what this repo can/can't do
 
-Findings from evaluating this fork (Wine 11.11 x86_64 via Rosetta 2 + DXMT) on
-Apple Silicon (M2, macOS Tahoe 26.5). Current as of June 2026.
+Findings from evaluating this fork (Wine 11.13 x86_64 via Rosetta 2 + DXMT) on
+Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
 
 ## D3D → Metal translation options
 
@@ -14,13 +14,30 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of June 2026.
 
 - **DXVK was removed** from this repo — upstream DXVK can't initialize on Apple
   GPUs (no `geometryShader`). DXMT replaced it as the default.
+- **Vulkan-on-Metal is shifting (July 2026):** LunarG's **KosmicKrisp** (in Mesa,
+  Google-sponsored) is a fully **conformant** Vulkan 1.3/1.4 driver built on
+  **Metal 4** (macOS 26+, Apple Silicon only), reached MoltenVK feature parity
+  Feb 2026; LunarG positions it as the future of Vulkan on Apple, with MoltenVK
+  (1.4.1, Metal 3) trending toward maintenance. If it works under Rosetta
+  (x86_64), the MoltenVK-workaround patches in `patches/dxvk`/`patches/moltenvk`
+  may become unnecessary, and vkd3d-proton (D3D12) gains a first plausible open
+  path. **Verified 2026-07-18: KosmicKrisp builds as x86_64 and works under
+  Rosetta** (Mesa 26.1.5; vulkaninfo enumerates Apple M2 as
+  DRIVER_ID_MESA_KOSMICKRISP, Vulkan 1.3.354, and a real
+  device-create → vkCmdFillBuffer → submit → verify test passes in an x86_64
+  process). Nuance: the shipped 26.1.5 driver contains no `MTL4*` references —
+  it still drives classic `MTLDevice`/`MTLCommandQueue` + `MTLResidencySet`
+  (macOS 15+); the Metal-4 rework (`MTL4ArgumentTable`, MTL4 command
+  queue/buffer) is already on Mesa main, unreleased. Wiring it
+  into Wine would mean pointing winevulkan at `libvulkan_kosmickrisp.dylib`
+  instead of MoltenVK (untested).
 - **D3D12 (e.g. Black Myth: Wukong, UE5):** no open-source path works well.
   DXMT is D3D11-only (no `d3d12` in its source tree). Only Apple's closed
   D3DMetal handles D3D12 on Mac, and only via CrossOver.
 
 ## Native ARM64 Wine (Rosetta-free): not viable here yet
 
-- Wine 11.11 on macOS is **x86_64 + Rosetta 2**. Source check: `loader/preloader_mac.c`
+- Wine 11.13 on macOS is **x86_64 + Rosetta 2**. Source check: `loader/preloader_mac.c`
   has only `__x86_64__`/`__i386__` branches — **no `__aarch64__`**, so a native
   ARM macOS build can't be produced. Generic ARM64 plumbing (complete WoW64,
   ARM64 large-page support, ARM64EC) *is* in Wine 11, but the macOS-specific
@@ -108,7 +125,7 @@ menus too → Wine-audio side; only under load → underrun.
 
 ## Bottom line for this repo
 
-- ✅ **x86 D3D11 games** (Unity/UE4, etc.): fully working today on Wine 11.11 + DXMT.
+- ✅ **x86 D3D11 games** (Unity/UE4, etc.): fully working today on Wine 11.13 + DXMT.
 - ❌ **D3D12 games** (UE5/Black Myth): not feasible (needs closed D3DMetal).
 - ❌ **Rosetta-free / native ARM**: blocked on experimental upstream macOS-ARM
   Wine; wouldn't help GPU-bound titles anyway.
