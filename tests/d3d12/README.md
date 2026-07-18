@@ -16,16 +16,17 @@ after bumping `vendor/mesa` (KosmicKrisp) to see whether a wall has lifted.
 red *clear* reads back red — so clear / RT / copy / readback all work; only
 `DrawInstanced` rasterization output fails.
 
-**Cause is not yet identified.** vkd3d-proton warns at init that
-`VK_EXT_dynamic_rendering_unused_attachments` is missing ("required for correct
-operation"), but that is almost certainly *not* this bug: the probe uses a
-single render target whose format matches the pipeline exactly, so there is no
-unused/mismatched attachment — vkd3d sets `colorAttachmentCount = 1` and
-KosmicKrisp already implements `VK_KHR_dynamic_rendering`. The black draw is
-therefore a different KosmicKrisp graphics-path issue (render encoding /
-rasterization / fragment output) that still needs diagnosing (Metal API
-Validation, checking the draw reaches Metal, etc.). Beyond it lie the
-Metal-hardware gaps (transform feedback, geometry shaders).
+**The bug is in vkd3d-proton↔KosmicKrisp, not in KosmicKrisp's core graphics.**
+The pure-Vulkan control in `tests/vulkan/` renders the *same* green triangle
+correctly (native x86_64/Rosetta, no Wine/vkd3d), so KK's rasterization,
+fragment output, and dynamic rendering all work. Ruled out: the missing
+`VK_EXT_dynamic_rendering_unused_attachments` (probe has 1 matched RT,
+`colorAttachmentCount=1`, KK has `VK_KHR_dynamic_rendering`), `nir_lower_blend`
+(#15344), and any KK core graphics bug. The black draw is specific to some
+Vulkan state/path vkd3d-proton uses that the minimal control does not
+(candidates: dynamic viewport/scissor / extended dynamic state, render-target
+binding, blend/color-write). Beyond it lie the Metal-hardware gaps (transform
+feedback, geometry shaders).
 
 Device creation itself needs two vkd3d-proton gates made non-fatal —
 `patches/vkd3d-proton/0001-optional-features-kosmickrisp.patch`.
