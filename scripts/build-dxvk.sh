@@ -57,25 +57,38 @@ MESON_OPTS=(
     --buildtype release
 )
 
-build_arch() {  # <cross-file> <build-dir> <install-subdir>
+setup_arch() {  # <cross-file> <build-dir> <install-subdir>
     local cross_file="$1" build_dir="$2" subdir="$3"
-
-    # Incremental: reuse an existing build dir (just ninja), set up otherwise.
+    # Incremental: reuse an existing build dir, set up otherwise. Kept
+    # sequential — concurrent meson setups race on the shared subprojects cache.
     if [ ! -d "$DXVK_SRC/$build_dir" ]; then
         echo "=== Configuring DXVK ($subdir) ==="
         (cd "$DXVK_SRC" && meson setup --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
     fi
+}
 
+build_arch() {  # <build-dir> <install-subdir>
+    local build_dir="$1" subdir="$2"
     echo "=== Building DXVK ($subdir) ==="
     ninja -C "$DXVK_SRC/$build_dir" src/d3d9/d3d9.dll
-
     echo "=== Installing d3d9.dll ($subdir) ==="
     mkdir -p "$INSTALL_DIR/DXVK/$subdir"
     cp "$DXVK_SRC/$build_dir/src/d3d9/d3d9.dll" "$INSTALL_DIR/DXVK/$subdir/d3d9.dll"
 }
 
-build_arch build-win32.txt build.w32 win32
-build_arch build-win64.txt build.w64 win64
+setup_arch build-win32.txt build.w32 win32
+setup_arch build-win64.txt build.w64 win64
+
+# The two ninja builds use independent build dirs and only read the shared
+# subprojects, so run them in parallel (wall-clock ~= the slower single arch).
+build_arch build.w32 win32 &
+pid_w32=$!
+build_arch build.w64 win64 &
+pid_w64=$!
+build_failed=0
+wait "$pid_w32" || build_failed=1
+wait "$pid_w64" || build_failed=1
+[ "$build_failed" -eq 0 ] || { echo "ERROR: a DXVK build failed" >&2; exit 1; }
 
 # The KosmicKrisp Vulkan loader swap lives in build-wine-x86.sh (it owns
 # Wine/lib and re-copies it on every build, so a swap here would be clobbered

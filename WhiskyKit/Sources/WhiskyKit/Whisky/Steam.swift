@@ -178,6 +178,30 @@ public enum Steam {
     /// `Binaries/Win64/Game.exe`); the cap bounds the per-launch scan cost.
     private static let d3d9ScanMaxDepth = 4
 
+    /// Per-bottle cache of scanned game directories (kept next to `Metadata.plist`,
+    /// outside `drive_c` so Wine never sees it). Games whose directory modification
+    /// time is unchanged since the last scan are skipped without re-walking or
+    /// PE-parsing anything.
+    private static func scanCacheURL(for bottle: Bottle) -> URL {
+        bottle.url.appending(path: "DXVKScanCache").appendingPathExtension("plist")
+    }
+
+    /// A remembered scan result for one game directory.
+    private struct DXVKScanEntry: Codable {
+        let mtime: Double
+        let hasD3D9: Bool
+    }
+
+    /// Outcome of scanning a single game directory this run.
+    private struct DXVKScanResult {
+        /// At least one executable imports d3d9.dll.
+        var foundD3D9 = false
+        /// Every d3d9 executable is now provisioned (dll present or just copied).
+        /// When `false` (payload not built yet, or a copy failed) the entry is
+        /// not cached, so the game is retried on the next launch.
+        var complete = true
+    }
+
     /// Give installed Steam games that use D3D9 the DXVK `d3d9.dll` (wined3d's
     /// D3D9 path is broken on macOS; DXMT does not implement D3D9). Walks each
     /// game's tree for executables that import d3d9.dll and copies the
@@ -187,9 +211,15 @@ public enum Steam {
     /// ship its own, or the user a custom build). Returns `true` when at least
     /// one d3d9 executable was found, so the caller only writes the d3d9
     /// override for bottles that actually need it.
+    ///
+    /// Unchanged games are skipped via a per-bottle mtime cache, so the steady
+    /// state cost is one directory listing plus a stat per game — no PE parsing.
     @discardableResult
     private static func installDXVKForD3D9Games(in bottle: Bottle) -> Bool {
         let fileManager = FileManager.default
+        let cacheURL = scanCacheURL(for: bottle)
+        let oldCache = loadScanCache(at: cacheURL)
+        var newCache: [String: DXVKScanEntry] = [:]
         var foundD3D9Game = false
 
         for root in steamRoots {
@@ -199,31 +229,47 @@ public enum Steam {
                 .appending(path: "steamapps/common")
 
             guard let games = try? fileManager.contentsOfDirectory(
-                at: common, includingPropertiesForKeys: [.isDirectoryKey]
+                at: common, includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey]
             ) else { continue }
 
-            for gameDir in games
-            where (try? gameDir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                if installDXVK(gameDir: gameDir, fileManager: fileManager) {
-                    foundD3D9Game = true
+            for gameDir in games {
+                let values = try? gameDir.resourceValues(
+                    forKeys: [.isDirectoryKey, .contentModificationDateKey])
+                guard values?.isDirectory == true else { continue }
+                let path = gameDir.path(percentEncoded: false)
+                let mtime = values?.contentModificationDate?.timeIntervalSince1970 ?? 0
+
+                if let cached = oldCache[path], cached.mtime == mtime {
+                    // Unchanged since the last complete scan; reuse the result.
+                    newCache[path] = cached
+                    foundD3D9Game = foundD3D9Game || cached.hasD3D9
+                    continue
+                }
+
+                let result = installDXVK(gameDir: gameDir, fileManager: fileManager)
+                foundD3D9Game = foundD3D9Game || result.foundD3D9
+                // Only remember games that finished provisioning; a game still
+                // awaiting the DXVK payload must be retried next launch.
+                if result.complete {
+                    newCache[path] = DXVKScanEntry(mtime: mtime, hasD3D9: result.foundD3D9)
                 }
             }
         }
 
+        saveScanCache(newCache, to: cacheURL)
         return foundD3D9Game
     }
 
     /// Walk a game's tree (bounded depth) and, next to every executable that
     /// imports d3d9.dll, install the architecture-matching DXVK `d3d9.dll`
-    /// unless one is already present. Returns `true` when a d3d9 executable was
-    /// found, regardless of whether a dll was copied.
-    private static func installDXVK(gameDir: URL, fileManager: FileManager) -> Bool {
+    /// unless one is already present.
+    private static func installDXVK(gameDir: URL, fileManager: FileManager) -> DXVKScanResult {
+        var result = DXVKScanResult()
         guard let enumerator = fileManager.enumerator(
             at: gameDir, includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return false }
+        ) else { return result }
 
-        var foundD3D9Game = false
         for case let entry as URL in enumerator {
             if enumerator.level > d3d9ScanMaxDepth {
                 enumerator.skipDescendants()
@@ -233,7 +279,7 @@ public enum Steam {
                   let peFile = try? PEFile(url: entry), peFile.importsDLL("d3d9.dll"),
                   peFile.architecture != .unknown else { continue }
 
-            foundD3D9Game = true
+            result.foundD3D9 = true
 
             let dest = entry.deletingLastPathComponent().appending(path: "d3d9.dll")
             guard !fileManager.fileExists(atPath: dest.path(percentEncoded: false)) else { continue }
@@ -243,6 +289,7 @@ public enum Steam {
             guard fileManager.fileExists(atPath: payload.path(percentEncoded: false)) else {
                 Logger.wineKit.info(
                     "DXVK \(archDir) payload not built; skipping d3d9 install for \(entry.lastPathComponent)")
+                result.complete = false
                 continue
             }
 
@@ -251,10 +298,25 @@ public enum Steam {
                 Logger.wineKit.info("Installed DXVK d3d9.dll (\(archDir)) next to \(entry.lastPathComponent)")
             } catch {
                 Logger.wineKit.error("Failed to install DXVK d3d9.dll for \(entry.lastPathComponent): \(error)")
+                result.complete = false
             }
         }
 
-        return foundD3D9Game
+        return result
+    }
+
+    /// Load the per-bottle scan cache; returns an empty map when absent or unreadable.
+    private static func loadScanCache(at url: URL) -> [String: DXVKScanEntry] {
+        guard let data = try? Data(contentsOf: url),
+              let cache = try? PropertyListDecoder().decode([String: DXVKScanEntry].self, from: data)
+        else { return [:] }
+        return cache
+    }
+
+    /// Persist the scan cache (best effort; a failure just means a rescan next time).
+    private static func saveScanCache(_ cache: [String: DXVKScanEntry], to url: URL) {
+        guard let data = try? PropertyListEncoder().encode(cache) else { return }
+        try? data.write(to: url)
     }
 
     /// Copy `source` to `dest` (replacing) unless they are already the same size.

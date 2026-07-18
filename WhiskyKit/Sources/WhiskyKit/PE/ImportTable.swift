@@ -26,11 +26,6 @@ extension PEFile {
     /// Defensive cap on an imported DLL name length in bytes.
     private static let maxDLLNameLength = 256
 
-    /// Whether the image is 64-bit (PE32+).
-    public var is64Bit: Bool {
-        architecture == .x64
-    }
-
     /// The DLL names in the image's import directory table, lowercased.
     ///
     /// Walks `DataDirectory[1]` (the regular import table only; delay-load
@@ -39,55 +34,72 @@ extension PEFile {
     ///
     /// https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#the-idata-section
     public var importedDLLs: [String] {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        var result: [String] = []
+        enumerateImportedDLLs { name in
+            result.append(name)
+            return true
+        }
+        return result
+    }
+
+    /// Whether the image imports the given DLL (case-insensitive). Stops at the
+    /// first match rather than materialising the whole import list.
+    public func importsDLL(_ name: String) -> Bool {
+        let target = name.lowercased()
+        var found = false
+        enumerateImportedDLLs { dll in
+            if dll == target {
+                found = true
+                return false
+            }
+            return true
+        }
+        return found
+    }
+
+    /// Call `body` with each imported DLL name (lowercased), stopping early when
+    /// `body` returns `false`.
+    private func enumerateImportedDLLs(_ body: (String) -> Bool) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
         defer {
             try? handle.close()
         }
-
-        return parseImportedDLLs(handle: handle)
+        parseImportedDLLs(handle: handle, body)
     }
 
-    /// Whether the image imports the given DLL (case-insensitive).
-    public func importsDLL(_ name: String) -> Bool {
-        importedDLLs.contains(name.lowercased())
-    }
-
-    private func parseImportedDLLs(handle: FileHandle) -> [String] {
-        guard let magic = optionalHeader?.magic, magic != .unknown else { return [] }
+    private func parseImportedDLLs(handle: FileHandle, _ body: (String) -> Bool) {
+        guard let magic = optionalHeader?.magic, magic != .unknown else { return }
 
         // Re-derive the optional header's file offset (PE offset + signature +
         // COFF header, as in PEFile.init).
-        guard let peOffset = handle.extract(UInt32.self, offset: 0x3C) else { return [] }
+        guard let peOffset = handle.extract(UInt32.self, offset: 0x3C) else { return }
         let optionalHeaderOffset = UInt64(peOffset) + 24
 
         // The data directories follow the fixed optional-header fields, whose
         // size depends on the magic; NumberOfRvaAndSizes is the 4 bytes before.
         let dataDirectoryOffset = optionalHeaderOffset + (magic == .pe32Plus ? 112 : 96)
         guard let directoryCount = handle.extract(UInt32.self, offset: dataDirectoryOffset - 4),
-              directoryCount >= 2 else { return [] }
+              directoryCount >= 2 else { return }
 
         // DataDirectory[1] is the import directory table.
         guard let importTableRVA = handle.extract(UInt32.self, offset: dataDirectoryOffset + 8),
               importTableRVA != 0,
-              var descriptorOffset = fileOffset(forRVA: importTableRVA) else { return [] }
+              var descriptorOffset = fileOffset(forRVA: importTableRVA) else { return }
 
-        var dlls: [String] = []
         // IMAGE_IMPORT_DESCRIPTORs, terminated by an all-zero entry.
         for _ in 0..<Self.maxImportDescriptors {
             guard let originalFirstThunk = handle.extract(UInt32.self, offset: descriptorOffset),
                   let nameRVA = handle.extract(UInt32.self, offset: descriptorOffset + 12),
-                  let firstThunk = handle.extract(UInt32.self, offset: descriptorOffset + 16) else { return [] }
+                  let firstThunk = handle.extract(UInt32.self, offset: descriptorOffset + 16) else { return }
             if originalFirstThunk == 0 && nameRVA == 0 && firstThunk == 0 { break }
 
             if nameRVA != 0,
                let nameOffset = fileOffset(forRVA: nameRVA),
                let name = readCString(handle: handle, offset: nameOffset) {
-                dlls.append(name.lowercased())
+                if !body(name.lowercased()) { return }
             }
             descriptorOffset += Self.importDescriptorSize
         }
-
-        return dlls
     }
 
     /// Resolve an RVA to a file offset via the section table.
