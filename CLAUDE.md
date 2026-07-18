@@ -105,7 +105,6 @@ make run             # build app and launch
 - SemanticVersion 0.5.1
 - swift-argument-parser 1.7.1
 - SwiftyTextTable 0.9.0
-- Progress.swift 0.4.0
 
 ## Coding conventions
 - Swift 6.3, macOS 26.0 deployment target

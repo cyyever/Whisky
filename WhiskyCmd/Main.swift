@@ -18,7 +18,6 @@
 
 import ArgumentParser
 import Foundation
-import Progress
 import SemanticVersion
 import SwiftyTextTable
 import WhiskyKit

@@ -81,7 +81,12 @@ arch -x86_64 env -i \
         --with-vulkan \
         --without-gstreamer \
         --disable-tests \
-        --without-x
+        --without-x \
+        --without-cups \
+        --without-krb5 \
+        --without-gssapi \
+        --without-pcap \
+        --without-pcsclite
 
 NCPU=$(sysctl -n hw.ncpu)
 echo "=== Building Wine (x86_64) with $NCPU cores ==="
