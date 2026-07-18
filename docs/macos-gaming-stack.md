@@ -25,10 +25,11 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
   Rosetta** (Mesa 26.1.5; vulkaninfo enumerates Apple M2 as
   DRIVER_ID_MESA_KOSMICKRISP, Vulkan 1.3.354, and a real
   device-create → vkCmdFillBuffer → submit → verify test passes in an x86_64
-  process). Nuance: the shipped 26.1.5 driver contains no `MTL4*` references —
-  it still drives classic `MTLDevice`/`MTLCommandQueue` + `MTLResidencySet`
-  (macOS 15+); the Metal-4 rework (`MTL4ArgumentTable`, MTL4 command
-  queue/buffer) is already on Mesa main, unreleased. Wiring it
+  process). The 26.1.5 release still drives classic Metal (no `MTL4*`
+  references), but **Mesa main's MTL4 rework also verified under Rosetta**
+  (26.3.0-devel via `scripts/build-kosmickrisp-x86.sh` + `vendor/mesa`:
+  Vulkan 1.4.354, MTL4 command queue/compiler in the binary, same GPU-submit
+  test passes) — so Metal 4 API is usable from Rosetta processes. Wiring it
   into Wine would mean pointing winevulkan at `libvulkan_kosmickrisp.dylib`
   instead of MoltenVK (untested).
 - **D3D12 (e.g. Black Myth: Wukong, UE5):** no open-source path works well.
