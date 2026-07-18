@@ -1,0 +1,30 @@
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index f6db695..f9a7b9c 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -3291,8 +3291,11 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
+ 
+     if (!physical_device_info->xfb_properties.transformFeedbackQueries)
+     {
+-        ERR("Lacking support for transform feedback.\n");
+-        return E_INVALIDARG;
++        /* KosmicKrisp/Metal experiment: proceed without transform feedback
++         * (D3D12 stream output will be unavailable) instead of failing device
++         * creation. */
++        WARN("Transform feedback queries not supported; disabling stream output.\n");
++        vulkan_info->EXT_transform_feedback = false;
+     }
+ 
+     single_storage_texel =
+@@ -3306,8 +3309,9 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
+ 
+     if (!single_storage_texel || !single_uniform_texel)
+     {
+-        ERR("Lacking support for single texel alignment.\n");
+-        return E_INVALIDARG;
++        /* KosmicKrisp/Metal experiment: proceed despite coarser texel buffer
++         * alignment (texel buffer views may misbehave) rather than failing. */
++        WARN("Lacking support for single texel alignment; proceeding anyway.\n");
+     }
+ 
+     /* Disable unused Vulkan features. The following features need to remain enabled
