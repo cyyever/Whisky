@@ -173,16 +173,24 @@ public enum Steam {
         }
     }
 
+    /// Maximum directory depth walked under a game when looking for d3d9
+    /// executables. Steam games keep their exe within a few levels (e.g.
+    /// `Binaries/Win64/Game.exe`); the cap bounds the per-launch scan cost.
+    private static let d3d9ScanMaxDepth = 4
+
     /// Give installed Steam games that use D3D9 the DXVK `d3d9.dll` (wined3d's
-    /// D3D9 path is broken on macOS; DXMT does not implement D3D9). Scans each
-    /// game directory's top-level executables for a d3d9.dll import and copies
-    /// the architecture-matching payload next to them. Never overwrites an
-    /// existing `d3d9.dll` (a game may ship its own, or the user a custom
-    /// build). Returns `true` when at least one Steam library was found.
+    /// D3D9 path is broken on macOS; DXMT does not implement D3D9). Walks each
+    /// game's tree for executables that import d3d9.dll and copies the
+    /// architecture-matching payload next to each such exe (Windows resolves an
+    /// exe's imports from its own directory, so the dll must sit beside it, not
+    /// at the game root). Never overwrites an existing `d3d9.dll` (a game may
+    /// ship its own, or the user a custom build). Returns `true` when at least
+    /// one d3d9 executable was found, so the caller only writes the d3d9
+    /// override for bottles that actually need it.
     @discardableResult
     private static func installDXVKForD3D9Games(in bottle: Bottle) -> Bool {
         let fileManager = FileManager.default
-        var foundLibrary = false
+        var foundD3D9Game = false
 
         for root in steamRoots {
             let common = bottle.url
@@ -193,54 +201,60 @@ public enum Steam {
             guard let games = try? fileManager.contentsOfDirectory(
                 at: common, includingPropertiesForKeys: [.isDirectoryKey]
             ) else { continue }
-            foundLibrary = true
 
             for gameDir in games
             where (try? gameDir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                installDXVK(gameDir: gameDir, fileManager: fileManager)
+                if installDXVK(gameDir: gameDir, fileManager: fileManager) {
+                    foundD3D9Game = true
+                }
             }
         }
 
-        return foundLibrary
+        return foundD3D9Game
     }
 
-    /// Install the DXVK `d3d9.dll` into a single game directory if one of its
-    /// top-level executables imports d3d9.dll and no `d3d9.dll` is present yet.
-    private static func installDXVK(gameDir: URL, fileManager: FileManager) {
-        let dest = gameDir.appending(path: "d3d9.dll")
-        guard !fileManager.fileExists(atPath: dest.path(percentEncoded: false)) else { return }
-        guard let architecture = d3d9Architecture(of: gameDir, fileManager: fileManager) else { return }
+    /// Walk a game's tree (bounded depth) and, next to every executable that
+    /// imports d3d9.dll, install the architecture-matching DXVK `d3d9.dll`
+    /// unless one is already present. Returns `true` when a d3d9 executable was
+    /// found, regardless of whether a dll was copied.
+    private static func installDXVK(gameDir: URL, fileManager: FileManager) -> Bool {
+        guard let enumerator = fileManager.enumerator(
+            at: gameDir, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return false }
 
-        let archDir = architecture == .x64 ? "win64" : "win32"
-        let payload = dxvkFolder.appending(path: archDir).appending(path: "d3d9.dll")
-        guard fileManager.fileExists(atPath: payload.path(percentEncoded: false)) else {
-            Logger.wineKit.info(
-                "DXVK \(archDir) payload not built; skipping d3d9 install for \(gameDir.lastPathComponent)")
-            return
-        }
+        var foundD3D9Game = false
+        for case let entry as URL in enumerator {
+            if enumerator.level > d3d9ScanMaxDepth {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard entry.pathExtension.lowercased() == "exe",
+                  let peFile = try? PEFile(url: entry), peFile.importsDLL("d3d9.dll"),
+                  peFile.architecture != .unknown else { continue }
 
-        do {
-            try fileManager.copyItem(at: payload, to: dest)
-            Logger.wineKit.info("Installed DXVK d3d9.dll (\(archDir)) for \(gameDir.lastPathComponent)")
-        } catch {
-            Logger.wineKit.error("Failed to install DXVK d3d9.dll for \(gameDir.lastPathComponent): \(error)")
-        }
-    }
+            foundD3D9Game = true
 
-    /// The architecture of the first top-level executable that imports
-    /// d3d9.dll, or `nil` when none does (no recursion into subdirectories).
-    private static func d3d9Architecture(of gameDir: URL, fileManager: FileManager) -> Architecture? {
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: gameDir, includingPropertiesForKeys: nil
-        ) else { return nil }
+            let dest = entry.deletingLastPathComponent().appending(path: "d3d9.dll")
+            guard !fileManager.fileExists(atPath: dest.path(percentEncoded: false)) else { continue }
 
-        for entry in entries where entry.pathExtension.lowercased() == "exe" {
-            guard let peFile = try? PEFile(url: entry), peFile.importsDLL("d3d9.dll") else { continue }
-            if peFile.architecture != .unknown {
-                return peFile.architecture
+            let archDir = peFile.architecture == .x64 ? "win64" : "win32"
+            let payload = dxvkFolder.appending(path: archDir).appending(path: "d3d9.dll")
+            guard fileManager.fileExists(atPath: payload.path(percentEncoded: false)) else {
+                Logger.wineKit.info(
+                    "DXVK \(archDir) payload not built; skipping d3d9 install for \(entry.lastPathComponent)")
+                continue
+            }
+
+            do {
+                try fileManager.copyItem(at: payload, to: dest)
+                Logger.wineKit.info("Installed DXVK d3d9.dll (\(archDir)) next to \(entry.lastPathComponent)")
+            } catch {
+                Logger.wineKit.error("Failed to install DXVK d3d9.dll for \(entry.lastPathComponent): \(error)")
             }
         }
-        return nil
+
+        return foundD3D9Game
     }
 
     /// Copy `source` to `dest` (replacing) unless they are already the same size.

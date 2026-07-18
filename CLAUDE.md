@@ -16,7 +16,7 @@ Fork of [Whisky-App/Whisky](https://github.com/Whisky-App/Whisky) (archived). A 
 make setup-x86-brew  # one-time: x86_64 Homebrew + deps in vendor/
 make wine            # build Wine 11.13 x86_64 from vendor/wine submodule (auto-applies patches/wine/*.patch)
 make steam-helper    # cross-compile the Steam webhelper wrapper (mingw)
-make dxvk            # build DXVK d3d9.dll (win32+win64) into Libraries/DXVK; re-asserts KosmicKrisp wiring
+make dxvk            # build DXVK d3d9.dll (win32+win64) into Libraries/DXVK
 make app             # build Whisky Swift app
 make all             # build everything (app + Wine + steam-helper)
 make run             # build app and launch
@@ -25,14 +25,15 @@ make run             # build app and launch
 ## Fresh-machine bootstrap (decisions live in code — no manual adaptation)
 1. `git clone --recurse-submodules` this repo; install ARM brew deps (`bison mingw-w64 meson ninja llvm libclc spirv-llvm-translator spirv-tools nasm`)
 2. `make setup-x86-brew` (x86_64 brew + linked libs, USTC mirrors)
-3. `scripts/build-ffmpeg-x86.sh` (winedmo media backend) → `make wine`
-4. `make dxmt` (D3D11), `make dxvk` (D3D9), `scripts/build-kosmickrisp-x86.sh` (Vulkan/Metal 4 driver)
+3. `scripts/build-ffmpeg-x86.sh` (winedmo media backend) and
+   `scripts/build-kosmickrisp-x86.sh` (Vulkan/Metal 4 driver) — **before** `make wine`,
+   which bundles both and asserts the KosmicKrisp loader swap into Wine/lib
+4. `make wine`, then `make dxmt` (D3D11) and `make dxvk` (D3D9)
 5. Open Whisky, create bottle, install Steam, log in — everything else is automatic:
    Steam launch auto-installs the webhelper wrapper (black-window fix), auto-drops the
-   right-arch DXVK `d3d9.dll` into installed d3d9 games (PE import scan), sets
-   `d3d9=native,builtin` (fallback instead of c0000135); `make dxvk` also
-   re-asserts the KosmicKrisp loader swap + installs its ICD json to
-   `~/.local/share/vulkan/icd.d/` (run it after every `make wine`).
+   right-arch DXVK `d3d9.dll` next to installed d3d9 games' executables (PE import scan)
+   and sets `d3d9=native,builtin` (fallback instead of c0000135). Re-run `make wine`
+   after rebuilding the KosmicKrisp driver to re-assert the loader swap.
 
 ## Key paths
 - Wine submodule: `vendor/wine` (branch `dxmt-fixes-11.13`: wine-11.13 + rundll32 WS_VISIBLE fix + winemac macdrv export for DXMT)
@@ -65,7 +66,7 @@ make run             # build app and launch
 
 ## Vulkan backend: KosmicKrisp (Metal 4) — replaces MoltenVK
 - Wine's Vulkan backend is **Mesa KosmicKrisp** (Vulkan-on-Metal-4, conformant 1.4): `vendor/mesa` (shallow submodule tracking `main`) built by `scripts/build-kosmickrisp-x86.sh` (two-phase: arm64 `mesa_clc` tools, then x86_64 cross; auto-applies `patches/mesa/*.patch`; artifacts → `vendor/kosmickrisp/`).
-- Wiring: `Wine/lib/libMoltenVK.dylib` is **actually the x86_64 Khronos Vulkan loader** (winevulkan dlopens that leaf name; the loader exports `vkGetInstanceProcAddr`, which the Mesa ICD does not); the loader finds KosmicKrisp via `~/.local/share/vulkan/icd.d/kosmickrisp_icd.x86_64.json`. Stock-MoltenVK backup: `libMoltenVK.dylib.mvk-stock` alongside. **A Wine rebuild/reinstall clobbers the swap** (re-bundles brew MoltenVK) — re-copy the loader after every `make wine`.
+- Wiring: `Wine/lib/libMoltenVK.dylib` is **actually the x86_64 Khronos Vulkan loader** (winevulkan dlopens that leaf name; the loader exports `vkGetInstanceProcAddr`, which the Mesa ICD does not); the loader finds KosmicKrisp via `~/.local/share/vulkan/icd.d/kosmickrisp_icd.x86_64.json`. Stock-MoltenVK backup: `libMoltenVK.dylib.mvk-stock` alongside. **`build-wine-x86.sh` owns this swap** — its dylib-bundling stage re-copies stock MoltenVK then swaps the loader in, so every `make wine` re-asserts it automatically (the swap only fires when `vendor/kosmickrisp/` artifacts exist, so build the KosmicKrisp driver before `make wine`).
 - `patches/mesa/0001` = unmerged Mesa **MR 42811** (present-queue residencySet). Without it Metal 4 presents black frames. Drop when merged.
 - **Keep the pin fresh**: KosmicKrisp moves fast (~35 commits/month, July 2026) — periodically `git submodule update --remote vendor/mesa`, rebuild, check whether `patches/mesa/*` and the DXVK optional-feature workarounds (e.g. `fillModeNonSolid`) are still needed.
 - Verified end-to-end 2026-07-18: Witch on the Holy Night (Steam 2052410, 64-bit D3D9/HuneX) renders via DXVK → winevulkan → loader → KosmicKrisp → Metal 4 under Rosetta.
@@ -101,7 +102,6 @@ make run             # build app and launch
 - Appcast: `https://cyyever.github.io/Whisky/appcast.xml`
 
 ## Dependencies
-- Sparkle 2.9.1 (app updates)
 - SemanticVersion 0.5.1
 - swift-argument-parser 1.7.1
 - SwiftyTextTable 0.9.0

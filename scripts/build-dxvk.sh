@@ -16,7 +16,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DXVK_SRC="$PROJECT_DIR/vendor/dxvk"
 INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
-WINE_LIB="$INSTALL_DIR/Wine/lib"
 
 export PATH="/opt/homebrew/bin:/usr/bin:/bin"
 
@@ -78,36 +77,10 @@ build_arch() {  # <cross-file> <build-dir> <install-subdir>
 build_arch build-win32.txt build.w32 win32
 build_arch build-win64.txt build.w64 win64
 
-# --- KosmicKrisp Vulkan driver (Mesa) loader swap ----------------------------
-# DXVK-on-Mac runs on a Vulkan implementation loaded by winevulkan as
-# "libMoltenVK.dylib". When the KosmicKrisp driver has been built
-# (scripts/build-kosmickrisp-x86.sh), swap the real Vulkan loader in at that
-# path so ICD discovery picks KosmicKrisp up; keep the stock MoltenVK as a
-# backup. Skipped entirely when the KosmicKrisp artifacts are absent.
-KK_DYLIB="$PROJECT_DIR/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib"
-VK_LOADER_DIR="$PROJECT_DIR/vendor/homebrew-x86/opt/vulkan-loader/lib"
-if [ -f "$KK_DYLIB" ] && [ -d "$VK_LOADER_DIR" ] && [ -d "$WINE_LIB" ]; then
-    echo "=== Re-asserting KosmicKrisp Vulkan loader swap ==="
-    MVK="$WINE_LIB/libMoltenVK.dylib"
-    chmod u+w "$WINE_LIB" 2>/dev/null || true
-    [ -e "$MVK" ] && chmod u+w "$MVK" 2>/dev/null || true
-
-    # Preserve the stock MoltenVK once, so the swap is reversible.
-    if [ -e "$MVK" ] && [ ! -e "$MVK.mvk-stock" ]; then
-        cp "$MVK" "$MVK.mvk-stock"
-    fi
-    # cp -L resolves the libvulkan.1 -> libvulkan.1.x.y symlink to a real file.
-    cp -L "$VK_LOADER_DIR/libvulkan.1.dylib" "$MVK"
-
-    # ICD manifest so the loader finds the KosmicKrisp driver.
-    ICD_DIR="$HOME/.local/share/vulkan/icd.d"
-    mkdir -p "$ICD_DIR"
-    cp "$PROJECT_DIR/vendor/kosmickrisp/kosmickrisp_icd.x86_64.json" \
-       "$ICD_DIR/kosmickrisp_icd.x86_64.json"
-    echo "Loader installed at $MVK (stock MoltenVK kept as libMoltenVK.dylib.mvk-stock)"
-else
-    echo "=== KosmicKrisp artifacts not present; leaving MoltenVK in place ==="
-fi
+# The KosmicKrisp Vulkan loader swap lives in build-wine-x86.sh (it owns
+# Wine/lib and re-copies it on every build, so a swap here would be clobbered
+# by the next `make wine`). Run `make wine` after building the KosmicKrisp
+# driver to (re-)assert it.
 
 echo "=== Done! ==="
 file "$INSTALL_DIR/DXVK/win32/d3d9.dll" "$INSTALL_DIR/DXVK/win64/d3d9.dll"

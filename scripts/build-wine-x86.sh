@@ -117,6 +117,35 @@ cp -n "$X86_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 # Minimal x86_64 FFmpeg for winedmo (built by build-ffmpeg-x86.sh)
 cp -n "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 
+# --- KosmicKrisp Vulkan driver (Mesa) loader swap ----------------------------
+# winevulkan dlopens the Vulkan implementation by the leaf name
+# "libMoltenVK.dylib". When the KosmicKrisp driver has been built
+# (scripts/build-kosmickrisp-x86.sh), swap the real Khronos Vulkan loader in at
+# that path so ICD discovery picks KosmicKrisp up. This lives here (not in
+# build-dxvk.sh) because the Wine/lib bundling above just re-copied the stock
+# MoltenVK — asserting the swap right after keeps every `make wine` correct.
+# Skipped entirely when the KosmicKrisp artifacts are absent (stock MoltenVK
+# stays in place).
+KK_DYLIB="$PROJECT_DIR/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib"
+VK_LOADER_DIR="$X86_PREFIX/opt/vulkan-loader/lib"
+if [ -f "$KK_DYLIB" ] && [ -d "$VK_LOADER_DIR" ]; then
+    echo "=== Asserting KosmicKrisp Vulkan loader swap ==="
+    MVK="$INSTALL_DIR/Wine/lib/libMoltenVK.dylib"
+    # The freshly bundled libMoltenVK.dylib is stock MoltenVK; keep it as backup.
+    if [ -e "$MVK" ] && [ ! -e "$MVK.mvk-stock" ]; then
+        cp "$MVK" "$MVK.mvk-stock"
+    fi
+    # cp -L resolves the libvulkan.1 -> libvulkan.1.x.y symlink to a real file.
+    cp -L "$VK_LOADER_DIR/libvulkan.1.dylib" "$MVK"
+
+    # ICD manifest so the loader finds the KosmicKrisp driver.
+    ICD_DIR="$HOME/.local/share/vulkan/icd.d"
+    mkdir -p "$ICD_DIR"
+    cp "$PROJECT_DIR/vendor/kosmickrisp/kosmickrisp_icd.x86_64.json" \
+       "$ICD_DIR/kosmickrisp_icd.x86_64.json"
+    echo "KosmicKrisp loader installed (stock MoltenVK kept as libMoltenVK.dylib.mvk-stock)"
+fi
+
 # Wine's x86_64-unix .so modules dlopen bundled dylibs by leaf name (e.g.
 # "libfreetype.6.dylib"); dyld won't find them in Wine/lib/ unless an rpath
 # points there. Each .so already has @loader_path/ (its own dir); add ../..
