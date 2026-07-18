@@ -6,7 +6,7 @@ WINE_INSTALL := $(HOME)/Library/Application Support/com.isaacmarovitz.Whisky/Lib
 WINE_STAMP := $(CURDIR)/vendor/.wine-installed
 APP_BUILD := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products/Debug/Whisky.app
 
-.PHONY: all app wine steam-helper dxmt setup-x86-brew clean clean-wine help
+.PHONY: all app wine steam-helper dxmt dxvk setup-x86-brew clean clean-wine help
 
 all: app wine steam-helper  ## Build everything (app + Wine + Steam helper)
 
@@ -43,6 +43,11 @@ steam-helper:  ## Build the Steam webhelper wrapper (fixes the black Steam windo
 
 dxmt: wine  ## Build DXMT from source and install into Wine (needs full Xcode + llvm@15)
 	$(SCRIPTS_DIR)/build-dxmt.sh
+
+# === DXVK (D3D9 on MoltenVK) ===
+
+dxvk:  ## Build DXVK d3d9.dll (win32 + win64) and install into Libraries/DXVK
+	$(SCRIPTS_DIR)/build-dxvk.sh
 
 # === Whisky App ===
 

@@ -16,10 +16,23 @@ Fork of [Whisky-App/Whisky](https://github.com/Whisky-App/Whisky) (archived). A 
 make setup-x86-brew  # one-time: x86_64 Homebrew + deps in vendor/
 make wine            # build Wine 11.13 x86_64 from vendor/wine submodule (auto-applies patches/wine/*.patch)
 make steam-helper    # cross-compile the Steam webhelper wrapper (mingw)
+make dxvk            # build DXVK d3d9.dll (win32+win64) into Libraries/DXVK; re-asserts KosmicKrisp wiring
 make app             # build Whisky Swift app
 make all             # build everything (app + Wine + steam-helper)
 make run             # build app and launch
 ```
+
+## Fresh-machine bootstrap (decisions live in code — no manual adaptation)
+1. `git clone --recurse-submodules` this repo; install ARM brew deps (`bison mingw-w64 meson ninja llvm libclc spirv-llvm-translator spirv-tools nasm`)
+2. `make setup-x86-brew` (x86_64 brew + linked libs, USTC mirrors)
+3. `scripts/build-ffmpeg-x86.sh` (winedmo media backend) → `make wine`
+4. `make dxmt` (D3D11), `make dxvk` (D3D9), `scripts/build-kosmickrisp-x86.sh` (Vulkan/Metal 4 driver)
+5. Open Whisky, create bottle, install Steam, log in — everything else is automatic:
+   Steam launch auto-installs the webhelper wrapper (black-window fix), auto-drops the
+   right-arch DXVK `d3d9.dll` into installed d3d9 games (PE import scan), sets
+   `d3d9=native,builtin` (fallback instead of c0000135); `make dxvk` also
+   re-asserts the KosmicKrisp loader swap + installs its ICD json to
+   `~/.local/share/vulkan/icd.d/` (run it after every `make wine`).
 
 ## Key paths
 - Wine submodule: `vendor/wine` (branch `dxmt-fixes-11.13`: wine-11.13 + rundll32 WS_VISIBLE fix + winemac macdrv export for DXMT)

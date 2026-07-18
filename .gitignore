@@ -96,3 +96,4 @@ vendor/.wine-installed
 vendor/ffmpeg/
 vendor/ffmpeg-x86/
 vendor/kosmickrisp/
+vendor/vkd3d-proton/
