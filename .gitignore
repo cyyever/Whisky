@@ -93,3 +93,6 @@ iOSInjectionProject/
 vendor/homebrew-x86/
 vendor/wine/build*/
 vendor/.wine-installed
+vendor/ffmpeg/
+vendor/ffmpeg-x86/
+vendor/kosmickrisp/

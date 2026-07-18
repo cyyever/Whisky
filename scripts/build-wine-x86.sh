@@ -69,8 +69,8 @@ arch -x86_64 env -i \
     CC="$CC_CMD" \
     CXX="$CXX_CMD" \
     PKG_CONFIG="$ARM_BREW_PREFIX/bin/pkg-config" \
-    PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \
-    PKG_CONFIG_LIBDIR="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig" \
+    PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
+    PKG_CONFIG_LIBDIR="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
     SDL2_CFLAGS="-I$X86_PREFIX/include/SDL2 -D_THREAD_SAFE" \
     SDL2_LIBS="-L$X86_PREFIX/lib -lSDL2" \
     LDFLAGS="-L$X86_PREFIX/lib -L$X86_PREFIX/opt/molten-vk/lib" \
@@ -114,6 +114,8 @@ for lib in freetype sdl2 molten-vk gnutls gettext/lib; do
 done
 # Also copy top-level lib dylibs
 cp -n "$X86_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+# Minimal x86_64 FFmpeg for winedmo (built by build-ffmpeg-x86.sh)
+cp -n "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 
 # Wine's x86_64-unix .so modules dlopen bundled dylibs by leaf name (e.g.
 # "libfreetype.6.dylib"); dyld won't find them in Wine/lib/ unless an rpath
