@@ -7,3 +7,8 @@
 [submodule "vendor/dxvk"]
 	path = vendor/dxvk
 	url = https://github.com/doitsujin/dxvk.git
+[submodule "vendor/mesa"]
+	path = vendor/mesa
+	url = https://gitlab.freedesktop.org/mesa/mesa.git
+	shallow = true
+	branch = main
