@@ -82,14 +82,49 @@ public enum Steam {
         }
 
         if installDXVKForD3D9Games(in: bottle) {
-            // `native,builtin` (never plain `native`): a d3d9 game that did not
-            // get the DXVK dll must fall back to the builtin instead of failing
-            // to launch with c0000135.
+            // `native` only (never `native,builtin`): the builtin wined3d D3D9
+            // path is broken on macOS (black/white screen), so falling back to it
+            // only masks the real problem. A d3d9 game that did not receive the
+            // DXVK dll should fail loudly (c0000135) rather than silently
+            // white-screen on a backend that cannot render.
             try? await Wine.addRegistryKey(
                 bottle: bottle, key: dllOverridesKey, name: "d3d9",
-                data: "native,builtin", type: .string
+                data: "native", type: .string
             )
         }
+    }
+
+    /// Existing `steamapps/common` directories across every Steam root in the
+    /// bottle. Used by ``SteamLibraryWatcher`` to know which trees to watch;
+    /// returns an empty array when Steam (or its library) is not present.
+    public static func steamLibraryCommonDirectories(in bottle: Bottle) -> [URL] {
+        let fileManager = FileManager.default
+        var directories: [URL] = []
+
+        for root in steamRoots {
+            let common = bottle.url
+                .appending(path: "drive_c")
+                .appending(path: root)
+                .appending(path: "steamapps/common")
+
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(
+                atPath: common.path(percentEncoded: false), isDirectory: &isDirectory
+            ), isDirectory.boolValue {
+                directories.append(common)
+            }
+        }
+
+        return directories
+    }
+
+    /// Re-run the D3D9 DXVK provisioning scan for a bottle whose Steam library
+    /// changed outside of Whisky's own launch path — a game installed or updated
+    /// from inside Steam's UI, which bypasses ``Wine/prepareForLaunch(bottle:)``.
+    /// Thin public wrapper over the internal, mtime-cached scan; cheap and safe
+    /// to call repeatedly (used by ``SteamLibraryWatcher``).
+    public static func rescanDXVKForD3D9Games(in bottle: Bottle) {
+        installDXVKForD3D9Games(in: bottle)
     }
 
     /// Install (or refresh) the webhelper wrapper and make sure the genuine

@@ -36,6 +36,12 @@ struct ContentView: View {
 
     @State private var bottleFilter = ""
 
+    // Watches the active bottle's Steam library so a game installed/updated from
+    // inside Steam's own UI still gets its DXVK d3d9.dll dropped (that launch
+    // path bypasses Whisky's runProgram, so the scan would otherwise not run).
+    // One watcher at a time, swapped as the selection changes — never leaked.
+    @State private var libraryWatcher: SteamLibraryWatcher?
+
     var body: some View {
         NavigationSplitView {
             sidebar
@@ -83,6 +89,11 @@ struct ContentView: View {
         }
         .onChange(of: selected) {
             selectedBottleURL = selected
+            updateLibraryWatcher(for: selected)
+        }
+        .onDisappear {
+            libraryWatcher?.stop()
+            libraryWatcher = nil
         }
         .handlesExternalEvents(preferring: [], allowing: ["*"])
         .onOpenURL { url in
@@ -103,7 +114,22 @@ struct ContentView: View {
             if !WhiskyWineInstaller.isWhiskyWineInstalled() {
                 showSetup = true
             }
+
+            updateLibraryWatcher(for: selected)
         }
+    }
+
+    /// Start watching the newly-active bottle's Steam library (and stop watching
+    /// the previous one). A no-op bottle — no Steam, or none selected — leaves no
+    /// watcher running, so watchers are never leaked or duplicated.
+    private func updateLibraryWatcher(for url: URL?) {
+        libraryWatcher?.stop()
+        libraryWatcher = nil
+
+        guard let url, let bottle = bottleVM.bottles.first(where: { $0.url == url }) else { return }
+        let watcher = SteamLibraryWatcher(bottle: bottle)
+        watcher.start()
+        libraryWatcher = watcher
     }
 
     var sidebar: some View {
