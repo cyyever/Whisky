@@ -1,0 +1,61 @@
+diff --git a/dlls/mmdevapi/main.c b/dlls/mmdevapi/main.c
+index 70eace863e1..8ead65aac40 100644
+--- a/dlls/mmdevapi/main.c
++++ b/dlls/mmdevapi/main.c
+@@ -181,7 +181,13 @@ static BOOL WINAPI init_driver(INIT_ONCE *once, void *param, void **context)
+         }
+         else midi_driver = drvs;
+ 
+-        load_devices_from_reg();
++        /* When WHISKY_HIDE_VIRTUAL_AUDIO is set, skip resurrecting devices from
++         * the registry cache: it would re-add virtual devices (Steam Streaming,
++         * loopback, ...) that the coreaudio driver now filters out of live
++         * enumeration, defeating the filter. Only currently-enumerated (already
++         * filtered) devices are loaded. No-op when the var is unset. */
++        if (!getenv("WHISKY_HIDE_VIRTUAL_AUDIO"))
++            load_devices_from_reg();
+         load_driver_devices(eRender);
+         load_driver_devices(eCapture);
+     }
+diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaudio.c
+index c7e0dc24048..44990d3998f 100644
+--- a/dlls/winecoreaudio.drv/coreaudio.c
++++ b/dlls/winecoreaudio.drv/coreaudio.c
+@@ -200,6 +200,29 @@ static BOOL device_has_channels(AudioDeviceID device, EDataFlow flow)
+     return ret;
+ }
+ 
++/* When the WHISKY_HIDE_VIRTUAL_AUDIO env var is set, hide virtual audio devices
++ * (Steam Streaming, Teams, loopback, ...) from apps. Some games hang forever
++ * enumerating them. Physical (built-in/USB/Bluetooth) and aggregate devices are
++ * left untouched, and the whole thing is a no-op when the var is unset. */
++static BOOL device_is_hidden_virtual(AudioDeviceID device)
++{
++    static int hide = -1;
++    AudioObjectPropertyAddress addr;
++    UInt32 transport, size;
++    OSStatus sc;
++
++    if(hide == -1) hide = getenv("WHISKY_HIDE_VIRTUAL_AUDIO") ? 1 : 0;
++    if(!hide) return FALSE;
++
++    addr.mSelector = kAudioDevicePropertyTransportType;
++    addr.mScope = kAudioObjectPropertyScopeGlobal;
++    addr.mElement = kAudioObjectPropertyElementMain;
++    size = sizeof(transport);
++    sc = AudioObjectGetPropertyData(device, &addr, 0, NULL, &size, &transport);
++    if(sc != noErr) return FALSE;
++    return transport == kAudioDeviceTransportTypeVirtual;
++}
++
+ static NTSTATUS unix_get_endpoint_ids(void *args)
+ {
+     struct get_endpoint_ids_params *params = args;
+@@ -268,6 +291,7 @@ static NTSTATUS unix_get_endpoint_ids(void *args)
+ 
+     for(i = 0; i < num_devices; i++){
+         if(!device_has_channels(devices[i], params->flow)) continue;
++        if(device_is_hidden_virtual(devices[i])) continue;
+ 
+         addr.mSelector = kAudioObjectPropertyName;
+         size = sizeof(CFStringRef);

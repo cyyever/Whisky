@@ -612,6 +612,38 @@
         }
       }
     },
+    "config.hideVirtualAudioDevices": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide Virtual Audio Devices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐藏虚拟音频设备"
+          }
+        }
+      }
+    },
+    "config.hideVirtualAudioDevices.info": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide virtual audio devices (Steam Streaming, Teams, loopback) from games — fixes some games that hang enumerating them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对游戏隐藏虚拟音频设备（Steam Streaming、Teams、环回设备）——可修复某些游戏枚举它们时卡死的问题。"
+          }
+        }
+      }
+    },
     "config.inspect": {
       "localizations": {
         "en": {

@@ -134,6 +134,10 @@ struct ConfigView: View {
                 Toggle(isOn: $bottle.settings.metalHud) {
                     Text("config.metalHud")
                 }
+                Toggle(isOn: $bottle.settings.hideVirtualAudioDevices) {
+                    Text("config.hideVirtualAudioDevices")
+                    Text("config.hideVirtualAudioDevices.info")
+                }
                 if Self.supportsRaytracing {
                     Toggle(isOn: $bottle.settings.dxrEnabled) {
                         Text("config.dxr")

@@ -117,6 +117,9 @@ public struct BottleMetalConfig: Codable, Equatable {
     /// DXMT: Metal-native D3D11 (builtin via `make dxmt`). On by default — it is
     /// the working D3D11 path for modern games on Apple Silicon.
     var dxmt: Bool = true
+    /// Hide virtual audio devices (Steam Streaming, Teams, loopback) from games.
+    /// On by default — some games hang while enumerating them.
+    var hideVirtualAudioDevices: Bool = true
 
     public init() {}
 
@@ -125,6 +128,9 @@ public struct BottleMetalConfig: Codable, Equatable {
         self.metalHud = try container.decodeIfPresent(Bool.self, forKey: .metalHud) ?? false
         self.dxrEnabled = try container.decodeIfPresent(Bool.self, forKey: .dxrEnabled) ?? false
         self.dxmt = try container.decodeIfPresent(Bool.self, forKey: .dxmt) ?? true
+        self.hideVirtualAudioDevices = try container.decodeIfPresent(
+            Bool.self, forKey: .hideVirtualAudioDevices
+        ) ?? true
     }
 }
 
@@ -215,6 +221,12 @@ public struct BottleSettings: Codable, Equatable {
         set { metalConfig.dxmt = newValue }
     }
 
+    /// Hide virtual audio devices from games. On by default.
+    public var hideVirtualAudioDevices: Bool {
+        get { return metalConfig.hideVirtualAudioDevices }
+        set { metalConfig.hideVirtualAudioDevices = newValue }
+    }
+
     @discardableResult
     public static func decode(from metadataURL: URL) throws -> Self {
         guard FileManager.default.fileExists(atPath: metadataURL.path(percentEncoded: false)) else {
@@ -280,6 +292,10 @@ public struct BottleSettings: Codable, Equatable {
 
         if dxrEnabled {
             wineEnv.updateValue("1", forKey: "D3DM_SUPPORT_DXR")
+        }
+
+        if hideVirtualAudioDevices {
+            wineEnv.updateValue("1", forKey: "WHISKY_HIDE_VIRTUAL_AUDIO")
         }
 
         if followSystemProxy {
