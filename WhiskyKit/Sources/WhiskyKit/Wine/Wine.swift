@@ -236,7 +236,12 @@ public class Wine {
             // Keep DEP on for legacy 32-bit images so Wine doesn't force PROT_EXEC
             // on data pages, which makes DXMT/Metal a slideshow on macOS Tahoe
             // (3Shain/dxmt#161). Honoured by patches/wine/0002-nx-compat-env-var.patch.
-            "WINE_NX_COMPAT": "1"
+            "WINE_NX_COMPAT": "1",
+            // Gamepads: skip SDL's GCController backend. On macOS 27.0 beta the
+            // GameController framework enumerates Xbox pads but delivers no input
+            // (26.0 had the same regression); SDL's HIDAPI/IOKit path reads the
+            // HID reports fine and keeps rumble. Revisit when GA fixes it.
+            "SDL_JOYSTICK_MFI": "0"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
         guard !environment.isEmpty else { return result }
@@ -254,7 +259,10 @@ public class Wine {
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-all",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
-            "GST_DEBUG": "1"
+            "GST_DEBUG": "1",
+            // winedevice.exe (hosting winebus.sys) inherits its unix environment
+            // from wineserver, so the gamepad workaround must be set here too.
+            "SDL_JOYSTICK_MFI": "0"
         ]
         guard !environment.isEmpty else { return result }
         result.merge(environment, uniquingKeysWith: { $1 })
