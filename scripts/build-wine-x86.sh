@@ -144,39 +144,52 @@ for lib in freetype sdl2 molten-vk gnutls gettext/lib; do
         cp -Rn "$LIBDIR"/*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
     fi
 done
-# Also copy top-level lib dylibs
-cp -Rn "$X86_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+# Also copy top-level lib dylibs. These are brew's link farm: symlinks into
+# ../Cellar/<keg>/..., which would be dangling inside the bundle — materialize
+# those with cp -L. (The keg loop above already copied real files with their
+# intra-directory version-chain symlinks; -n below keeps them.)
+for f in "$X86_PREFIX/lib/"*.dylib; do
+    dest="$INSTALL_DIR/Wine/lib/$(basename "$f")"
+    if [ -e "$dest" ] || [ -L "$dest" ]; then continue; fi
+    if [ -L "$f" ] && [[ "$(readlink "$f")" == */* ]]; then
+        cp -L "$f" "$dest" 2>/dev/null || true
+    else
+        cp -R "$f" "$dest" 2>/dev/null || true
+    fi
+done
 # Minimal x86_64 FFmpeg for winedmo (built by build-ffmpeg-x86.sh)
 cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 
 # --- KosmicKrisp Vulkan driver (Mesa) loader swap ----------------------------
-# winevulkan dlopens the Vulkan implementation by the leaf name
-# "libMoltenVK.dylib". When the KosmicKrisp driver has been built
-# (scripts/build-kosmickrisp-x86.sh), swap the real Khronos Vulkan loader in at
-# that path so ICD discovery picks KosmicKrisp up. This lives here (not in
-# build-dxvk.sh) because the Wine/lib bundling above just re-copied the stock
-# MoltenVK — asserting the swap right after keeps every `make wine` correct.
+# winevulkan dlopens the Vulkan implementation by leaf name: historically
+# "libMoltenVK.dylib", but a Wine configured against the x86 brew vulkan-loader
+# keg uses "libvulkan.1.dylib" instead. Install the real Khronos loader at BOTH
+# names so ICD discovery picks KosmicKrisp up either way. This lives here (not
+# in build-dxvk.sh) because the Wine/lib bundling above just re-copied the
+# brew dylibs — asserting the swap right after keeps every `make wine` correct.
 # Skipped entirely when the KosmicKrisp artifacts are absent (stock MoltenVK
 # stays in place).
 KK_DYLIB="$PROJECT_DIR/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib"
 VK_LOADER_DIR="$X86_PREFIX/opt/vulkan-loader/lib"
 if [ -f "$KK_DYLIB" ] && [ -d "$VK_LOADER_DIR" ]; then
     echo "=== Asserting KosmicKrisp Vulkan loader swap ==="
-    MVK="$INSTALL_DIR/Wine/lib/libMoltenVK.dylib"
     # No backup copy: stock MoltenVK is always recoverable from the x86 brew
     # molten-vk keg. Drop stale backups from older installs.
-    rm -f "$MVK.mvk-stock" "$MVK.orig"
+    rm -f "$INSTALL_DIR/Wine/lib/libMoltenVK.dylib.mvk-stock" \
+          "$INSTALL_DIR/Wine/lib/libMoltenVK.dylib.orig"
     # cp -L resolves the libvulkan.1 -> libvulkan.1.x.y symlink to a real file
-    # (the -Rn bundling above copies libMoltenVK.dylib as a symlink; replace it).
-    rm -f "$MVK"
-    cp -L "$VK_LOADER_DIR/libvulkan.1.dylib" "$MVK"
+    # (the bundling above may have left symlinks; replace with the loader).
+    for name in libMoltenVK.dylib libvulkan.1.dylib; do
+        rm -f "$INSTALL_DIR/Wine/lib/$name"
+        cp -L "$VK_LOADER_DIR/libvulkan.1.dylib" "$INSTALL_DIR/Wine/lib/$name"
+    done
 
     # ICD manifest so the loader finds the KosmicKrisp driver.
     ICD_DIR="$HOME/.local/share/vulkan/icd.d"
     mkdir -p "$ICD_DIR"
     cp "$PROJECT_DIR/vendor/kosmickrisp/kosmickrisp_icd.x86_64.json" \
        "$ICD_DIR/kosmickrisp_icd.x86_64.json"
-    echo "KosmicKrisp loader installed (stock MoltenVK kept as libMoltenVK.dylib.mvk-stock)"
+    echo "KosmicKrisp loader installed as libMoltenVK.dylib + libvulkan.1.dylib"
 fi
 
 # Wine's x86_64-unix .so modules dlopen bundled dylibs by leaf name (e.g.
