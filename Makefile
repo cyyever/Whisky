@@ -6,7 +6,7 @@ WINE_INSTALL := $(HOME)/Library/Application Support/com.isaacmarovitz.Whisky/Lib
 WINE_STAMP := $(CURDIR)/vendor/.wine-installed
 APP_BUILD := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products/Debug/Whisky.app
 
-.PHONY: all app wine steam-helper dxmt dxvk setup-x86-brew clean clean-wine help
+.PHONY: all app wine wine-debug steam-helper dxmt dxvk setup-x86-brew clean clean-wine help
 
 all: app wine steam-helper  ## Build everything (app + Wine + Steam helper)
 
@@ -28,6 +28,10 @@ wine: $(WINE_STAMP)  ## Build Wine x86_64 and install to Libraries
 $(WINE_STAMP): $(X86_BREW) $(WINE_SRC)/configure $(wildcard $(CURDIR)/patches/wine/*.patch)
 	$(SCRIPTS_DIR)/build-wine-x86.sh
 	@touch $@
+
+wine-debug:  ## Reinstall Wine keeping PE debug info (for winedbg sessions)
+	WHISKY_WINE_BUILD=debug $(SCRIPTS_DIR)/build-wine-x86.sh
+	@touch $(WINE_STAMP)
 
 clean-wine:  ## Remove Wine build artifacts (keeps installed Wine)
 	rm -rf $(WINE_SRC)/build-x86_64

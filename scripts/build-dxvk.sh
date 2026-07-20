@@ -55,6 +55,7 @@ MESON_OPTS=(
     -Denable_d3d11=false
     -Denable_dxgi=false
     --buildtype release
+    --strip
 )
 
 setup_arch() {  # <cross-file> <build-dir> <install-subdir>

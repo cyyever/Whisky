@@ -8,6 +8,10 @@ BUILD_DIR="$WINE_SRC/build-x86_64"
 INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
 X86_BREW_HOME="$PROJECT_DIR/vendor/homebrew-x86"
 X86_BREW="$X86_BREW_HOME/bin/brew"
+# release (default) strips PE debug info at install time; debug keeps it for
+# winedbg (`make wine-debug`). Compilation always carries -g, so switching
+# modes never invalidates the build tree or ccache — only the install differs.
+WINE_BUILD="${WHISKY_WINE_BUILD:-release}"
 
 echo "=== Building Wine x86_64 from $WINE_SRC ==="
 
@@ -103,24 +107,47 @@ arch -x86_64 make install DESTDIR="$TMPINSTALL"
 WINE_INSTALL_BIN=$(find "$TMPINSTALL" -name "wine" -type f | head -1)
 WINE_INSTALL_ROOT=$(dirname "$(dirname "$WINE_INSTALL_BIN")")
 
+# --- Trim the install --------------------------------------------------------
+# winegcc import libs (.a, ~97 MB) and man pages are dev-only. PE debug
+# sections are ~2/3 of lib/wine and only useful to winedbg — stripped in
+# release installs, kept by `make wine-debug`. (.tlb/.msstyles are data, not
+# PE — excluded.)
+find "$WINE_INSTALL_ROOT/lib/wine" -name '*.a' -delete
+rm -rf "$WINE_INSTALL_ROOT/share/man"
+if [ "$WINE_BUILD" = "release" ]; then
+    echo "=== Stripping PE debug info (release install) ==="
+    MINGW_STRIP="$ARM_BREW_PREFIX/bin/x86_64-w64-mingw32-strip"
+    if [ ! -x "$MINGW_STRIP" ]; then
+        echo "ERROR: $MINGW_STRIP not found (brew install mingw-w64)"
+        exit 1
+    fi
+    find "$WINE_INSTALL_ROOT/lib/wine" \( -name '*.dll' -o -name '*.exe' \
+        -o -name '*.sys' -o -name '*.cpl' -o -name '*.ocx' -o -name '*.acm' \
+        -o -name '*.drv' -o -name '*.ax' -o -name '*.com' \) \
+        -exec "$MINGW_STRIP" --strip-unneeded {} +
+fi
+
 rm -rf "$INSTALL_DIR/Wine"
 mkdir -p "$INSTALL_DIR/Wine"
 cp -R "$WINE_INSTALL_ROOT/bin" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/lib" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/share" "$INSTALL_DIR/Wine/"
 
-# Bundle x86 dylibs so Wine finds them at runtime
+# Bundle x86 dylibs so Wine finds them at runtime. cp -R (implies -P on BSD)
+# preserves the libfoo.dylib -> libfoo.N.dylib -> libfoo.N.x.y.dylib symlink
+# chains — plain cp used to materialize each as a full copy (3x libavcodec
+# alone wasted ~28 MB).
 echo "=== Bundling runtime dylibs ==="
 for lib in freetype sdl2 molten-vk gnutls gettext/lib; do
     LIBDIR="$X86_PREFIX/opt/$lib/lib"
     if [ -d "$LIBDIR" ]; then
-        cp -n "$LIBDIR"/*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+        cp -Rn "$LIBDIR"/*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
     fi
 done
 # Also copy top-level lib dylibs
-cp -n "$X86_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+cp -Rn "$X86_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 # Minimal x86_64 FFmpeg for winedmo (built by build-ffmpeg-x86.sh)
-cp -n "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 
 # --- KosmicKrisp Vulkan driver (Mesa) loader swap ----------------------------
 # winevulkan dlopens the Vulkan implementation by the leaf name
@@ -136,11 +163,12 @@ VK_LOADER_DIR="$X86_PREFIX/opt/vulkan-loader/lib"
 if [ -f "$KK_DYLIB" ] && [ -d "$VK_LOADER_DIR" ]; then
     echo "=== Asserting KosmicKrisp Vulkan loader swap ==="
     MVK="$INSTALL_DIR/Wine/lib/libMoltenVK.dylib"
-    # The freshly bundled libMoltenVK.dylib is stock MoltenVK; keep it as backup.
-    if [ -e "$MVK" ] && [ ! -e "$MVK.mvk-stock" ]; then
-        cp "$MVK" "$MVK.mvk-stock"
-    fi
-    # cp -L resolves the libvulkan.1 -> libvulkan.1.x.y symlink to a real file.
+    # No backup copy: stock MoltenVK is always recoverable from the x86 brew
+    # molten-vk keg. Drop stale backups from older installs.
+    rm -f "$MVK.mvk-stock" "$MVK.orig"
+    # cp -L resolves the libvulkan.1 -> libvulkan.1.x.y symlink to a real file
+    # (the -Rn bundling above copies libMoltenVK.dylib as a symlink; replace it).
+    rm -f "$MVK"
     cp -L "$VK_LOADER_DIR/libvulkan.1.dylib" "$MVK"
 
     # ICD manifest so the loader finds the KosmicKrisp driver.
