@@ -5,13 +5,20 @@ set -e
 # build-wine-x86.sh's install. Assumes the Proton build tree already exists
 # (vendor/proton-wine/build). DXMT + DXVK install on top afterwards.
 #
-#   INSTALL_DIR   where to place the Wine/ tree (default: vendor/proton-wine/dist)
-# Swap into Whisky with:  cp -R "$INSTALL_DIR/Wine" ~/Library/Application\ Support/com.isaacmarovitz.Whisky/Libraries/Wine
+#   INSTALL_DIR        where to stage the Wine/ tree (default: vendor/proton-wine/dist)
+#   INSTALL_TO_WHISKY  =1 also installs into Libraries/WineProton, the path the
+#                      app's per-bottle ".proton" backend runs from (leaving the
+#                      canonical Libraries/Wine untouched). Then pick "Proton" in
+#                      a bottle's Config → Wine Backend.
+#
+# Manual swap of the WHOLE stack instead (replaces Whisky Wine):
+#   cp -R "$INSTALL_DIR/Wine" ~/Library/Application\ Support/com.isaacmarovitz.Whisky/Libraries/Wine
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROTON="$PROJECT_DIR/vendor/proton-wine"
 BUILD="$PROTON/build"
 INSTALL_DIR="${INSTALL_DIR:-$PROTON/dist}"
+WHISKY_LIBRARIES="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
 X86_PREFIX="$PROJECT_DIR/vendor/homebrew-x86"
 ARM_BREW_PREFIX="$(brew --prefix)"
 export PATH="$ARM_BREW_PREFIX/opt/bison/bin:$ARM_BREW_PREFIX/bin:$X86_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -74,5 +81,18 @@ fi
 
 cd "$INSTALL_DIR/Wine/bin"; [ ! -f wine64 ] && ln -s wine wine64
 rm -rf "$TMPINSTALL"
+
+# Optionally install into the app's per-bottle Proton backend path
+# (Libraries/WineProton). The tree lands directly under WineProton/ so that
+# WineProton/bin/wine64 matches WhiskyWineInstaller.protonBinFolder.
+if [ "${INSTALL_TO_WHISKY:-0}" = "1" ]; then
+    DEST="$WHISKY_LIBRARIES/WineProton"
+    echo "=== install into Whisky Proton backend: $DEST ==="
+    rm -rf "$DEST"; mkdir -p "$DEST"
+    cp -R "$INSTALL_DIR/Wine/." "$DEST/"
+    echo "Proton backend installed. In Whisky: bottle Config → Wine Backend → Proton."
+    echo "  (build DXMT on top with DXMT_WINE_LIB=\"$DEST/lib/wine\")"
+fi
+
 echo "=== DONE ==="; "$INSTALL_DIR/Wine/bin/wine" --version; file "$INSTALL_DIR/Wine/bin/wine"
 echo "Installed to: $INSTALL_DIR/Wine"
