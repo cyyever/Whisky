@@ -92,10 +92,10 @@ index 4deeac7..a21833a 100644
  
 diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
 new file mode 100644
-index 0000000..cecf663
+index 0000000..922486f
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync.c
-@@ -0,0 +1,1866 @@
+@@ -0,0 +1,1881 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -610,6 +610,21 @@ index 0000000..cecf663
 +            semaphore_pool_free( sem );
 +            return STATUS_PENDING;
 +        }
++    }
++
++    /* Close the register/signal race: an object can be signaled between the
++     * check_shm_contention() above and server_register_wait() taking effect.
++     * signal_all() only wakes registered waiters (it skips the wakeup mach msg
++     * when obj->shm[3] == 0) and that msg can also race our registration on the
++     * wineserver's port -- but signal_all() sets the shm signaled-state
++     * synchronously (shared memory) *before* sending it. So re-check the shm now
++     * that we are registered; if a signal already landed, bail to re-poll rather
++     * than block forever on a wakeup that already fired. */
++    if (check_shm_contention( objs, count, tid ))
++    {
++        server_remove_wait( msgh_id, objs, count );
++        semaphore_pool_free( sem );
++        return STATUS_PENDING;
 +    }
 +
 +    do
