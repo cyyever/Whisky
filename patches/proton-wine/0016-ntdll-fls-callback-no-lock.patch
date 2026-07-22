@@ -1,0 +1,98 @@
+From: cyy <cyyever@gmail.com>
+Date: Tue, 21 Jul 2026 00:00:00 +0000
+Subject: [PATCH] ntdll: do not hold fls_section while running FLS callbacks
+
+RtlFlsFree() and RtlProcessFlsData() invoked the per-index FLS callback with
+the global fls_section critical section held. A callback that blocks on another
+thread which itself needs fls_section (FlsAlloc/FlsFree, or its own thread-exit
+FLS cleanup) then deadlocks. On Windows FLS callbacks run with no internal lock
+held; upstream Wine keeps the lock and only survives the process-exit variant
+via its shutdown path. Under msync + Rosetta the thread timing makes Steam's
+bootstrap-exit handoff hit this lock inversion deterministically: one thread
+sits 60s in RtlpWaitForCriticalSection ("fls_section ... blocked by <tid>")
+and Steam's client never starts.
+
+Match Windows semantics: snapshot nothing, but clear each data slot *before*
+invoking its callback (so a rescan or a concurrent teardown can never call it
+twice), drop fls_section around the callback, then re-acquire and rescan from
+the start since the thread list / registry may have changed while unlocked.
+---
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 0869b3b..437dca6 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -621,20 +621,29 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH RtlFlsFree( ULONG index )
+         return STATUS_INVALID_PARAMETER;
+     }
+ 
++restart:
+     for (entry = fls_data.fls_list_head.Flink; entry != &fls_data.fls_list_head; entry = entry->Flink)
+     {
+         TEB_FLS_DATA *fls = CONTAINING_RECORD(entry, TEB_FLS_DATA, fls_list_entry);
++        void *fls_arg;
+ 
+-        if (fls->fls_data_chunks[chunk_index] && fls->fls_data_chunks[chunk_index][idx + 1])
++        if (!fls->fls_data_chunks[chunk_index] || !(fls_arg = fls->fls_data_chunks[chunk_index][idx + 1]))
++            continue;
++
++        /* Clear the slot before invoking so a rescan or concurrent teardown
++         * never calls it twice. */
++        fls->fls_data_chunks[chunk_index][idx + 1] = NULL;
++        if (callback != (void *)~(ULONG_PTR)0)
+         {
+-            if (callback != (void *)~(ULONG_PTR)0)
+-            {
+-                TRACE_(relay)("Calling FLS callback %p, arg %p.\n", callback,
+-                        fls->fls_data_chunks[chunk_index][idx + 1]);
++            TRACE_(relay)("Calling FLS callback %p, arg %p.\n", callback, fls_arg);
+ 
+-                callback( fls->fls_data_chunks[chunk_index][idx + 1] );
+-            }
+-            fls->fls_data_chunks[chunk_index][idx + 1] = NULL;
++            /* Call without fls_section held: a callback may block on a thread
++             * that itself needs the lock (Windows holds no lock here). The list
++             * can change while unlocked, so rescan from the head afterwards. */
++            unlock_fls_data();
++            callback( fls_arg );
++            lock_fls_data();
++            goto restart;
+         }
+     }
+ 
+@@ -711,6 +720,7 @@ void WINAPI DECLSPEC_HOTPATCH RtlProcessFlsData( void *teb_fls_data, ULONG flags
+     if (flags & 1)
+     {
+         lock_fls_data();
++restart:
+         for (i = 0; i < ARRAY_SIZE(fls->fls_data_chunks); ++i)
+         {
+             if (!fls->fls_data_chunks[i] || !fls_data.fls_callback_chunks[i]
+@@ -720,18 +730,23 @@ void WINAPI DECLSPEC_HOTPATCH RtlProcessFlsData( void *teb_fls_data, ULONG flags
+             for (index = 0; index < fls_chunk_size( i ); ++index)
+             {
+                 PFLS_CALLBACK_FUNCTION callback = fls_data.fls_callback_chunks[i]->callbacks[index].callback;
++                void *fls_arg = fls->fls_data_chunks[i][index + 1];
+ 
+-                if (!fls->fls_data_chunks[i][index + 1])
++                if (!fls_arg)
+                     continue;
+ 
++                /* Clear before invoking so a rescan or concurrent free can't double-call. */
++                fls->fls_data_chunks[i][index + 1] = NULL;
+                 if (callback && callback != (void *)~(ULONG_PTR)0)
+                 {
+-                    TRACE_(relay)("Calling FLS callback %p, arg %p.\n", callback,
+-                            fls->fls_data_chunks[i][index + 1]);
++                    TRACE_(relay)("Calling FLS callback %p, arg %p.\n", callback, fls_arg);
+ 
+-                    callback( fls->fls_data_chunks[i][index + 1] );
++                    /* Call without fls_section held (see RtlFlsFree); rescan after. */
++                    unlock_fls_data();
++                    callback( fls_arg );
++                    lock_fls_data();
++                    goto restart;
+                 }
+-                fls->fls_data_chunks[i][index + 1] = NULL;
+             }
+         }
+         /* Not using RemoveEntryList() as Windows does not zero list entry here. */

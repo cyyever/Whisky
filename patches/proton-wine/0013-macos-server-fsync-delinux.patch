@@ -1,0 +1,20 @@
+Subject: server: de-linux fsync stubs for macOS build
+
+Compiles the fsync fallback path on macOS (no futex); complements the ntdll de-linux patch 0001.
+
+diff --git a/server/fsync.c b/server/fsync.c
+index 7d3ec64..ce4370f 100644
+--- a/server/fsync.c
++++ b/server/fsync.c
+@@ -310,7 +310,11 @@ int fsync_grab_shm_idx( unsigned int shm_idx )
+ 
+ static inline int futex_wake( int *addr, int val )
+ {
++#ifdef __linux__
+     return syscall( __NR_futex, addr, 1, val, NULL, 0, 0 );
++#else
++    return 0;  /* fsync (Linux futex) unavailable on non-Linux; no-op */
++#endif
+ }
+ 
+ /* shm layout for events or event-like objects. */

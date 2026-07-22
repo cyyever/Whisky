@@ -1,0 +1,230 @@
+From: cyy <cyyever@gmail.com>
+Date: Mon, 21 Jul 2026 00:00:00 +0000
+Subject: [PATCH] macos/msync: handle wait sets mixing msync and server objects
+
+msync (like the old esync) cannot natively wait on a set that mixes fast
+msync objects (events/mutexes/semaphores) with pure-server objects (named
+pipes, async I/O, completion ports, ...). Upstream just logs a FIXME and then
+waits on the msync objects only, silently ignoring the server ones -- which
+deadlocks whenever a server object is the waker. On macOS this is hit hard by
+anything RPC/service-driven: RpcSs startup, wine-mono MSI installs, and the
+service-startup handshake during a cold wineboot (leaving syswow64 unpopulated
+and Steam's IFEO reg-add hung).
+
+fsync avoids this because the server hands every object an in-proc-sync fd it
+can wait on; msync objects have no server-side representation, so we cannot
+delegate the whole set to server_wait(). Instead, poll: grab any ready msync
+object in userspace (fast), and between checks do a short bounded server_wait()
+on just the server subset so the server can wake us when one of those signals.
+Only mixed waits take this path (never a game hot path), so the small poll
+latency is irrelevant. Implements wait-any (a mixed set always has count >= 2);
+wait-all mixed is left to the legacy path.
+
+Signed-off-by: cyy <cyyever@gmail.com>
+---
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+index c2e16f9..9579cb3 100644
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -145,29 +145,16 @@ static inline mach_msg_return_t mach_msg2( mach_msg_header_t *data, uint64_t opt
+     mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_t rcv_name, uint64_t timeout,
+     uint32_t priority)
+ {
+-    mach_msg_base_t *base;
+-    mach_msg_size_t descriptors;
+-
+-    if (!mach_msg2_trap)
+-        return mach_msg_trap( data, (mach_msg_option_t)option64, send_size,
+-                              rcv_size, rcv_name, timeout, priority );
+-
+-    base = (mach_msg_base_t *)data;
+-
+-    if ((option64 & MACH_SEND_MSG) &&
+-        (base->header.msgh_bits & MACH_MSGH_BITS_COMPLEX))
+-        descriptors = base->body.msgh_descriptor_count;
+-    else
+-        descriptors = 0;
+-
+-#define MACH_MSG2_SHIFT_ARGS(lo, hi) ((uint64_t)hi << 32 | (uint32_t)lo)
+-    return mach_msg2_internal(data, option64 | MACH64_SEND_MQ_CALL,
+-               MACH_MSG2_SHIFT_ARGS(data->msgh_bits, send_size),
+-               MACH_MSG2_SHIFT_ARGS(data->msgh_remote_port, data->msgh_local_port),
+-               MACH_MSG2_SHIFT_ARGS(data->msgh_voucher_port, data->msgh_id),
+-               MACH_MSG2_SHIFT_ARGS(descriptors, rcv_name),
+-               MACH_MSG2_SHIFT_ARGS(rcv_size, priority), timeout);
+-#undef MACH_MSG2_SHIFT_ARGS
++    /* Route through the public mach_msg() rather than the raw mach_msg2_trap:
++     * under Rosetta the dlsym'd raw trap is invoked through an untranslated
++     * pointer and crashes. libSystem's mach_msg() is translated correctly.
++     * (priority is always 0 here, so it maps to a NULL notify port.) */
++    (void)priority;
++    /* mach_msg() takes 32-bit option/timeout; assert no lossy narrowing. */
++    assert( !(option64 >> 32) );
++    assert( timeout <= 0xffffffff );
++    return mach_msg( data, (mach_msg_option_t)option64, send_size, rcv_size,
++                     rcv_name, (mach_msg_timeout_t)timeout, MACH_PORT_NULL );
+ }
+ 
+ /* this is a lot, but running out cripples performance */
+@@ -1174,6 +1161,144 @@ static NTSTATUS do_single_wait( struct msync *obj, ULONGLONG *end, BOOLEAN alert
+     return status;
+ }
+ 
++/* Poll interval (100ns units) for a wait set that mixes msync and server
++ * objects. Only mixed waits take this path (never a game hot path), so a small
++ * latency is irrelevant. */
++#define MSYNC_MIXED_POLL_INTERVAL (2 * 10000)  /* 2 ms  -- initial poll */
++#define MSYNC_MIXED_POLL_MAX      (16 * 10000) /* 16 ms -- idle backoff cap */
++
++/* Handle a wait-any set that mixes msync objects with pure-server objects
++ * (named pipes, async I/O, completion ports, processes, ...).
++ *
++ * Upstream msync -- and fsync -- merely log a FIXME here and then wait on the
++ * fast objects only, silently ignoring the server objects. That deadlocks
++ * whenever a server object is the one that gets signaled: RPC / RpcSs startup,
++ * MSI (wine-mono) installs, and service-startup handshakes all do exactly this
++ * (WaitForMultipleObjects of an msync event together with a named pipe). fsync
++ * avoids it because the server hands every object an in-proc-sync fd it can
++ * wait on; msync objects have no such server-side representation, so we cannot
++ * simply delegate the whole set to server_wait().
++ *
++ * Instead we poll: repeatedly grab any ready msync object in userspace (fast),
++ * and between checks do a short server_wait() on just the server subset so the
++ * server can wake us when one of those signals. `objs[i]==NULL` marks a server
++ * object (get_object() left it NULL); non-NULL marks an msync object. */
++static NTSTATUS msync_wait_mixed_any( DWORD count, const HANDLE *handles,
++    struct msync **objs, BOOLEAN alertable, const LARGE_INTEGER *timeout, ULONGLONG end )
++{
++    static const LARGE_INTEGER zero = {0};
++    union select_op select_op;
++    unsigned int server_map[MAXIMUM_WAIT_OBJECTS];
++    unsigned int server_count = 0, flags, i;
++    int current_tid = GetCurrentThreadId();
++    LONGLONG interval = MSYNC_MIXED_POLL_INTERVAL;
++    NTSTATUS ret;
++
++    flags = SELECT_INTERRUPTIBLE | (alertable ? SELECT_ALERTABLE : 0);
++
++    select_op.wait.op = SELECT_WAIT;
++    for (i = 0; i < count; i++)
++    {
++        if (!objs[i]) /* server object */
++        {
++            select_op.wait.handles[server_count] = wine_server_obj_handle( handles[i] );
++            server_map[server_count] = i;
++            server_count++;
++        }
++    }
++
++    while (1)
++    {
++        LARGE_INTEGER poll;
++        int *apc_addr = ntdll_get_thread_data()->msync_apc_addr;
++        LONGLONG left = interval;
++
++        if (alertable && apc_addr && __atomic_load_n( apc_addr, __ATOMIC_SEQ_CST ))
++        {
++            ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero );
++            if (ret == STATUS_TIMEOUT) ret = STATUS_USER_APC;
++            return ret;
++        }
++
++        /* 1. Try to grab any ready msync object (userspace, fast). */
++        for (i = 0; i < count; i++)
++        {
++            struct msync *obj = objs[i];
++
++            if (!obj) continue;
++            switch (obj->type)
++            {
++            case MSYNC_SEMAPHORE:
++            {
++                struct semaphore *semaphore = obj->shm;
++                int current = __atomic_load_n( &semaphore->count, __ATOMIC_ACQUIRE );
++                if (current && __atomic_compare_exchange_n( &semaphore->count, &current,
++                        current - 1, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED ))
++                    return i;
++                break;
++            }
++            case MSYNC_MUTEX:
++            {
++                struct mutex *mutex = obj->shm;
++                int tid = 0;
++                if (mutex->tid == current_tid) { mutex->count++; return i; }
++                if (__atomic_compare_exchange_n( &mutex->tid, &tid, current_tid, 0,
++                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED )) { mutex->count = 1; return i; }
++                else if (tid == ~0 && __atomic_compare_exchange_n( &mutex->tid, &tid, current_tid, 0,
++                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED )) { mutex->count = 1; return STATUS_ABANDONED_WAIT_0 + i; }
++                break;
++            }
++            case MSYNC_AUTO_EVENT:
++            case MSYNC_AUTO_SERVER:
++            {
++                struct event *event = obj->shm;
++                int signaled = 1;
++                if (__atomic_compare_exchange_n( &event->signaled, &signaled, 0, 0,
++                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED ))
++                    return i;
++                break;
++            }
++            case MSYNC_MANUAL_EVENT:
++            case MSYNC_MANUAL_SERVER:
++            case MSYNC_QUEUE:
++            {
++                struct event *event = obj->shm;
++                if (__atomic_load_n( &event->signaled, __ATOMIC_ACQUIRE ))
++                    return i;
++                break;
++            }
++            default:
++                break;
++            }
++        }
++
++        /* 2. Bound the poll interval by the overall deadline. */
++        if (timeout)
++        {
++            LARGE_INTEGER now;
++            NtQuerySystemTime( &now );
++            left = end - now.QuadPart;
++            if (left <= 0) return STATUS_TIMEOUT;
++            if (left > interval) left = interval;
++        }
++        poll.QuadPart = -left; /* relative timeout */
++
++        /* 3. Let the server wake us if a server object signals. */
++        ret = server_wait( &select_op,
++            offsetof( union select_op, wait.handles[server_count] ), flags, &poll );
++
++        if (ret < server_count) return server_map[ret];
++        if (ret >= STATUS_ABANDONED_WAIT_0 && ret < STATUS_ABANDONED_WAIT_0 + server_count)
++            return STATUS_ABANDONED_WAIT_0 + server_map[ret - STATUS_ABANDONED_WAIT_0];
++        if (ret == STATUS_USER_APC || ret == STATUS_KERNEL_APC) return ret;
++        /* Only a poll timeout means "recheck"; propagate any real error. */
++        if (ret != STATUS_TIMEOUT) return ret;
++
++        /* Back off so an idle mixed wait doesn't busy-poll the server forever. */
++        if (interval < MSYNC_MIXED_POLL_MAX) interval *= 2;
++    }
++}
++
+ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
+     BOOLEAN wait_any, BOOLEAN alertable, const LARGE_INTEGER *timeout )
+ {
+@@ -1237,7 +1362,15 @@ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
+         msgwait = TRUE;
+ 
+     if (has_msync && has_server)
+-        FIXME("Can't wait on msync and server objects at the same time!\n");
++    {
++        /* A wait set mixing msync and server objects cannot be handled by
++         * either mechanism alone; poll both. (A mixed set always has count >= 2,
++         * so it is a wait-any unless the caller asked for wait-all.) */
++        if (wait_any || count <= 1)
++            return msync_wait_mixed_any( count, handles, objs, alertable,
++                                         timeout, timeout ? end : 0 );
++        FIXME("Can't wait-all on msync and server objects at the same time!\n");
++    }
+     else if (has_server)
+         return STATUS_NOT_IMPLEMENTED;
+ 

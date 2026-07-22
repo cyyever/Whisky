@@ -1,0 +1,126 @@
+From: cyy <cyyever@gmail.com>
+Date: Mon, 21 Jul 2026 00:00:00 +0000
+Subject: [PATCH] combase: wait for the RpcSs endpoint on cold start
+
+COM out-of-process activation binds to RpcSs via ncalrpc:[irpcss]. On a cold
+start the client can race ahead of rpcss and try to connect to
+\\.\pipe\lrpc\irpcss before rpcss has created it, getting RPC_S_SERVER_UNAVAILABLE.
+combase's retry path (RPCSS_CALL_END -> start_rpcss) is meant to cover this, but
+start_rpcss() gave up (returned FALSE) whenever OpenService("RpcSs") failed --
+which happens during the same cold-start window before services.exe is fully up.
+With no retry, the exception propagates and the client (e.g. steam.exe) crashes.
+
+This is easy to lose on macOS under Rosetta, where services boot much more
+slowly and asynchronously, widening the race window; on native x86 Linux rpcss
+almost always wins the sprint so the bug rarely shows.
+
+Make start_rpcss() best-effort about the SCM/StartService calls (they may
+legitimately fail this early, and rpcss is auto-started by services.exe anyway)
+and, crucially, wait for the ncalrpc endpoint pipe to actually become
+connectable before returning success -- so the caller's retry connects instead
+of failing. Bounded so we still give up if rpcss genuinely never appears. This
+also covers the case where the service reports SERVICE_RUNNING before it has
+created its endpoint.
+
+Signed-off-by: cyy <cyyever@gmail.com>
+---
+diff --git a/dlls/combase/rpc.c b/dlls/combase/rpc.c
+index c51b59d..c5baab8 100644
+--- a/dlls/combase/rpc.c
++++ b/dlls/combase/rpc.c
+@@ -184,53 +184,57 @@ static LONG WINAPI rpc_filter(EXCEPTION_POINTERS *eptr)
+ 
+ static BOOL start_rpcss(void)
+ {
+-    SERVICE_STATUS_PROCESS status;
++    /* ncalrpc maps IRPCSS_ENDPOINT to this pipe; derive it so it can't drift. */
++    static const WCHAR ncalrpc_pipe_prefixW[] = L"\\\\.\\pipe\\lrpc\\";
++    unsigned short irpcss_endpoint[] = IRPCSS_ENDPOINT;
++    WCHAR irpcss_pipeW[ARRAY_SIZE(ncalrpc_pipe_prefixW) + ARRAY_SIZE(irpcss_endpoint)];
+     SC_HANDLE scm, service;
+-    BOOL ret = FALSE;
++    ULONGLONG start_time;
+ 
+     TRACE("\n");
+ 
+-    if (!(scm = OpenSCManagerW(NULL, NULL, 0)))
+-    {
+-        ERR("Failed to open service manager\n");
+-        return FALSE;
+-    }
+-
+-    if (!(service = OpenServiceW(scm, L"RpcSs", SERVICE_START | SERVICE_QUERY_STATUS)))
+-    {
+-        ERR("Failed to open RpcSs service\n");
+-        CloseServiceHandle( scm );
+-        return FALSE;
+-    }
++    wcscpy( irpcss_pipeW, ncalrpc_pipe_prefixW );
++    wcscat( irpcss_pipeW, (const WCHAR *)irpcss_endpoint );
+ 
+-    if (StartServiceW(service, 0, NULL) || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING)
++    /* Best-effort: nudge the SCM to start RpcSs. On a cold start the SCM itself,
++     * or the RpcSs service entry, may not be reachable yet (services.exe is
++     * still coming up) -- that is not fatal here, since RpcSs is also started
++     * automatically by services.exe. We wait for its endpoint below regardless
++     * of how it ends up getting started. */
++    if ((scm = OpenSCManagerW(NULL, NULL, 0)))
+     {
+-        ULONGLONG start_time = GetTickCount64();
+-        do
++        if ((service = OpenServiceW(scm, L"RpcSs", SERVICE_START | SERVICE_QUERY_STATUS)))
+         {
+-            DWORD dummy;
+-
+-            if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, (BYTE *)&status, sizeof(status), &dummy))
+-                break;
+-            if (status.dwCurrentState == SERVICE_RUNNING)
+-            {
+-                ret = TRUE;
+-                break;
+-            }
+-            if (GetTickCount64() - start_time > 30000) break;
+-            Sleep( 100 );
+-
+-        } while (status.dwCurrentState == SERVICE_START_PENDING);
+-
+-        if (status.dwCurrentState != SERVICE_RUNNING)
+-            WARN("RpcSs failed to start %lu\n", status.dwCurrentState);
++            if (!StartServiceW(service, 0, NULL) && GetLastError() != ERROR_SERVICE_ALREADY_RUNNING)
++                WARN("Failed to start RpcSs service\n");
++            CloseServiceHandle(service);
++        }
++        else
++            WARN("Failed to open RpcSs service\n");
++        CloseServiceHandle(scm);
+     }
+     else
+-        ERR("Failed to start RpcSs service\n");
+-
+-    CloseServiceHandle(service);
+-    CloseServiceHandle(scm);
+-    return ret;
++        WARN("Failed to open service manager\n");
++
++    /* Wait for rpcss to actually be connectable before telling the caller to
++     * retry. Relying on the service state alone is racy: on slow cold starts
++     * (notably macOS under Rosetta, where services boot asynchronously and far
++     * more slowly) rpcss may not be running yet when we get here, or may report
++     * SERVICE_RUNNING before it has created its ncalrpc endpoint -- in which
++     * case the COM activation that called us would simply fail again with
++     * RPC_S_SERVER_UNAVAILABLE, and the client would crash. Block until the
++     * endpoint pipe exists, bounded so we still give up if rpcss genuinely
++     * never appears. */
++    start_time = GetTickCount64();
++    do
++    {
++        if (WaitNamedPipeW( irpcss_pipeW, 1000 ))
++            return TRUE;
++        Sleep( 50 );
++    } while (GetTickCount64() - start_time < 30000);
++
++    ERR("timed out waiting for the RpcSs endpoint to become available\n");
++    return FALSE;
+ }
+ 
+ static RPC_BINDING_HANDLE get_rpc_handle(unsigned short *protseq, unsigned short *endpoint)

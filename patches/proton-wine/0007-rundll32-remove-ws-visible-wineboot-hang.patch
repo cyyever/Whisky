@@ -1,0 +1,21 @@
+From: cyy <cyyever@gmail.com>
+Subject: [PATCH] rundll32: remove WS_VISIBLE to fix wineboot hang on macOS
+
+On macOS (winemac.drv), rundll32 creating a WS_VISIBLE top-level window
+during wineboot's wine.inf install deadlocks (the wineboot child never
+returns, so wineboot --init hangs forever). rundll32 has no real UI here,
+so drop WS_VISIBLE. Ported from Whisky Wine commit 8122690.
+---
+diff --git a/programs/rundll32/rundll32.c b/programs/rundll32/rundll32.c
+index 2ab635a..da115db 100644
+--- a/programs/rundll32/rundll32.c
++++ b/programs/rundll32/rundll32.c
+@@ -271,7 +271,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE hOldInstance, LPWSTR szCmdLine
+ 
+     /* Initialize the rundll32 class */
+     register_class();
+-    hWnd = CreateWindowW(L"class_rundll32", L"rundll32", WS_OVERLAPPEDWINDOW|WS_VISIBLE,
++    hWnd = CreateWindowW(L"class_rundll32", L"rundll32", WS_OVERLAPPEDWINDOW,
+           CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, NULL, NULL, NULL, NULL);
+ 
+     /* Get the dll name and API EntryPoint */

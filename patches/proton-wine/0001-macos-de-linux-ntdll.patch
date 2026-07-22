@@ -1,0 +1,88 @@
+Subject: ntdll: de-linux TEB/futex paths and macOS TEB fix
+
+macOS x86_64 build: guard Linux-only futex/CPU paths and make set_thread_teb a no-op on Apple (the dispatcher manages %gs/pthread TSD; writing the raw TEB clobbers it -> SIGBUS). sync.c and loader.c de-linux hunks live in the msync patch (0008) which owns those files in full.
+
+diff --git a/dlls/ntdll/unix/fsync.c b/dlls/ntdll/unix/fsync.c
+index 25d41ca..97968eb 100644
+--- a/dlls/ntdll/unix/fsync.c
++++ b/dlls/ntdll/unix/fsync.c
+@@ -61,6 +61,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(fsync);
+ #include "poppack.h"
+ 
+ int fsync_enabled;
++
++#ifdef __linux__
+ static int current_pid;
+ 
+ /* futex_waitv interface */
+@@ -1236,3 +1238,23 @@ NTSTATUS fsync_signal_and_wait( HANDLE signal, HANDLE wait, BOOLEAN alertable,
+ 
+     return fsync_wait_objects( 1, &wait, TRUE, alertable, timeout );
+ }
++
++#else  /* !__linux__ : fsync is futex-based (Linux only); stub out so callers
++        * fall back to server-side sync. fsync_enabled stays 0 -> never reached. */
++
++void fsync_init( DWORD pid ) { }
++NTSTATUS fsync_close( HANDLE handle ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_release_semaphore( HANDLE handle, ULONG count, ULONG *prev ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_query_semaphore( HANDLE handle, void *info ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_set_event( HANDLE handle, LONG *prev ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_reset_event( HANDLE handle, LONG *prev ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_pulse_event( HANDLE handle, LONG *prev ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_query_event( HANDLE handle, void *info ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_release_mutex( HANDLE handle, LONG *prev ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_query_mutex( HANDLE handle, void *info ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_wait_objects( DWORD count, const HANDLE *handles, BOOLEAN wait_any,
++                             BOOLEAN alertable, const LARGE_INTEGER *timeout ) { return STATUS_NOT_IMPLEMENTED; }
++NTSTATUS fsync_signal_and_wait( HANDLE signal, HANDLE wait,
++                                BOOLEAN alertable, const LARGE_INTEGER *timeout ) { return STATUS_NOT_IMPLEMENTED; }
++
++#endif  /* __linux__ */
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 110404c..dc5f479 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2279,7 +2279,7 @@ __ASM_GLOBAL_FUNC( dump_syscall_fault_return,
+                    "movq %rdi,%rsp\n\t"
+                    "movq %rsi,%rax\n\t"
+                    "movq %rdx,%r13\n\t"
+-                   "jmp %rcx")
++                   "jmp *%rcx")
+ 
+ 
+ static void dump_syscall_fault( CONTEXT *context, DWORD exc_code )
+@@ -3197,7 +3197,17 @@ void signal_init_process(void)
+ 
+ void set_thread_teb( TEB *teb )
+ {
++#ifdef __APPLE__
++    /* On macOS %gs is shared with the system pthread TSD and is swapped to the
++     * TEB only around Win32 code by the syscall dispatcher / signal handlers.
++     * The current TEB is located via RSP (see get_current_teb), not %gs, so we
++     * must leave %gs pointing at the pthread TSD here -- overwriting it with the
++     * raw TEB breaks the next pthread call. Mainline Wine has no set_thread_teb
++     * for this reason; make it a no-op on macOS. */
++    (void)teb;
++#else
+     arch_prctl( ARCH_SET_GS, teb );
++#endif
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+index 1fe3081..b599e14 100644
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -1166,6 +1166,11 @@ static BOOL logical_proc_info_add_group( DWORD num_cpus, ULONG_PTR mask )
+     return TRUE;
+ }
+ 
++#ifndef linux  /* macOS/non-Linux: sysfs (Linux /sys) CPU-topology helpers are unavailable */
++static BOOL sysfs_parse_bitmap(const char *filename, ULONG_PTR *mask) { return FALSE; }
++static void fill_performance_core_info(void) { }
++#endif
++
+ #ifdef linux
+ 
+ /* Helper function for counting bitmap values as commonly used by the Linux kernel

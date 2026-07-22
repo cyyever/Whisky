@@ -1,0 +1,27 @@
+From: cyy <cyyever@gmail.com>
+Subject: [PATCH] loader64: build a 64-bit wine64 loader on macOS
+
+Add loader64/ building wine64 from ../loader sources. wine_info.plist.in
+in SOURCES so makedep generates loader64/wine_info.plist (satisfies the
+wine_info.plist dep). No preloader on macOS (uses -segaddr LDFLAGS), so
+PROGRAMS is wine64 only.
+---
+diff --git a/loader64/Makefile.in b/loader64/Makefile.in
+index cfbe51d..ddcf3ff 100644
+--- a/loader64/Makefile.in
++++ b/loader64/Makefile.in
+@@ -3,10 +3,11 @@ PARENTSRC = ../loader
+ SOURCES = \
+ 	main.c \
+ 	preloader.c \
+-	preloader_mac.c
++	preloader_mac.c \
++	wine_info.plist.in
+ 
+-PROGRAMS = wine64 wine64-preloader
+-INSTALL_LIB = wine64 wine64-preloader
++PROGRAMS = wine64
++INSTALL_LIB = wine64
+ UNIX_CFLAGS = -fPIE
+ 
+ preloader_EXTRADEFS = -fno-builtin

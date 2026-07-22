@@ -1,0 +1,37 @@
+From: cyy <cyyever@gmail.com>
+Subject: [PATCH] win32u/opengl: compile framebuffer-surface/fs_hack without libEGL
+
+The framebuffer-surface and fullscreen-hack helpers were inside
+#ifdef SONAME_LIBEGL, but the driver-agnostic code uses them
+unconditionally (needs_framebuffer_surface, framebuffer_surface_funcs,
+framebuffer_surface_create, framebuffer_from_opengl_drawable). Without
+libEGL (macOS, where GL comes from winemac.drv) opengl.c failed to build
+with undeclared-identifier errors. The block is EGL-independent, so move
+the guard down past it; only the real EGL platform code stays guarded.
+---
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index d2b7413..a2119f1 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -186,7 +186,11 @@ static int get_window_swap_interval( HWND hwnd )
+     return interval;
+ }
+ 
+-#ifdef SONAME_LIBEGL
++/* The framebuffer-surface and fullscreen-hack helpers below are EGL-independent
++ * (they only use the generic opengl_drawable / GL entry points) and are used
++ * unconditionally by the driver-agnostic code further down, so they must be
++ * compiled even without libEGL (e.g. on macOS, where GL comes from winemac.drv).
++ * Only the actual EGL platform code stays behind SONAME_LIBEGL, lower down. */
+ 
+ struct framebuffer_surface
+ {
+@@ -953,6 +957,8 @@ static BOOL needs_framebuffer_surface( HWND hwnd )
+     return get_float_gamma_ramp( gamma_ramp, &gamma_serial );
+ }
+ 
++#ifdef SONAME_LIBEGL
++
+ static const struct opengl_drawable_funcs egldrv_pbuffer_funcs;
+ 
+ static EGLConfig egl_config_for_format( const struct egl_platform *egl, int format )

@@ -1,0 +1,56 @@
+From: cyy <cyyever@gmail.com>
+Subject: [PATCH] amd_ags_x64: guard libdrm/amdgpu use behind __linux__
+
+The unixlib queries real AMD GPU info via libdrm/amdgpu, which is
+Linux-only. On other platforms (e.g. macOS) there is no libdrm and no
+AMD GPU, so guard the DRM code behind __linux__ and report no device;
+games then fall back to generic, non-AMD rendering paths.
+---
+diff --git a/dlls/amd_ags_x64/unixlib.c b/dlls/amd_ags_x64/unixlib.c
+index d34a162..fbfaed9 100644
+--- a/dlls/amd_ags_x64/unixlib.c
++++ b/dlls/amd_ags_x64/unixlib.c
+@@ -31,9 +31,11 @@
+ #include <fcntl.h>
+ #include <errno.h>
+ 
++#ifdef __linux__
+ #include <xf86drm.h>
+ #include <amdgpu_drm.h>
+ #include <amdgpu.h>
++#endif
+ 
+ #include "ntstatus.h"
+ #define WIN32_NO_STATUS
+@@ -48,6 +50,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(amd_ags);
+ 
+ #define MAX_DEVICE_COUNT 64
+ 
++#ifdef __linux__
++
+ static unsigned int device_count;
+ static struct drm_amdgpu_info_device *amd_info;
+ 
+@@ -276,6 +280,22 @@ static NTSTATUS get_device_info( void *args )
+     return STATUS_NOT_FOUND;
+ }
+ 
++#else /* __linux__ */
++
++/* No libdrm/amdgpu outside Linux (e.g. macOS); Apple Silicon has no AMD GPU.
++ * Report no device so games fall back to generic, non-AMD rendering paths. */
++static NTSTATUS init( void *args )
++{
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS get_device_info( void *args )
++{
++    return STATUS_NOT_FOUND;
++}
++
++#endif /* __linux__ */
++
+ const unixlib_entry_t __wine_unix_call_funcs[] =
+ {
+     init,
