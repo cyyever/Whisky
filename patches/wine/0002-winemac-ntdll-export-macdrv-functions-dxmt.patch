@@ -1,0 +1,136 @@
+From a2701d22918aaa8b7c00ba5cfae13612e57efa9a Mon Sep 17 00:00:00 2001
+From: cyy <cyyever@outlook.com>
+Date: Sun, 14 Jun 2026 10:11:35 +0800
+Subject: [PATCH 2/2] winemac/ntdll: export macdrv_functions for DXMT (Metal
+ D3D11)
+
+DXMT (Metal-based D3D11) resolves a "macdrv_functions" table via
+dlsym(RTLD_DEFAULT) to attach a Metal view to a window. Two changes are
+needed to support it on this Wine:
+
+- winemac.drv/window.c: export a "macdrv_functions" table (default
+  visibility) with the entries DXMT expects. get_win_data is shimmed to
+  return DXMT's 8.16-era macdrv_win_data layout (cocoa_window, cocoa_view,
+  client_cocoa_view); since Wine 11.x only attaches a client view via a
+  client surface, the shim creates and attaches a view to the window on
+  demand so DXMT has a valid macdrv_view for the swapchain.
+- ntdll/unix/loader.c: load driver unixlibs with RTLD_GLOBAL so DXMT's
+  dlsym(RTLD_DEFAULT, "macdrv_functions") can see winemac.so's exports
+  (per-handle dlsym for __wine_unix_call_funcs is unaffected).
+
+Verified: D3D11 FL11.1 device + swapchain via DXMT->Metal; a Unity 2022
+D3D11 game renders on Apple M2.
+---
+ dlls/ntdll/unix/loader.c  |  6 ++--
+ dlls/winemac.drv/window.c | 72 +++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 75 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index c1321ce679d..fb7153cd4fd 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1342,7 +1342,7 @@ NTSTATUS load_unixlib_by_name( const UNICODE_STRING *nt_name, void **handle_ret
+     {
+         ptr = prepend_build_dir_path( file + pos, ".so", "", "/dlls", build_dir );
+         strcpy( ext, ".so" );
+-        if ((handle = dlopen( ptr, RTLD_NOW ))) goto done;
++        if ((handle = dlopen( ptr, RTLD_NOW | RTLD_GLOBAL ))) goto done;
+     }
+ 
+     strcpy( ext, ".so" );
+@@ -1350,10 +1350,10 @@ NTSTATUS load_unixlib_by_name( const UNICODE_STRING *nt_name, void **handle_ret
+     {
+         ptr = prepend( file + pos, so_dir, strlen(so_dir) );
+         ptr = prepend( ptr, dll_paths[i], strlen(dll_paths[i]) );
+-        if ((handle = dlopen( ptr, RTLD_NOW ))) goto done;
++        if ((handle = dlopen( ptr, RTLD_NOW | RTLD_GLOBAL ))) goto done;
+ 
+         ptr = prepend( file + pos, dll_paths[i], strlen(dll_paths[i]) );
+-        if ((handle = dlopen( ptr, RTLD_NOW ))) goto done;
++        if ((handle = dlopen( ptr, RTLD_NOW | RTLD_GLOBAL ))) goto done;
+     }
+ 
+  done:
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index c0384f3f0d5..ab8172a09e6 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -2214,3 +2214,75 @@ void init_win_context(void)
+     pthread_mutex_init(&win_data_mutex, &attr);
+     pthread_mutexattr_destroy(&attr);
+ }
++
++/* ===== DXMT compatibility shim =====
++ * DXMT resolves "macdrv_functions" via dlsym(RTLD_DEFAULT) and reads
++ * win_data->client_cocoa_view. Wine 11.9 refactored macdrv_win_data (the old
++ * cocoa_view is gone; client_view replaces it), so return a struct in DXMT's
++ * expected 8.16-era layout. */
++struct dxmt_win_data
++{
++    HWND          hwnd;
++    macdrv_window cocoa_window;
++    macdrv_view   cocoa_view;
++    macdrv_view   client_cocoa_view;
++};
++
++static struct dxmt_win_data dxmt_wd;
++
++static struct dxmt_win_data *dxmt_get_win_data( HWND hwnd )
++{
++    struct macdrv_win_data *data = get_win_data( hwnd );
++    if (!data) return NULL;
++    /* Wine 11.9 only attaches a client view via a client surface; DXMT expects
++     * one to already exist. Create and attach one to the window on demand. */
++    if (!data->client_view && data->cocoa_window)
++    {
++        RECT rect;
++        macdrv_view view;
++        NtUserGetClientRect( hwnd, &rect, NtUserGetWinMonitorDpi( hwnd, MDT_RAW_DPI ) );
++        if ((view = macdrv_create_view( cgrect_from_rect( rect ) )))
++        {
++            macdrv_set_view_superview( view, NULL, data->cocoa_window, NULL, NULL );
++            macdrv_set_view_hidden( view, FALSE );
++            data->client_view = view;
++        }
++    }
++    dxmt_wd.hwnd = hwnd;
++    dxmt_wd.cocoa_window = data->cocoa_window;
++    dxmt_wd.cocoa_view = data->client_view;
++    dxmt_wd.client_cocoa_view = data->client_view;
++    release_win_data( data );
++    return &dxmt_wd;
++}
++
++static void dxmt_release_win_data( struct dxmt_win_data *data ) { (void)data; }
++
++struct dxmt_macdrv_functions
++{
++    void (*macdrv_init_display_devices)(BOOL);
++    struct dxmt_win_data *(*get_win_data)(HWND);
++    void (*release_win_data)(struct dxmt_win_data *);
++    macdrv_window (*macdrv_get_cocoa_window)(HWND, BOOL);
++    macdrv_metal_device (*macdrv_create_metal_device)(void);
++    void (*macdrv_release_metal_device)(macdrv_metal_device);
++    macdrv_metal_view (*macdrv_view_create_metal_view)(macdrv_view, macdrv_metal_device);
++    macdrv_metal_layer (*macdrv_view_get_metal_layer)(macdrv_metal_view);
++    void (*macdrv_view_release_metal_view)(macdrv_metal_view);
++    void (*on_main_thread)(void *);
++};
++
++__attribute__((visibility("default")))
++struct dxmt_macdrv_functions macdrv_functions =
++{
++    NULL,
++    dxmt_get_win_data,
++    dxmt_release_win_data,
++    macdrv_get_cocoa_window,
++    macdrv_create_metal_device,
++    macdrv_release_metal_device,
++    macdrv_view_create_metal_view,
++    macdrv_view_get_metal_layer,
++    macdrv_view_release_metal_view,
++    NULL,
++};
+-- 
+2.55.0
+

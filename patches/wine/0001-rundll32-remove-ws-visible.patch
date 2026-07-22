@@ -1,0 +1,26 @@
+From 8122690e694c66345689da8505fbc0c30c518897 Mon Sep 17 00:00:00 2001
+From: cyy <cyyever@outlook.com>
+Date: Mon, 30 Mar 2026 13:53:50 +0800
+Subject: [PATCH 1/2] rundll32: Remove WS_VISIBLE to fix wineboot hang on macOS
+ 26
+
+---
+ programs/rundll32/rundll32.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/programs/rundll32/rundll32.c b/programs/rundll32/rundll32.c
+index 2ab635a28b8..da115dbe066 100644
+--- a/programs/rundll32/rundll32.c
++++ b/programs/rundll32/rundll32.c
+@@ -271,7 +271,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE hOldInstance, LPWSTR szCmdLine
+ 
+     /* Initialize the rundll32 class */
+     register_class();
+-    hWnd = CreateWindowW(L"class_rundll32", L"rundll32", WS_OVERLAPPEDWINDOW|WS_VISIBLE,
++    hWnd = CreateWindowW(L"class_rundll32", L"rundll32", WS_OVERLAPPEDWINDOW,
+           CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, NULL, NULL, NULL, NULL);
+ 
+     /* Get the dll name and API EntryPoint */
+-- 
+2.55.0
+
