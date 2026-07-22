@@ -39,5 +39,5 @@ let package = Package(
             dependencies: ["SemanticVersion"]
         )
     ],
-    swiftLanguageVersions: [.version("6")]
+    swiftLanguageModes: [.v6]
 )
