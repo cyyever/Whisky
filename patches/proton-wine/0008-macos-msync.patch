@@ -1,3 +1,22 @@
+From: cyy <cyyever@gmail.com>
+Subject: [PATCH] macOS: msync fast-sync (CrossOver port + macOS integration)
+
+Consolidated msync subsystem patch. Merges what were separate patches:
+  - msync fast-sync core (CrossOver port; ~msync.c client+server, de-linux)
+  - msync mixed-wait hybrid (msync_wait_mixed_any: bounded server poll on the
+    server subset of a mixed msync+server wait set)
+  - per-object msync idx for waits; the earlier "uniform inproc_sync shadow"
+    approach was mismatched to macOS (msync objects are pure shm+__ulock with no
+    fd, so the server can't wait on them) and is dropped:
+      * server/object.c default_get_sync() returns the object itself, not an
+        msync shadow (a shadow made server-side waits hit no_add_queue ->
+        STATUS_OBJECT_TYPE_MISMATCH, breaking socket() / Steam PlatformSocketsInit)
+      * server/msync.c get_msync_idx handler uses the object's own get_msync_idx
+        ops slot (gated on the sync being non-server-waitable), not the
+        ntsync-only get_obj_inproc_sync() which is stubbed on macOS
+
+do_msync() respects WINEMSYNC (default on). Builds x86_64 under Rosetta.
+
 diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
 index 38c865b..e0b2741 100644
 --- a/dlls/ntdll/Makefile.in
@@ -73,10 +92,10 @@ index 4deeac7..a21833a 100644
  
 diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
 new file mode 100644
-index 0000000..a128fe3
+index 0000000..cecf663
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync.c
-@@ -0,0 +1,1666 @@
+@@ -0,0 +1,1866 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -229,6 +248,9 @@ index 0000000..a128fe3
 +     * pointer and crashes. libSystem's mach_msg() is translated correctly.
 +     * (priority is always 0 here, so it maps to a NULL notify port.) */
 +    (void)priority;
++    /* mach_msg() takes 32-bit option/timeout; assert no lossy narrowing. */
++    assert( !(option64 >> 32) );
++    assert( timeout <= 0xffffffff );
 +    return mach_msg( data, (mach_msg_option_t)option64, send_size, rcv_size,
 +                     rcv_name, (mach_msg_timeout_t)timeout, MACH_PORT_NULL );
 +}
@@ -624,9 +646,15 @@ index 0000000..a128fe3
 +int do_msync(void)
 +{
 +#ifdef __APPLE__
-+    /* msync (__ulock) is the only working fast-sync on macOS -- the wineserver
-+     * fallback is unreliable -- so it is always enabled here. */
-+    return 1;
++    /* msync (__ulock) is the default fast-sync on macOS; the wineserver fallback
++     * is slower/less reliable, so default on. WINEMSYNC=0 forces it off (debug). */
++    static int cached = -1;
++    if (cached == -1)
++    {
++        const char *env = getenv( "WINEMSYNC" );
++        cached = env ? atoi( env ) : 1;
++    }
++    return cached;
 +#else
 +    static int once;
 +    if (!once++)
@@ -704,6 +732,14 @@ index 0000000..a128fe3
 +/* We'd like lookup to be fast. To that end, we use a static list indexed by handle.
 + * This is copied and adapted from the fd cache code. */
 +
++/* Not a real msync_type: a sentinel cached for handles the server reported as
++ * having no msync shadow (server-only objects: pipes, sockets, processes, ...).
++ * It lets get_object() skip the get_msync_idx round-trip on repeated waits --
++ * without it, polling a mixed wait-set (e.g. Steam's IPC pipes) issues one
++ * server round-trip per handle per poll, starving the reader. Cleared by
++ * msync_close() on handle close like any entry, so handle reuse stays correct. */
++#define MSYNC_SERVER_ONLY ((enum msync_type)0xff)
++
 +#define MSYNC_LIST_BLOCK_SIZE  (65536 / sizeof(struct msync))
 +#define MSYNC_LIST_ENTRIES     256
 +
@@ -720,7 +756,7 @@ index 0000000..a128fe3
 +static struct msync *add_to_list( HANDLE handle, enum msync_type type, unsigned int shm_idx )
 +{
 +    UINT_PTR entry, idx = handle_to_index( handle, &entry );
-+    void *shm = get_shm( shm_idx );
++    void *shm = (type == MSYNC_SERVER_ONLY) ? NULL : get_shm( shm_idx );
 +
 +    if (entry >= MSYNC_LIST_ENTRIES)
 +    {
@@ -769,7 +805,11 @@ index 0000000..a128fe3
 +    unsigned int shm_idx = 0;
 +    enum msync_type type;
 +
-+    if ((*obj = get_cached_object( handle ))) return STATUS_SUCCESS;
++    if ((*obj = get_cached_object( handle )))
++    {
++        if ((*obj)->type == MSYNC_SERVER_ONLY) { *obj = NULL; return STATUS_NOT_IMPLEMENTED; }
++        return STATUS_SUCCESS;
++    }
 +
 +    if ((INT_PTR)handle < 0)
 +    {
@@ -791,7 +831,12 @@ index 0000000..a128fe3
 +
 +    if (ret)
 +    {
-+        WARN("Failed to retrieve shm index for handle %p, status %#x.\n", handle, ret);
++        /* A server-only object (no msync shadow): remember it so future waits
++         * don't re-query the server for the same handle. */
++        if (ret == STATUS_NOT_IMPLEMENTED)
++            add_to_list( handle, MSYNC_SERVER_ONLY, 0 );
++        else
++            WARN("Failed to retrieve shm index for handle %p, status %#x.\n", handle, ret);
 +        *obj = NULL;
 +        return ret;
 +    }
@@ -1237,6 +1282,172 @@ index 0000000..a128fe3
 +    return status;
 +}
 +
++/* Poll interval (100ns units) for a wait set that mixes msync and server
++ * objects. Only mixed waits take this path (never a game hot path), so a small
++ * latency is irrelevant. */
++#define MSYNC_MIXED_POLL_INTERVAL (2 * 10000)  /* 2 ms  -- initial poll */
++#define MSYNC_MIXED_POLL_MAX      (16 * 10000) /* 16 ms -- idle backoff cap */
++
++/* Handle a wait-any set that mixes msync objects with pure-server objects
++ * (named pipes, async I/O, completion ports, processes, ...).
++ *
++ * Upstream msync -- and fsync -- merely log a FIXME here and then wait on the
++ * fast objects only, silently ignoring the server objects. That deadlocks
++ * whenever a server object is the one that gets signaled: RPC / RpcSs startup,
++ * MSI (wine-mono) installs, and service-startup handshakes all do exactly this
++ * (WaitForMultipleObjects of an msync event together with a named pipe). fsync
++ * avoids it because the server hands every object an in-proc-sync fd it can
++ * wait on; msync objects have no such server-side representation, so we cannot
++ * simply delegate the whole set to server_wait().
++ *
++ * Instead we poll: repeatedly grab any ready msync object in userspace (fast),
++ * and between checks do a short server_wait() on just the server subset so the
++ * server can wake us when one of those signals. `objs[i]==NULL` marks a server
++ * object (get_object() left it NULL); non-NULL marks an msync object. */
++static NTSTATUS msync_wait_mixed_any( DWORD count, const HANDLE *handles,
++    struct msync **objs, BOOLEAN alertable, const LARGE_INTEGER *timeout, ULONGLONG end )
++{
++    static const LARGE_INTEGER zero = {0};
++    union select_op select_op;
++    unsigned int server_map[MAXIMUM_WAIT_OBJECTS];
++    unsigned int server_count = 0, flags, i;
++    int current_tid = GetCurrentThreadId();
++    LONGLONG interval = MSYNC_MIXED_POLL_INTERVAL;
++    LARGE_INTEGER diag_start = {0};
++    NTSTATUS ret;
++
++    flags = SELECT_INTERRUPTIBLE | (alertable ? SELECT_ALERTABLE : 0);
++
++    select_op.wait.op = SELECT_WAIT;
++    for (i = 0; i < count; i++)
++    {
++        if (!objs[i]) /* server object */
++        {
++            select_op.wait.handles[server_count] = wine_server_obj_handle( handles[i] );
++            server_map[server_count] = i;
++            server_count++;
++        }
++    }
++
++    while (1)
++    {
++        LARGE_INTEGER poll;
++        int *apc_addr = ntdll_get_thread_data()->msync_apc_addr;
++        LONGLONG left = interval;
++
++        if (alertable && apc_addr && __atomic_load_n( apc_addr, __ATOMIC_SEQ_CST ))
++        {
++            ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero );
++            if (ret == STATUS_TIMEOUT) ret = STATUS_USER_APC;
++            return ret;
++        }
++
++        /* 1. Try to grab any ready msync object (userspace, fast). */
++        for (i = 0; i < count; i++)
++        {
++            struct msync *obj = objs[i];
++
++            if (!obj) continue;
++            switch (obj->type)
++            {
++            case MSYNC_SEMAPHORE:
++            {
++                struct semaphore *semaphore = obj->shm;
++                int current = __atomic_load_n( &semaphore->count, __ATOMIC_ACQUIRE );
++                if (current && __atomic_compare_exchange_n( &semaphore->count, &current,
++                        current - 1, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED ))
++                    return i;
++                break;
++            }
++            case MSYNC_MUTEX:
++            {
++                struct mutex *mutex = obj->shm;
++                int tid = 0;
++                if (mutex->tid == current_tid) { mutex->count++; return i; }
++                if (__atomic_compare_exchange_n( &mutex->tid, &tid, current_tid, 0,
++                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED )) { mutex->count = 1; return i; }
++                else if (tid == ~0 && __atomic_compare_exchange_n( &mutex->tid, &tid, current_tid, 0,
++                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED )) { mutex->count = 1; return STATUS_ABANDONED_WAIT_0 + i; }
++                break;
++            }
++            case MSYNC_AUTO_EVENT:
++            case MSYNC_AUTO_SERVER:
++            {
++                struct event *event = obj->shm;
++                int signaled = 1;
++                if (__atomic_compare_exchange_n( &event->signaled, &signaled, 0, 0,
++                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED ))
++                    return i;
++                break;
++            }
++            case MSYNC_MANUAL_EVENT:
++            case MSYNC_MANUAL_SERVER:
++            case MSYNC_QUEUE:
++            {
++                struct event *event = obj->shm;
++                if (__atomic_load_n( &event->signaled, __ATOMIC_ACQUIRE ))
++                    return i;
++                break;
++            }
++            default:
++                break;
++            }
++        }
++
++        /* 2. Bound the poll interval by the overall deadline. */
++        if (timeout)
++        {
++            LARGE_INTEGER now;
++            NtQuerySystemTime( &now );
++            left = end - now.QuadPart;
++            if (left <= 0) return STATUS_TIMEOUT;
++            if (left > interval) left = interval;
++        }
++        poll.QuadPart = -left; /* relative timeout */
++
++        /* 3. Let the server wake us if a server object signals. */
++        ret = server_wait( &select_op,
++            offsetof( union select_op, wait.handles[server_count] ), flags, &poll );
++
++        if (ret < server_count) return server_map[ret];
++        if (ret >= STATUS_ABANDONED_WAIT_0 && ret < STATUS_ABANDONED_WAIT_0 + server_count)
++            return STATUS_ABANDONED_WAIT_0 + server_map[ret - STATUS_ABANDONED_WAIT_0];
++        if (ret == STATUS_USER_APC || ret == STATUS_KERNEL_APC) return ret;
++        /* Only a poll timeout means "recheck"; propagate any real error. */
++        if (ret != STATUS_TIMEOUT) return ret;
++
++        /* Diagnostic: flag a single mixed wait that never wakes (a lost wakeup,
++         * as opposed to legitimately blocking) -- logged once per process. This
++         * is cheap (the poll already backs off) and is the only place a stuck
++         * msync+server wait would show up, so keep it as a debug aid. */
++        if (!diag_start.QuadPart)
++            NtQuerySystemTime( &diag_start );
++        else
++        {
++            LARGE_INTEGER now2;
++            NtQuerySystemTime( &now2 );
++            if (now2.QuadPart - diag_start.QuadPart > 50000000 /* 5s */)
++            {
++                static int stall_logged;
++                if (!stall_logged) { stall_logged = 1;
++                    ERR("mixed wait looping >5s (possible lost wakeup): count=%u server_count=%u\n",
++                        count, server_count);
++                    for (i = 0; i < count; i++)
++                    {
++                        if (!objs[i])
++                            ERR("  [%u] SERVER handle=%p\n", i, handles[i]);
++                        else
++                            ERR("  [%u] msync type=%d signaled=%d handle=%p\n", i, objs[i]->type,
++                                __atomic_load_n( (int *)objs[i]->shm, __ATOMIC_SEQ_CST ), handles[i]);
++                    } }
++            }
++        }
++
++        /* Back off so an idle mixed wait doesn't busy-poll the server forever. */
++        if (interval < MSYNC_MIXED_POLL_MAX) interval *= 2;
++    }
++}
++
 +static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
 +    BOOLEAN wait_any, BOOLEAN alertable, const LARGE_INTEGER *timeout )
 +{
@@ -1300,7 +1511,15 @@ index 0000000..a128fe3
 +        msgwait = TRUE;
 +
 +    if (has_msync && has_server)
-+        FIXME("Can't wait on msync and server objects at the same time!\n");
++    {
++        /* A wait set mixing msync and server objects cannot be handled by
++         * either mechanism alone; poll both. (A mixed set always has count >= 2,
++         * so it is a wait-any unless the caller asked for wait-all.) */
++        if (wait_any || count <= 1)
++            return msync_wait_mixed_any( count, handles, objs, alertable,
++                                         timeout, timeout ? end : 0 );
++        FIXME("Can't wait-all on msync and server objects at the same time!\n");
++    }
 +    else if (has_server)
 +        return STATUS_NOT_IMPLEMENTED;
 +
@@ -1822,7 +2041,7 @@ index 5d8a59b..2dd93cb 100644
      {
          req->handle = wine_server_obj_handle( handle );
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index 74a0c93..0429104 100644
+index 74a0c93..bbbfde8 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
 @@ -61,7 +61,9 @@
@@ -1843,7 +2062,26 @@ index 74a0c93..0429104 100644
  
  #include "fsync.h"
  
-@@ -1007,6 +1010,9 @@ NTSTATUS WINAPI NtCreateSemaphore( HANDLE *handle, ACCESS_MASK access, const OBJ
+@@ -675,10 +678,15 @@ static NTSTATUS get_server_inproc_sync( HANDLE handle, struct inproc_sync *sync
+         req->handle = wine_server_obj_handle( handle );
+         if (!(ret = wine_server_call( req )))
+         {
+-            obj_handle_t fd_handle;
+             sync->refcount = 1;
+-            sync->fd = wine_server_receive_fd( &fd_handle );
+-            assert( wine_server_ptr_handle(fd_handle) == handle );
++            if (do_msync())
++                sync->fd = reply->fsync_shm_idx; /* macOS: msync shm index, passed by value */
++            else
++            {
++                obj_handle_t fd_handle;
++                sync->fd = wine_server_receive_fd( &fd_handle );
++                assert( wine_server_ptr_handle(fd_handle) == handle );
++            }
+             sync->access = reply->access;
+             sync->type = reply->type;
+             sync->closed = 0;
+@@ -1007,6 +1015,9 @@ NTSTATUS WINAPI NtCreateSemaphore( HANDLE *handle, ACCESS_MASK access, const OBJ
      if (max <= 0 || initial < 0 || initial > max) return STATUS_INVALID_PARAMETER;
      if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
  
@@ -1853,7 +2091,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( create_semaphore )
      {
          req->access  = access;
-@@ -1033,6 +1039,10 @@ NTSTATUS WINAPI NtOpenSemaphore( HANDLE *handle, ACCESS_MASK access, const OBJEC
+@@ -1033,6 +1044,10 @@ NTSTATUS WINAPI NtOpenSemaphore( HANDLE *handle, ACCESS_MASK access, const OBJEC
      TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
  
      *handle = 0;
@@ -1864,7 +2102,7 @@ index 74a0c93..0429104 100644
      if ((ret = validate_open_object_attributes( attr ))) return ret;
  
      SERVER_START_REQ( open_semaphore )
-@@ -1075,6 +1085,9 @@ NTSTATUS WINAPI NtQuerySemaphore( HANDLE handle, SEMAPHORE_INFORMATION_CLASS cla
+@@ -1075,6 +1090,9 @@ NTSTATUS WINAPI NtQuerySemaphore( HANDLE handle, SEMAPHORE_INFORMATION_CLASS cla
          return ret;
      }
  
@@ -1874,7 +2112,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( query_semaphore )
      {
          req->handle = wine_server_obj_handle( handle );
-@@ -1102,6 +1115,9 @@ NTSTATUS WINAPI NtReleaseSemaphore( HANDLE handle, ULONG count, ULONG *previous
+@@ -1102,6 +1120,9 @@ NTSTATUS WINAPI NtReleaseSemaphore( HANDLE handle, ULONG count, ULONG *previous
      if ((ret = inproc_release_semaphore( handle, count, previous )) != STATUS_NOT_IMPLEMENTED)
          return ret;
  
@@ -1884,7 +2122,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( release_semaphore )
      {
          req->handle = wine_server_obj_handle( handle );
-@@ -1131,6 +1147,10 @@ NTSTATUS WINAPI NtCreateEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_
+@@ -1131,6 +1152,10 @@ NTSTATUS WINAPI NtCreateEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_
  
      *handle = 0;
      if (type != NotificationEvent && type != SynchronizationEvent) return STATUS_INVALID_PARAMETER;
@@ -1895,7 +2133,7 @@ index 74a0c93..0429104 100644
      if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
  
      SERVER_START_REQ( create_event )
-@@ -1161,6 +1181,9 @@ NTSTATUS WINAPI NtOpenEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_AT
+@@ -1161,6 +1186,9 @@ NTSTATUS WINAPI NtOpenEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_AT
      *handle = 0;
      if ((ret = validate_open_object_attributes( attr ))) return ret;
  
@@ -1905,7 +2143,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( open_event )
      {
          req->access     = access;
-@@ -1188,6 +1211,9 @@ NTSTATUS WINAPI NtSetEvent( HANDLE handle, LONG *prev_state )
+@@ -1188,6 +1216,9 @@ NTSTATUS WINAPI NtSetEvent( HANDLE handle, LONG *prev_state )
      if ((ret = inproc_set_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
          return ret;
  
@@ -1915,7 +2153,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( event_op )
      {
          req->handle = wine_server_obj_handle( handle );
-@@ -1221,6 +1247,9 @@ NTSTATUS WINAPI NtResetEvent( HANDLE handle, LONG *prev_state )
+@@ -1221,6 +1252,9 @@ NTSTATUS WINAPI NtResetEvent( HANDLE handle, LONG *prev_state )
      if ((ret = inproc_reset_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
          return ret;
  
@@ -1925,7 +2163,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( event_op )
      {
          req->handle = wine_server_obj_handle( handle );
-@@ -1255,6 +1284,9 @@ NTSTATUS WINAPI NtPulseEvent( HANDLE handle, LONG *prev_state )
+@@ -1255,6 +1289,9 @@ NTSTATUS WINAPI NtPulseEvent( HANDLE handle, LONG *prev_state )
      if ((ret = inproc_pulse_event( handle, prev_state )) != STATUS_NOT_IMPLEMENTED)
          return ret;
  
@@ -1935,7 +2173,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( event_op )
      {
          req->handle = wine_server_obj_handle( handle );
-@@ -1292,6 +1324,9 @@ NTSTATUS WINAPI NtQueryEvent( HANDLE handle, EVENT_INFORMATION_CLASS class,
+@@ -1292,6 +1329,9 @@ NTSTATUS WINAPI NtQueryEvent( HANDLE handle, EVENT_INFORMATION_CLASS class,
          return ret;
      }
  
@@ -1945,7 +2183,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( query_event )
      {
          req->handle = wine_server_obj_handle( handle );
-@@ -1321,6 +1356,10 @@ NTSTATUS WINAPI NtCreateMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT
+@@ -1321,6 +1361,10 @@ NTSTATUS WINAPI NtCreateMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT
             attr ? debugstr_us(attr->ObjectName) : "(null)", owned );
  
      *handle = 0;
@@ -1956,7 +2194,7 @@ index 74a0c93..0429104 100644
      if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
  
      SERVER_START_REQ( create_mutex )
-@@ -1350,6 +1389,9 @@ NTSTATUS WINAPI NtOpenMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT_A
+@@ -1350,6 +1394,9 @@ NTSTATUS WINAPI NtOpenMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT_A
      *handle = 0;
      if ((ret = validate_open_object_attributes( attr ))) return ret;
  
@@ -1966,7 +2204,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( open_mutex )
      {
          req->access  = access;
-@@ -1377,6 +1419,9 @@ NTSTATUS WINAPI NtReleaseMutant( HANDLE handle, LONG *prev_count )
+@@ -1377,6 +1424,9 @@ NTSTATUS WINAPI NtReleaseMutant( HANDLE handle, LONG *prev_count )
      if ((ret = inproc_release_mutex( handle, prev_count )) != STATUS_NOT_IMPLEMENTED)
          return ret;
  
@@ -1976,7 +2214,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( release_mutex )
      {
          req->handle = wine_server_obj_handle( handle );
-@@ -1413,6 +1458,9 @@ NTSTATUS WINAPI NtQueryMutant( HANDLE handle, MUTANT_INFORMATION_CLASS class,
+@@ -1413,6 +1463,9 @@ NTSTATUS WINAPI NtQueryMutant( HANDLE handle, MUTANT_INFORMATION_CLASS class,
          return ret;
      }
  
@@ -1986,7 +2224,7 @@ index 74a0c93..0429104 100644
      SERVER_START_REQ( query_mutex )
      {
          req->handle = wine_server_obj_handle( handle );
-@@ -2361,6 +2409,13 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
+@@ -2361,6 +2414,13 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
          return ret;
      }
  
@@ -2000,7 +2238,7 @@ index 74a0c93..0429104 100644
      if (alertable) flags |= SELECT_ALERTABLE;
      select_op.wait.op = type == WaitAll ? SELECT_WAIT_ALL : SELECT_WAIT;
      for (i = 0; i < count; i++) select_op.wait.handles[i] = wine_server_obj_handle( handles[i] );
-@@ -2387,6 +2442,16 @@ NTSTATUS WINAPI NtWaitForSingleObject( HANDLE handle, BOOLEAN alertable, const L
+@@ -2387,6 +2447,16 @@ NTSTATUS WINAPI NtWaitForSingleObject( HANDLE handle, BOOLEAN alertable, const L
          return ret;
      }
  
@@ -2017,7 +2255,7 @@ index 74a0c93..0429104 100644
      if (alertable) flags |= SELECT_ALERTABLE;
      select_op.wait.op = SELECT_WAIT;
      select_op.wait.handles[0] = wine_server_obj_handle( handle );
-@@ -2408,6 +2473,9 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
+@@ -2408,6 +2478,9 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
  
      TRACE( "signal %p, wait %p, alertable %u, timeout %s\n", signal, wait, alertable, debugstr_timeout(timeout) );
  
@@ -2027,7 +2265,7 @@ index 74a0c93..0429104 100644
      if (!signal) return STATUS_INVALID_HANDLE;
  
      if ((ret = inproc_signal_and_wait( signal, wait, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
-@@ -2455,6 +2523,12 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+@@ -2455,6 +2528,12 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
      /* if alertable, we need to query the server */
      if (alertable)
      {
@@ -2775,10 +3013,10 @@ index fe3c045..24a266b 100644
      no_signal,                    /* signal */
      no_get_fd,                    /* get_fd */
 diff --git a/server/inproc_sync.c b/server/inproc_sync.c
-index a7020ef..864164c 100644
+index a7020ef..81e2c6c 100644
 --- a/server/inproc_sync.c
 +++ b/server/inproc_sync.c
-@@ -35,8 +35,21 @@
+@@ -35,8 +35,28 @@
  #include "user.h"
  
  #include "fsync.h"
@@ -2797,10 +3035,17 @@ index a7020ef..864164c 100644
 +};
 +
 +static struct list inproc_mutexes = LIST_INIT( inproc_mutexes );
++
++/* a shadow is its own sync: return it directly so default_get_sync never tries
++ * to shadow a shadow (which would recurse). */
++static struct object *inproc_self_get_sync( struct object *obj )
++{
++    return grab_object( obj );
++}
  
  #ifdef NTSYNC_IOC_EVENT_READ
  
-@@ -65,16 +78,6 @@ int get_inproc_device_fd(void)
+@@ -65,16 +85,6 @@ int get_inproc_device_fd(void)
      return fd;
  }
  
@@ -2817,7 +3062,7 @@ index a7020ef..864164c 100644
  static void inproc_sync_dump( struct object *obj, int verbose );
  static int inproc_sync_signal( struct object *obj, unsigned int access, int signal );
  static void inproc_sync_destroy( struct object *obj );
-@@ -87,6 +90,7 @@ static const struct object_ops inproc_sync_ops =
+@@ -87,10 +97,11 @@ static const struct object_ops inproc_sync_ops =
      no_add_queue,               /* add_queue */
      NULL,                       /* remove_queue */
      NULL,                       /* signaled */
@@ -2825,7 +3070,12 @@ index a7020ef..864164c 100644
      NULL,                       /* satisfied */
      inproc_sync_signal,         /* signal */
      no_get_fd,                  /* get_fd */
-@@ -280,7 +284,7 @@ void abandon_inproc_mutexes( thread_id_t tid )
+-    default_get_sync,           /* get_sync */
++    inproc_self_get_sync,       /* get_sync */
+     default_map_access,         /* map_access */
+     default_get_sd,             /* get_sd */
+     default_set_sd,             /* set_sd */
+@@ -280,7 +291,7 @@ void abandon_inproc_mutexes( thread_id_t tid )
          ioctl( mutex->fd, NTSYNC_IOC_MUTEX_KILL, &tid );
  }
  
@@ -2834,7 +3084,7 @@ index a7020ef..864164c 100644
  {
      struct object *sync;
      int fd = -1;
-@@ -299,6 +303,41 @@ static int get_obj_inproc_sync( struct object *obj, int *type )
+@@ -299,6 +310,41 @@ static int get_obj_inproc_sync( struct object *obj, int *type )
  
  #else /* NTSYNC_IOC_EVENT_READ */
  
@@ -2859,7 +3109,7 @@ index a7020ef..864164c 100644
 +    NULL,                       /* satisfied */
 +    inproc_sync_signal,         /* signal */
 +    no_get_fd,                  /* get_fd */
-+    default_get_sync,           /* get_sync */
++    inproc_self_get_sync,       /* get_sync */
 +    default_map_access,         /* map_access */
 +    default_get_sd,             /* get_sd */
 +    default_set_sd,             /* set_sd */
@@ -2876,7 +3126,7 @@ index a7020ef..864164c 100644
  int get_inproc_device_fd(void)
  {
      return -1;
-@@ -306,44 +345,97 @@ int get_inproc_device_fd(void)
+@@ -306,44 +352,97 @@ int get_inproc_device_fd(void)
  
  int get_inproc_sync_fd( struct inproc_sync *sync )
  {
@@ -2981,6 +3231,14 @@ index a7020ef..864164c 100644
  }
  
  #endif /* NTSYNC_IOC_EVENT_READ */
+@@ -359,6 +458,7 @@ DECL_HANDLER(get_inproc_sync_fd)
+ 
+     if ((fd = get_obj_inproc_sync( obj, &reply->type )) < 0) set_error( STATUS_NOT_IMPLEMENTED );
+     else if (do_fsync()) reply->fsync_shm_idx = fsync_grab_shm_idx( fd );
++    else if (do_msync()) reply->fsync_shm_idx = fd; /* macOS: fd is the msync shm index, passed by value (no fd to send) */
+     else send_client_fd( current->process, fd, req->handle );
+ 
+     release_object( obj );
 diff --git a/server/mailslot.c b/server/mailslot.c
 index 430566d..7bb2228 100644
 --- a/server/mailslot.c
@@ -3072,10 +3330,10 @@ index 2b3ebd1..e29658b 100644
      mapping_get_fd,              /* get_fd */
 diff --git a/server/msync.c b/server/msync.c
 new file mode 100644
-index 0000000..6e549d8
+index 0000000..2d261ba
 --- /dev/null
 +++ b/server/msync.c
-@@ -0,0 +1,971 @@
+@@ -0,0 +1,995 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -3499,9 +3757,15 @@ index 0000000..6e549d8
 +int do_msync(void)
 +{
 +#ifdef __APPLE__
-+    /* Always enabled on macOS (matches the client-side do_msync in
-+     * dlls/ntdll/unix/msync.c); the wineserver-side fallback is unreliable. */
-+    return 1;
++    /* Default on to match the client-side do_msync (dlls/ntdll/unix/msync.c);
++     * WINEMSYNC=0 forces the (unreliable) server fallback for debugging. */
++    static int cached = -1;
++    if (cached == -1)
++    {
++        const char *env = getenv( "WINEMSYNC" );
++        cached = env ? atoi( env ) : 1;
++    }
++    return cached;
 +#else
 +    return 0;
 +#endif
@@ -4019,13 +4283,31 @@ index 0000000..6e549d8
 +/* Retrieve the index of a shm section which will be signaled by the server. */
 +DECL_HANDLER(get_msync_idx)
 +{
-+    struct object *obj;
-+    int type, idx;
++    struct object *obj, *sync;
++    enum msync_type type;
++    unsigned int idx = 0;
 +
 +    if (!(obj = get_handle_obj( current->process, req->handle, SYNCHRONIZE, NULL )))
 +        return;
 +
-+    if ((idx = get_obj_inproc_sync( obj, &type )) > 0)
++    /* Hand the client an msync shm index ONLY for objects that cannot be waited
++     * server-side -- i.e. pure msync primitives (events/mutexes/sems created via
++     * create_msync), whose sync is the object itself with add_queue == no_add_queue.
++     *
++     * Objects that DO have a real server-side sync (process/thread/msg_queue ->
++     * event_sync, add_queue works) must keep SERVER waits: their server-side
++     * wakeups are reliable, whereas routing them to client msync exposed a
++     * lost-wakeup hang (Steam's GUI message loop blocked forever on its queue +
++     * driver events). Conversely, the inproc_sync path used here before is the
++     * ntsync (Linux) mechanism, stubbed on macOS -- it reported "no shadow" for
++     * every real msync primitive, so those got server-selected and spun on
++     * no_add_queue -> STATUS_OBJECT_TYPE_MISMATCH (Steam's "stalled pipe"). */
++    sync = get_obj_sync( obj );
++    if (obj->ops->get_msync_idx && sync->ops->add_queue == no_add_queue)
++        idx = obj->ops->get_msync_idx( obj, &type );
++    release_object( sync );
++
++    if (idx)
 +    {
 +        reply->shm_idx = idx;
 +        reply->type = type;
@@ -4162,10 +4444,18 @@ index c88dc8b..1667029 100644
      no_signal,                               /* signal */
      named_pipe_dir_get_fd,                   /* get_fd */
 diff --git a/server/object.c b/server/object.c
-index 103a208..018e2de 100644
+index 103a208..4758320 100644
 --- a/server/object.c
 +++ b/server/object.c
-@@ -109,6 +109,7 @@ static const struct object_ops apc_reserve_ops =
+@@ -37,6 +37,7 @@
+ #include "winternl.h"
+ 
+ #include "file.h"
++#include "msync.h"
+ #include "process.h"
+ #include "thread.h"
+ #include "unicode.h"
+@@ -109,6 +110,7 @@ static const struct object_ops apc_reserve_ops =
      no_add_queue,               /* add_queue */
      NULL,                       /* remove_queue */
      NULL,                       /* signaled */
@@ -4173,7 +4463,7 @@ index 103a208..018e2de 100644
      no_satisfied,               /* satisfied */
      no_signal,                  /* signal */
      no_get_fd,                  /* get_fd */
-@@ -134,6 +135,7 @@ static const struct object_ops completion_reserve_ops =
+@@ -134,6 +136,7 @@ static const struct object_ops completion_reserve_ops =
      no_add_queue,              /* add_queue */
      NULL,                      /* remove_queue */
      NULL,                      /* signaled */
@@ -4181,11 +4471,53 @@ index 103a208..018e2de 100644
      no_satisfied,              /* satisfied */
      no_signal,                 /* signal */
      no_get_fd,                 /* get_fd */
+@@ -311,6 +314,7 @@ void *alloc_object( const struct object_ops *ops )
+         obj->ops          = ops;
+         obj->name         = NULL;
+         obj->sd           = NULL;
++        obj->sync         = NULL;
+         list_init( &obj->wait_queue );
+ #ifdef DEBUG_OBJECTS
+         list_add_head( &object_list, &obj->obj_list );
+@@ -325,6 +329,7 @@ void *alloc_object( const struct object_ops *ops )
+ /* free an object once it has been destroyed */
+ static void free_object( struct object *obj )
+ {
++    if (obj->sync) release_object( obj->sync );
+     free( obj->sd );
+     obj->ops->type->obj_count--;
+ #ifdef DEBUG_OBJECTS
+@@ -644,6 +649,17 @@ struct fd *no_get_fd( struct object *obj )
+ 
+ struct object *default_get_sync( struct object *obj )
+ {
++    /* macOS/msync note: do NOT hand back an msync-backed inproc_sync shadow here.
++     * An msync object is pure shared memory + __ulock with no fd, so the server
++     * cannot wait on it (inproc_sync_ops has no_add_queue / NULL signaled, and it
++     * isn't wired to the object's wake_up()). Because macOS has no inproc device
++     * (get_inproc_device_fd() == -1), every mixed wait falls back to a SERVER
++     * select; returning a shadow there makes object_sync_add_queue() hit
++     * no_add_queue -> STATUS_OBJECT_TYPE_MISMATCH, which broke socket() creation
++     * (Steam PlatformSocketsInit) and any server-side wait touching a shadowed
++     * object. The client msync fast-path is provided per-object by get_msync_idx,
++     * not by this shadow, so returning the object itself is both correct and keeps
++     * fast-sync. (On ntsync/Linux the sync has a real fd and this path isn't hit.) */
+     return grab_object( obj );
+ }
+ 
 diff --git a/server/object.h b/server/object.h
-index 21f5ea8..dba9161 100644
+index 21f5ea8..487b91a 100644
 --- a/server/object.h
 +++ b/server/object.h
-@@ -78,6 +78,8 @@ struct object_ops
+@@ -42,6 +42,7 @@ struct async;
+ struct async_queue;
+ struct winstation;
+ struct object_type;
++struct inproc_sync;
+ 
+ 
+ struct unicode_str
+@@ -78,6 +79,8 @@ struct object_ops
      void (*remove_queue)(struct object *,struct wait_queue_entry *);
      /* is object signaled? */
      int  (*signaled)(struct object *,struct wait_queue_entry *);
@@ -4194,7 +4526,15 @@ index 21f5ea8..dba9161 100644
      /* wait satisfied */
      void (*satisfied)(struct object *,struct wait_queue_entry *);
      /* signal/reset an object */
-@@ -257,6 +259,7 @@ extern struct inproc_sync *create_inproc_mutex_sync( thread_id_t owner, unsigned
+@@ -119,6 +122,7 @@ struct object
+     struct list               wait_queue;
+     struct object_name       *name;
+     struct security_descriptor *sd;
++    struct inproc_sync       *sync;        /* lazily-created fast-sync (msync) shadow; NULL until first waited */
+     unsigned int              is_permanent:1;
+ #ifdef DEBUG_OBJECTS
+     struct list               obj_list;
+@@ -257,6 +261,7 @@ extern struct inproc_sync *create_inproc_mutex_sync( thread_id_t owner, unsigned
  extern void abandon_inproc_mutexes( thread_id_t owner );
  extern void signal_inproc_sync( struct inproc_sync *sync );
  extern void reset_inproc_sync( struct inproc_sync *sync );
