@@ -564,6 +564,70 @@
         }
       }
     },
+    "config.wineBackend": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wine Backend"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wine 后端"
+          }
+        }
+      }
+    },
+    "config.wineBackend.whiskyWine": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisky Wine"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whisky Wine"
+          }
+        }
+      }
+    },
+    "config.wineBackend.proton": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proton (experimental)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proton（实验性）"
+          }
+        }
+      }
+    },
+    "config.wineBackend.info": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run this bottle on the experimental side-by-side Proton build instead of the default Whisky Wine. Restart running programs after changing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "让此瓶使用实验性的并存 Proton 构建，而非默认的 Whisky Wine。更改后需重启正在运行的程序。"
+          }
+        }
+      }
+    },
     "config.enhancedSync.none": {
       "localizations": {
         "en": {

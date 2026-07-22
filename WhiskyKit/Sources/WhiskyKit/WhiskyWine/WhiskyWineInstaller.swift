@@ -31,8 +31,20 @@ public class WhiskyWineInstaller {
     /// URL to the installed `wine` `bin` directory
     public static let binFolder: URL = libraryFolder.appending(path: "Wine").appending(path: "bin")
 
+    /// URL to an optional side-by-side Proton (`proton-wine`) `bin` directory.
+    /// Bottles on the `.proton` backend run from here; the canonical Whisky Wine
+    /// at ``binFolder`` is left untouched. Populated by `scripts/install-proton.sh`
+    /// (copy its output into `Libraries/WineProton`).
+    public static let protonBinFolder: URL = libraryFolder
+        .appending(path: "WineProton").appending(path: "bin")
+
     public static func isWhiskyWineInstalled() -> Bool {
         return whiskyWineVersion() != nil
+    }
+
+    /// Whether an optional Proton backend is installed (has a `wine64` binary).
+    public static func isProtonInstalled() -> Bool {
+        FileManager.default.fileExists(atPath: protonBinFolder.appending(path: "wine64").path)
     }
 
     public static func whiskyWineVersion() -> SemanticVersion? {

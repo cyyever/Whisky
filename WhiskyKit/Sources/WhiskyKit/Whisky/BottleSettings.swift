@@ -89,6 +89,17 @@ public enum EnhancedSync: Codable, Equatable {
     case none, esync, msync
 }
 
+/// Which Wine build a bottle runs on. `.whiskyWine` is the canonical, shipped
+/// x86_64 Wine 11.13 stack (``WhiskyWineInstaller/binFolder``). `.proton` is an
+/// optional, experimental side-by-side Valve `proton-wine` 11.0 install
+/// (``WhiskyWineInstaller/protonBinFolder``); it is only selectable when that
+/// install is present. Default stays `.whiskyWine` so existing bottles are
+/// unaffected.
+public enum WineBackend: String, Codable, Equatable, CaseIterable, Sendable {
+    case whiskyWine
+    case proton
+}
+
 public struct BottleWineConfig: Codable, Equatable {
     static let defaultWineVersion = SemanticVersion(11, 11, 0)
     var wineVersion: SemanticVersion = Self.defaultWineVersion
@@ -96,6 +107,7 @@ public struct BottleWineConfig: Codable, Equatable {
     var enhancedSync: EnhancedSync = .msync
     var avxEnabled: Bool = false
     var followSystemProxy: Bool = true
+    var wineBackend: WineBackend = .whiskyWine
 
     public init() {}
 
@@ -107,6 +119,7 @@ public struct BottleWineConfig: Codable, Equatable {
         self.enhancedSync = try container.decodeIfPresent(EnhancedSync.self, forKey: .enhancedSync) ?? .msync
         self.avxEnabled = try container.decodeIfPresent(Bool.self, forKey: .avxEnabled) ?? false
         self.followSystemProxy = try container.decodeIfPresent(Bool.self, forKey: .followSystemProxy) ?? true
+        self.wineBackend = try container.decodeIfPresent(WineBackend.self, forKey: .wineBackend) ?? .whiskyWine
     }
     // swiftlint:enable line_length
 }
@@ -203,6 +216,13 @@ public struct BottleSettings: Codable, Equatable {
     public var enhancedSync: EnhancedSync {
         get { return wineConfig.enhancedSync }
         set { wineConfig.enhancedSync = newValue }
+    }
+
+    /// Which Wine build this bottle runs on (canonical Whisky Wine, or the
+    /// optional side-by-side Proton install). Defaults to `.whiskyWine`.
+    public var wineBackend: WineBackend {
+        get { return wineConfig.wineBackend }
+        set { wineConfig.wineBackend = newValue }
     }
 
     public var metalHud: Bool {
