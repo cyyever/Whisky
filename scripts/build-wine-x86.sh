@@ -15,10 +15,14 @@ WINE_BUILD="${WHISKY_WINE_BUILD:-release}"
 
 echo "=== Building Wine x86_64 from $WINE_SRC ==="
 
-# Apply out-of-tree Wine patches, kept as files so the submodule stays clean.
-# Idempotent: skip a patch that is already applied, fail loudly on conflicts.
+# Apply out-of-tree Wine patches. Patches 0001-0002 mirror the branch's own
+# base commits (already in HEAD); 0003+ are out-of-tree. Reset tracked source to
+# a clean HEAD first so the state is deterministic: the base-commit patches are
+# then detected as already-applied and skipped, while the out-of-tree patches
+# apply fresh. checkout touches only tracked files, so build-x86_64/ is kept.
 PATCH_DIR="$PROJECT_DIR/patches/wine"
 if [ -d "$PATCH_DIR" ]; then
+    git -C "$WINE_SRC" checkout -- .
     for patch in "$PATCH_DIR"/*.patch; do
         [ -e "$patch" ] || continue
         if git -C "$WINE_SRC" apply --reverse --check "$patch" >/dev/null 2>&1; then

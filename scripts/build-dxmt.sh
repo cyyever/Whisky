@@ -11,10 +11,13 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DXMT_SRC="$PROJECT_DIR/vendor/dxmt"
-WINE_BUILD="$PROJECT_DIR/vendor/wine/build-x86_64"
 X86_BREW="$PROJECT_DIR/vendor/homebrew-x86/bin/brew"
 INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
-WINE_LIB="$INSTALL_DIR/Wine/lib/wine"
+# WINE_BUILD (Wine build tree for headers) and WINE_LIB (install target) default
+# to the Whisky Wine, but can be overridden to build DXMT against another Wine
+# (e.g. Proton): DXMT_WINE_BUILD=/path/to/proton/build DXMT_WINE_LIB=/path/Wine/lib/wine
+WINE_BUILD="${DXMT_WINE_BUILD:-$PROJECT_DIR/vendor/wine/build-x86_64}"
+WINE_LIB="${DXMT_WINE_LIB:-$INSTALL_DIR/Wine/lib/wine}"
 
 # --- prerequisites -----------------------------------------------------------
 if ! xcrun -f metal >/dev/null 2>&1; then
