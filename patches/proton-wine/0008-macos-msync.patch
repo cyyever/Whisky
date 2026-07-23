@@ -4716,7 +4716,7 @@ index 03565fe..56afefe 100644
 +    unsigned int shm_idx;
 +@END
 diff --git a/server/queue.c b/server/queue.c
-index 1412411..475d948 100644
+index 1412411..22267fb 100644
 --- a/server/queue.c
 +++ b/server/queue.c
 @@ -45,6 +45,7 @@
@@ -4832,17 +4832,24 @@ index 1412411..475d948 100644
  }
  
  static void msg_queue_poll_event( struct fd *fd, int event )
-@@ -3267,6 +3296,9 @@ DECL_HANDLER(set_queue_mask)
+@@ -3267,6 +3296,16 @@ DECL_HANDLER(set_queue_mask)
  
      if (!get_queue_status( queue )) reset_sync( queue->sync );
      else signal_sync( queue->sync );
 +
-+    if (do_msync() && !get_queue_status( queue ))
-+        msync_clear( &queue->obj );
++    /* keep the msync shm in parity with queue->sync in BOTH directions:
++     * a new mask can make the queue signaled against already-set bits (no
++     * set_queue_bits fires), so the true branch must msync_wake_up or the
++     * msgwait client blocks forever (lost-wakeup deadlock). */
++    if (do_msync())
++    {
++        if (get_queue_status( queue )) msync_wake_up( &queue->obj );
++        else msync_clear( &queue->obj );
++    }
  }
  
  
-@@ -3288,6 +3320,9 @@ DECL_HANDLER(get_queue_status)
+@@ -3288,6 +3327,9 @@ DECL_HANDLER(get_queue_status)
      SHARED_WRITE_END;
  
      if (!get_queue_status( queue )) reset_sync( queue->sync );
@@ -4852,17 +4859,38 @@ index 1412411..475d948 100644
  }
  
  
-@@ -3547,6 +3582,9 @@ DECL_HANDLER(get_message)
+@@ -3489,6 +3531,15 @@ DECL_HANDLER(get_message)
+ 
+     if (!get_queue_status( queue )) reset_sync( queue->sync );
+ 
++    /* get_message clears changed_bits directly above (not via clear_queue_bits),
++     * so it must also resync the msync shm signaled flag, exactly like the other
++     * queue handlers (set_queue_mask/get_queue_status). Missing this leaves the
++     * queue's msync object stuck signaled after the last message is drained ->
++     * the client's level-triggered MSYNC_QUEUE wait (msync.c) returns instantly
++     * forever -> CEF message-pump livelock (100%+ CPU, no new QS bits set). */
++    if (do_msync() && !get_queue_status( queue ))
++        msync_clear( &queue->obj );
++
+     /* then check for posted messages */
+     if ((filter & QS_POSTMESSAGE) &&
+         get_posted_message( queue, get_win, req->get_first, req->get_last, req->flags, reply ))
+@@ -3547,6 +3598,14 @@ DECL_HANDLER(get_message)
      if (!get_queue_status( queue )) reset_sync( queue->sync );
      else signal_sync( queue->sync );
      set_error( STATUS_PENDING );  /* FIXME */
 +
-+    if (do_msync() && !get_queue_status( queue ))
-+        msync_clear( &queue->obj );
++    /* parity with queue->sync in both directions (see set_queue_mask): the new
++     * wake/changed mask may make the queue signaled against existing bits. */
++    if (do_msync())
++    {
++        if (get_queue_status( queue )) msync_wake_up( &queue->obj );
++        else msync_clear( &queue->obj );
++    }
  }
  
  
-@@ -4341,6 +4379,23 @@ DECL_HANDLER(update_rawinput_devices)
+@@ -4341,6 +4400,23 @@ DECL_HANDLER(update_rawinput_devices)
      }
  }
  
