@@ -92,10 +92,10 @@ index 4deeac7..a21833a 100644
  
 diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
 new file mode 100644
-index 0000000..922486f
+index 0000000..508589d
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync.c
-@@ -0,0 +1,1881 @@
+@@ -0,0 +1,1901 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -874,6 +874,26 @@ index 0000000..922486f
 +    }
 +
 +    return STATUS_INVALID_HANDLE;
++}
++
++/* Drop a stale "server-only" negative-cache entry so the next get_object()
++ * re-queries the server. A handle cached as MSYNC_SERVER_ONLY can go stale when
++ * the server-only object it named is closed server-side (bypassing msync_close)
++ * and its handle number is reused for an msync object; the stale entry then
++ * forces the new msync object onto server_wait, whose no_add_queue sync returns
++ * STATUS_OBJECT_TYPE_MISMATCH -> a busy-return storm. Returns TRUE if such an
++ * entry was dropped (so the caller knows a retry via msync may now succeed). */
++BOOL msync_invalidate_server_only( HANDLE handle )
++{
++    UINT_PTR entry, idx = handle_to_index( handle, &entry );
++    int type;
++
++    if (entry >= MSYNC_LIST_ENTRIES || !msync_list[entry]) return FALSE;
++    type = __atomic_load_n( (int *)&msync_list[entry][idx].type, __ATOMIC_SEQ_CST );
++    if (type != (int)MSYNC_SERVER_ONLY) return FALSE;
++    /* only clear if still SERVER_ONLY (don't clobber a concurrent reclassify) */
++    return __sync_bool_compare_and_swap( (int *)&msync_list[entry][idx].type,
++                                         (int)MSYNC_SERVER_ONLY, 0 );
 +}
 +
 +static NTSTATUS create_msync( enum msync_type type, HANDLE *handle,
@@ -1979,10 +1999,10 @@ index 0000000..922486f
 +}
 diff --git a/dlls/ntdll/unix/msync.h b/dlls/ntdll/unix/msync.h
 new file mode 100644
-index 0000000..3e6eb2c
+index 0000000..ca92d32
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync.h
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,51 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -2007,6 +2027,7 @@ index 0000000..3e6eb2c
 +extern int do_msync(void);
 +extern void msync_init(void);
 +extern NTSTATUS msync_close( HANDLE handle );
++extern BOOL msync_invalidate_server_only( HANDLE handle );
 +
 +extern NTSTATUS msync_create_semaphore(HANDLE *handle, ACCESS_MASK access,
 +    const OBJECT_ATTRIBUTES *attr, LONG initial, LONG max);
@@ -2056,7 +2077,7 @@ index 5d8a59b..2dd93cb 100644
      {
          req->handle = wine_server_obj_handle( handle );
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index 74a0c93..bbbfde8 100644
+index 74a0c93..2519bb9 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
 @@ -61,7 +61,9 @@
@@ -2239,21 +2260,62 @@ index 74a0c93..bbbfde8 100644
      SERVER_START_REQ( query_mutex )
      {
          req->handle = wine_server_obj_handle( handle );
-@@ -2361,6 +2414,13 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
+@@ -2361,12 +2414,48 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, WA
          return ret;
      }
  
-+    if (do_msync())
+-    if (alertable) flags |= SELECT_ALERTABLE;
+-    select_op.wait.op = type == WaitAll ? SELECT_WAIT_ALL : SELECT_WAIT;
+-    for (i = 0; i < count; i++) select_op.wait.handles[i] = wine_server_obj_handle( handles[i] );
+-    ret = server_wait( &select_op, offsetof( union select_op, wait.handles[count] ), flags, timeout );
+-    TRACE( "-> %#x\n", ret );
+-    return ret;
++    /* A handle cached as "server-only" can be STALE: after a server-only object
++     * closes server-side (bypassing msync_close) its handle number may be reused
++     * for an msync object. The stale entry forces that msync object onto a server
++     * wait, whose no-fd sync yields STATUS_OBJECT_TYPE_MISMATCH -- from either the
++     * pure-server server_wait() below OR the server-subset server_wait() inside
++     * msync_wait_mixed_any(). On the first such mismatch, drop the set's stale
++     * server-only classifications and retry the whole wait once. */
 +    {
-+        NTSTATUS ret = msync_wait_objects( count, handles, type == WaitAny, alertable, timeout );
-+        if (ret != STATUS_NOT_IMPLEMENTED)
-+            return ret;
-+    }
++        BOOL retried = FALSE;
 +
-     if (alertable) flags |= SELECT_ALERTABLE;
-     select_op.wait.op = type == WaitAll ? SELECT_WAIT_ALL : SELECT_WAIT;
-     for (i = 0; i < count; i++) select_op.wait.handles[i] = wine_server_obj_handle( handles[i] );
-@@ -2387,6 +2447,16 @@ NTSTATUS WINAPI NtWaitForSingleObject( HANDLE handle, BOOLEAN alertable, const L
++    retry_wait:
++        if (do_msync())
++        {
++            ret = msync_wait_objects( count, handles, type == WaitAny, alertable, timeout );
++            if (ret != STATUS_NOT_IMPLEMENTED)
++            {
++                if (ret == STATUS_OBJECT_TYPE_MISMATCH && !retried) goto stale_retry;
++                TRACE( "-> %#x\n", ret );
++                return ret;
++            }
++        }
++
++        if (alertable) flags |= SELECT_ALERTABLE;
++        select_op.wait.op = type == WaitAll ? SELECT_WAIT_ALL : SELECT_WAIT;
++        for (i = 0; i < count; i++) select_op.wait.handles[i] = wine_server_obj_handle( handles[i] );
++        ret = server_wait( &select_op, offsetof( union select_op, wait.handles[count] ), flags, timeout );
++
++        if (ret == STATUS_OBJECT_TYPE_MISMATCH && do_msync() && !retried) goto stale_retry;
++        TRACE( "-> %#x\n", ret );
++        return ret;
++
++    stale_retry:
++        {
++            BOOL changed = FALSE;
++            for (i = 0; i < count; i++)
++                if (msync_invalidate_server_only( handles[i] )) changed = TRUE;
++            retried = TRUE;
++            if (changed) goto retry_wait;
++        }
++        TRACE( "-> %#x\n", ret );
++        return ret;
++    }
+ }
+ 
+ 
+@@ -2387,10 +2476,29 @@ NTSTATUS WINAPI NtWaitForSingleObject( HANDLE handle, BOOLEAN alertable, const L
          return ret;
      }
  
@@ -2270,7 +2332,20 @@ index 74a0c93..bbbfde8 100644
      if (alertable) flags |= SELECT_ALERTABLE;
      select_op.wait.op = SELECT_WAIT;
      select_op.wait.handles[0] = wine_server_obj_handle( handle );
-@@ -2408,6 +2478,9 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
+     ret = server_wait( &select_op, offsetof( union select_op, wait.handles[1] ), flags, timeout );
++
++    if (ret == STATUS_OBJECT_TYPE_MISMATCH && do_msync() && msync_invalidate_server_only( handle ))
++    {
++        /* stale server-only negative cache -> the handle is really an msync
++         * object; retry once via msync (see NtWaitForMultipleObjects). */
++        ret = msync_wait_objects( 1, &handle, TRUE, alertable, timeout );
++        if (ret != STATUS_NOT_IMPLEMENTED) { TRACE( "-> %#x\n", ret ); return ret; }
++        ret = server_wait( &select_op, offsetof( union select_op, wait.handles[1] ), flags, timeout );
++    }
+     TRACE( "-> %#x\n", ret );
+     return ret;
+ }
+@@ -2408,6 +2516,9 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
  
      TRACE( "signal %p, wait %p, alertable %u, timeout %s\n", signal, wait, alertable, debugstr_timeout(timeout) );
  
@@ -2280,7 +2355,7 @@ index 74a0c93..bbbfde8 100644
      if (!signal) return STATUS_INVALID_HANDLE;
  
      if ((ret = inproc_signal_and_wait( signal, wait, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
-@@ -2455,6 +2528,12 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+@@ -2455,6 +2566,12 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
      /* if alertable, we need to query the server */
      if (alertable)
      {
