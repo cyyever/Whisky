@@ -1,0 +1,126 @@
+From: cyy <cyyever@gmail.com>
+Date: Wed, 23 Jul 2026 00:00:00 +0000
+Subject: [PATCH] macOS: msync msg_queue wake consistency (fix GUI message-wait
+ lost wakeup)
+
+msync_wake_up()/msync_clear() resolved the wake shm index via
+get_obj_inproc_sync(), which returns -1 for the msg_queue's server-backed
+event_sync on macOS (there is no inproc/ntsync shadow here). The queue's own
+dedicated msync shm was therefore never signaled, so a client blocked in a GUI
+message wait (MsgWaitForMultipleObjects) never woke -- the CEF steamwebhelper
+watchdog then fired "Steamwebhelper is not responding".
+
+Fall back to the object's own get_msync_idx for the msg_queue in both
+msync_wake_up() and msync_clear() (gated to the queue so no other server-backed
+object's dormant msync path is touched), and admit the queue to the client
+msync fast-path in the get_msync_idx handler. is_msg_queue() is a small helper
+added in server/queue.c (declared in server/msync.h) since msg_queue_ops is
+file-local to queue.c.
+
+Can be folded into 0008-macos-msync.patch later.
+
+diff --git a/server/msync.c b/server/msync.c
+--- a/server/msync.c
++++ b/server/msync.c
+@@ -814,6 +814,18 @@
+ 
+     if ((idx = get_obj_inproc_sync( obj, &type )) > 0)
+         msync_signal_all( idx );
++    else if (is_msg_queue( obj ))
++    {
++        /* The msg_queue is the one object with a real server-side sync (so
++         * get_obj_inproc_sync() returns -1 above on macOS, no inproc shadow) that
++         * ALSO owns a dedicated msync shm via get_msync_idx and is handed to msync
++         * clients (see the get_msync_idx handler). Signal that shm -- exactly the
++         * index a GUI message wait blocks on -- or it never wakes. Gated to the
++         * queue so no other server-backed object's dormant msync path is touched. */
++        enum msync_type mtype;
++        unsigned int midx = obj->ops->get_msync_idx( obj, &mtype );
++        if (midx) msync_signal_all( midx );
++    }
+ }
+ 
+ void msync_destroy_semaphore( unsigned int shm_idx )
+@@ -846,6 +858,15 @@
+ 
+     if ((idx = get_obj_inproc_sync( obj, &type )) > 0)
+         msync_clear_shm( idx );
++    else if (is_msg_queue( obj ))
++    {
++        /* Symmetric with msync_wake_up(): clear the queue's own msync shm so a
++         * level-triggered client wait sees it go unsignaled instead of spinning on
++         * a stale signaled flag. Gated to the queue, as above. */
++        enum msync_type mtype;
++        unsigned int midx = obj->ops->get_msync_idx( obj, &mtype );
++        if (midx) msync_clear_shm( midx );
++    }
+ }
+ 
+ void msync_set_event( struct msync *msync )
+@@ -961,20 +982,26 @@
+     if (!(obj = get_handle_obj( current->process, req->handle, SYNCHRONIZE, NULL )))
+         return;
+ 
+-    /* Hand the client an msync shm index ONLY for objects that cannot be waited
++    /* Hand the client an msync shm index for objects that cannot be waited
+      * server-side -- i.e. pure msync primitives (events/mutexes/sems created via
+-     * create_msync), whose sync is the object itself with add_queue == no_add_queue.
++     * create_msync), whose sync is the object itself with add_queue == no_add_queue
++     * -- PLUS the msg_queue, which maintains its own dedicated msync shm through the
++     * dual signal path in queue.c (signal_sync/reset_sync for server waiters AND
++     * msync_wake_up/msync_clear for msync waiters). The queue was excluded before
++     * because msync_wake_up() resolved the wake index via get_obj_inproc_sync(),
++     * which returns -1 for the queue's server-backed sync on macOS -> its wakeups
++     * were dropped and a GUI message wait hung; msync_wake_up()/msync_clear() now
++     * fall back to the object's own get_msync_idx, so msync-waiting the queue is
++     * correct and lets a MsgWait be a pure msync wait instead of a polling
++     * msync+server mixed wait.
+      *
+-     * Objects that DO have a real server-side sync (process/thread/msg_queue ->
+-     * event_sync, add_queue works) must keep SERVER waits: their server-side
+-     * wakeups are reliable, whereas routing them to client msync exposed a
+-     * lost-wakeup hang (Steam's GUI message loop blocked forever on its queue +
+-     * driver events). Conversely, the inproc_sync path used here before is the
+-     * ntsync (Linux) mechanism, stubbed on macOS -- it reported "no shadow" for
+-     * every real msync primitive, so those got server-selected and spun on
+-     * no_add_queue -> STATUS_OBJECT_TYPE_MISMATCH (Steam's "stalled pipe"). */
++     * process/thread stay on SERVER waits (their sync is a server event_sync with a
++     * real add_queue and they have no dual msync path). The inproc_sync path used
++     * here is the ntsync (Linux) mechanism, stubbed on macOS -- returning the object
++     * itself from default_get_sync() keeps real msync primitives off no_add_queue ->
++     * STATUS_OBJECT_TYPE_MISMATCH (Steam's "stalled pipe"). */
+     sync = get_obj_sync( obj );
+-    if (obj->ops->get_msync_idx && sync->ops->add_queue == no_add_queue)
++    if (obj->ops->get_msync_idx && (sync->ops->add_queue == no_add_queue || is_msg_queue( obj )))
+         idx = obj->ops->get_msync_idx( obj, &type );
+     release_object( sync );
+ 
+diff --git a/server/queue.c b/server/queue.c
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -199,6 +199,14 @@
+     no_close_handle,           /* close_handle */
+     msg_queue_destroy          /* destroy */
+ };
++
++/* True for a thread message queue. Used by the msync get_msync_idx handler to
++ * admit the queue to the client msync fast-path (it owns a dedicated msync shm
++ * kept in sync via msync_wake_up/msync_clear), unlike other server-backed syncs. */
++int is_msg_queue( struct object *obj )
++{
++    return obj->ops == &msg_queue_ops;
++}
+ 
+ static const struct fd_ops msg_queue_fd_ops =
+ {
+diff --git a/server/msync.h b/server/msync.h
+--- a/server/msync.h
++++ b/server/msync.h
+@@ -27,6 +27,7 @@
+ extern void msync_destroy_semaphore( unsigned int shm_idx );
+ extern void msync_wake_up( struct object *obj );
+ extern void msync_clear( struct object *obj );
++extern int is_msg_queue( struct object *obj );
+ 
+ struct msync;
+ 
