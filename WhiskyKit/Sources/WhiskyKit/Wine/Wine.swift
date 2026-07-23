@@ -256,7 +256,17 @@ public class Wine {
             // GameController framework enumerates Xbox pads but delivers no input
             // (26.0 had the same regression); SDL's HIDAPI/IOKit path reads the
             // HID reports fine and keeps rumble. Revisit when GA fixes it.
-            "SDL_JOYSTICK_MFI": "0"
+            "SDL_JOYSTICK_MFI": "0",
+            // Proton only: disable the lsteamclient bridge. Proton redirects the
+            // tier0_s64/vstdlib_s64 imports of steamclient64.dll and
+            // gameoverlayrenderer64.dll to ntdll so its Linux host-integrated
+            // tier0 shims are used for games. That bridge can never reach a Linux
+            // Steam on macOS, and when we run the real Windows Steam client the
+            // redirect strands g_pMemAllocSteam et al. on unimplemented ntdll
+            // stubs (our de-linux'd ntdll lacks those 297 symbols) -> steamclient64
+            // DllMain access-violates on a garbage allocator vtable and Steam shows
+            // "reinstall Steam". Ignored by Whisky-Wine 11.13 (no such code).
+            "PROTON_DISABLE_LSTEAMCLIENT": "1"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
         guard !environment.isEmpty else { return result }
