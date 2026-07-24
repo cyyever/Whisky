@@ -26,17 +26,22 @@ ANGLE Renderer11 does **not** use DXMT (DXMT never loads in that process, even w
 log stays empty; and the `CheckInterfaceSupport: Error querying driver version`
 message DXMT would never emit, since it S_OKs `ID3D10Device`). So ANGLE's D3D11 is
 served by **wined3d** (D3D11-on-macOS-GL), which caps ES at 2.0. Root cause traced
-in wined3d: `feature_level_from_caps` (dlls/wined3d/adapter_gl.c) maps shader model
-→ feature level (SM4 → FL_10_0 → ES 3.0; SM3 → FL_9_3 → ES 2.0), and the webhelper's
-wined3d reports **FL_9_3 / SM3** — i.e. its GL context fell back to legacy (GL 2.1 /
-GLSL 1.20), not the core GL 3.2+ winemac requests (`kCGLOGLPVersion_3_2_Core`,
-dlls/winemac.drv/opengl.c). So ES 3.x would need the webhelper's wined3d to actually
-get a core GL context on macOS (a winemac/wined3d GL-context fix; bumping winemac's
-core request 3.2→4.1 alone wouldn't help while it falls back to legacy). Dropped as
-not worth forcing — the ES-2 GPU path above already renders correctly and roughly
-halves the CPU. Diagnostic env if revisited: `DXMT_LOG_PATH`/`DXMT_LOG_LEVEL` (DXMT
-never loads in the webhelper — confirms wined3d, not DXMT), and wined3d `+d3d` trace
-for the reported feature level.
+in wined3d (confirmed via `WINEDEBUG=+d3d`): the webhelper's wined3d **does** get a
+**core GL 4.1 context, GLSL 4.10** ("Got a core profile context", GL_RENDERER "Apple
+M2", GL_VERSION "4.1 Metal") — the earlier "legacy 2.1" guess was wrong. But it still
+reports `GPU maximum feature level 0x9300` (**FL_9_3 / SM3**) because
+`shader_glsl_get_shader_model` (dlls/wined3d/glsl_shader.c ~11295) requires, for SM4
+(→ FL_10_0 → ES 3.0): `glsl_version >= 1.50` (ok) **AND** `ARB_SHADER_BIT_ENCODING`
+(ok) **AND** `ARB_TEXTURE_SWIZZLE` (ok) **AND** `EXT_SHADER_INTEGER_MIX` — and
+Apple's GL 4.1 does **not** expose `GL_EXT_shader_integer_mix` (a GL-4.x-era ext), so
+wined3d falls to SM3. Relaxing that one requirement would report SM4/ES3, but risks
+broken shaders if wined3d ever emits an integer `mix()` that Apple GL can't compile —
+a forced workaround, deliberately not taken. Full ES 3.x needs either Apple GL to
+expose the ext (won't happen — macOS GL is frozen/deprecated) or the webhelper to run
+on DXMT/Vulkan instead of wined3d's GL. Dropped as not worth forcing — the ES-2 GPU
+path above already renders correctly and roughly halves the CPU vs software.
+Diagnostic env if revisited: `WINEDEBUG=+d3d` (feature level / GL version), and
+`DXMT_LOG_PATH`/`DXMT_LOG_LEVEL` (DXMT never loads in the webhelper — it's wined3d).
 
 Verified on the **Proton** stack; spot-check Whisky-Wine 11.13 bottles (shared
 wrapper) — if a bottle black-windows, restore `--disable-gpu --disable-gpu-compositing`.
