@@ -45,9 +45,8 @@ needed for a 2D UI). Do NOT set a bottle-global `d3d11=native` override for the 
 Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXMT_LOG_PATH` stays empty
 in the webhelper (it's wined3d). Always launch Steam with the **full bottle env**
 (`WhiskyCmd shellenv <bottle>`) — a minimal env missing `winemetal=b` /
-`DYLD_FALLBACK_LIBRARY_PATH` makes steam.exe spin at ~100% with no window. Spot-check
-Whisky-Wine 11.13 bottles (shared wrapper) — if one black-windows, restore
-`--disable-gpu --disable-gpu-compositing`.
+`DYLD_FALLBACK_LIBRARY_PATH` makes steam.exe spin at ~100% with no window. If a bottle
+sharing the wrapper black-windows, restore `--disable-gpu --disable-gpu-compositing`.
 
 ### Why not just overwrite steamwebhelper.exe
 
@@ -78,10 +77,12 @@ the genuine binary under a different name, so the IFEO redirect doesn't recurse)
 CEF propagates the flags to its own child processes.
 
 Stock Wine ignores the IFEO `Debugger` value at `CreateProcess`; support is added
-by `patches/wine/0001-kernelbase-ifeo-debugger.patch` (in
-`CreateProcessInternalW`: if the image has an IFEO `Debugger`, prepend it to the
-command line and run that instead). Patches live as files and are applied by
-`scripts/build-wine-x86.sh` so the `vendor/wine` submodule stays clean.
+by a kernelbase patch — `patches/proton-wine/0010-macos-kernelbase-ifeo-debugger.patch`
+on the default Proton backend (and `patches/wine/0003-kernelbase-ifeo-debugger.patch`
+on legacy Whisky-Wine) — which, in `CreateProcessInternalW`, prepends the IFEO
+`Debugger` to the command line and runs that instead. Patches live as files and are
+applied at build time from the patch series (`patches/proton-wine/*` for Proton;
+`scripts/build-wine-x86.sh` for Whisky-Wine) so the vendored source stays clean.
 
 Driven by `Steam.swift` (via `Wine.configureSteam`, called from
 `Wine.runProgram`): installs the wrapper at `C:\windows\steamwebhelper_wrapper.exe`,

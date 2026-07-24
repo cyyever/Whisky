@@ -7,7 +7,7 @@ virtual-device hiding, `WINE_NX_COMPAT` — while keeping D3D9/10/11 all working
 Proton ships Valve's game fixes, media-converter, `amd_ags`, fsync, and a maintained
 tree that plain WineHQ 11.13 lacks.
 
-## Status (2026-07-24 — Steam logs in fully under msync; experimental parallel track)
+## Status (2026-07-24 — Proton is the shipped default backend; Steam logs in fully under msync)
 - Proton lives **side-by-side** at `Libraries/WineProton` (canonical `Libraries/Wine`
   untouched). During bring-up it was also live-swapped into `Libraries/Wine` with the
   Whisky Wine backed up at `…/Libraries/Wine.whisky-bak`.
@@ -31,9 +31,9 @@ tree that plain WineHQ 11.13 lacks.
   `WhiskyWineInstaller.protonBinFolder` prefers a side-by-side `Libraries/WineProton`,
   else falls back to `Libraries/Wine` (works whether Proton is side-by-side or laid over
   `Libraries/Wine`). `PROTON_DISABLE_LSTEAMCLIENT=1` is wired into `Wine.swift`.
-- Not yet done: no version-plist/appcast switch, no committed submodule pin for the
-  Proton source. Treat as an experimental parallel track next to the canonical Wine 11.13
-  stack.
+- Not yet done: no version-plist/appcast switch (end-user shipping), no committed
+  submodule pin for the Proton source. Legacy Whisky-Wine 11.13 remains only as a
+  non-user-selectable fallback backend.
 
 ## The msync startup crash (root cause)
 Proton's `wineserver` crashed immediately at bottle init (0 files landed in
@@ -184,14 +184,34 @@ After all of the above, under `WINEMSYNC=1` Steam completes a full CM logon
 (`RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, interactive login window, zero
 `OBJECT_TYPE_MISMATCH`).
 
-**Remaining rough edge:** a full-msync (all-events-on-msync) CPU spin. The workaround
-lever `WINEMSYNC_NO_ANON_AUTOEVENT=1` (anon auto-reset events → server-sync, everything
-else on msync) makes Steam log in and settle to normal CPU, and is the intended
-Proton-backend default. An earlier attempt to localize the spin to anonymous auto-reset
-events was **retracted as unverified** — the root cause is not reliably localized; treat
-`NO_ANON_AUTOEVENT` as a workaround, not a diagnosis. Related bisection levers (env, read
-by `dlls/ntdll/unix/msync.c`): `WINEMSYNC_NO_EVENT`, `NO_AUTOEVENT`, and the finer
-`NO_ANON_AUTOEVENT` / `NO_NAMED_AUTOEVENT`.
+**Remaining rough edge:** a full-msync (all-events-on-msync) CPU spin. `WINEMSYNC_NO_ANON_AUTOEVENT=1`
+(anon auto-reset events → server-sync, everything else on msync) is the currently wired
+Proton-backend default (`Wine.swift`), but re-verification found steam.exe can still pin a
+core with it set (the busy-poll was seen on a *manual* event, type=3, not an auto-reset
+event), so it is an **unproven workaround, not a fix or a diagnosis**. The earlier
+"anonymous auto-reset events" localization was **retracted as unverified**; the root cause
+is not reliably localized.
+
+**msync enablement scope + gating code** (all in `dlls/ntdll/unix/msync.c`, code is the
+source of truth):
+- **Global switch — `do_msync()`.** On macOS msync defaults **ON** (`WINEMSYNC` unset ⇒ 1);
+  `WINEMSYNC=0` forces it off (debug/fallback to the slower wineserver sync). It is the
+  `__ulock`/mach-semaphore fast path.
+- **Per-type scope.** Semaphores and mutexes are **never** gated — always on msync when the
+  global switch is on (the game hot path). Only **events** are maskable, via
+  `event_uses_msync(type, named)`: when it returns 0 the `Nt*Event` wrapper returns
+  `STATUS_NOT_IMPLEMENTED` and falls through to the wineserver path (same as server-only
+  objects — no msync/server casting). Manual-reset events go through msync unless
+  `WINEMSYNC_NO_EVENT`; auto-reset events are additionally steerable (they're implicated in
+  the spin).
+- **Event bisection levers** (env, inherited so a named event resolves to the same type in
+  every process): `WINEMSYNC_NO_EVENT` (all events → server), `WINEMSYNC_NO_AUTOEVENT` (all
+  auto-reset events), and the finer `WINEMSYNC_NO_ANON_AUTOEVENT` / `WINEMSYNC_NO_NAMED_AUTOEVENT`
+  (anonymous process-local vs named cross-process auto-events). There are **no**
+  semaphore/mutex/manual-event levers — those types are unconditionally on msync. These
+  levers exist to bisect the spin; none is a confirmed fix. (This also explains why
+  `NO_ANON_AUTOEVENT` doesn't stop the spin: the busy-poll sits on a *manual* event, which
+  no auto-event lever touches.)
 
 **It is NOT a network / VPN / winsock problem** (verified during the investigation):
 - Steam downloads its update manifest directly (`client-update.steamstatic.com`,
@@ -225,8 +245,8 @@ Installs `vendor/proton-wine/build` into a self-contained `Wine/` dir (default
 - `install_name_tool -add_rpath '@loader_path/../..'` on every `x86_64-unix/*.so`.
 - Append `[Drivers] Graphics=mac` to `share/wine/wine.inf`; symlink `wine64 → wine`.
 - **`INSTALL_TO_WHISKY=1`** lays the result into `Libraries/WineProton` (side-by-side with
-  the canonical `Libraries/Wine`, which the per-bottle backend selector targets); or
-  `cp -R "$INSTALL_DIR/Wine" …/Libraries/Wine` to replace outright.
+  `Libraries/Wine`, the legacy fallback that `Wine.binFolder(for:)` resolves to for a
+  `.whiskyWine` bottle); or `cp -R "$INSTALL_DIR/Wine" …/Libraries/Wine` to replace outright.
 
 ## DXMT against Proton — scripts/build-dxmt.sh parameterization
 `build-dxmt.sh` now reads two env vars (defaulting to the Whisky Wine):

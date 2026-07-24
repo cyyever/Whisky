@@ -1,7 +1,7 @@
 # macOS gaming stack: D3D translation, native ARM, and what this repo can/can't do
 
-Findings from evaluating this fork (Wine 11.13 x86_64 via Rosetta 2 + DXMT) on
-Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
+Findings from evaluating this fork (Proton — Valve proton-wine 11.0 — x86_64 via
+Rosetta 2 + DXMT) on Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
 
 ## D3D → Metal translation options
 
@@ -15,14 +15,12 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
 - **DXVK's role here**: DXMT is the default D3D11/D3D10 path; DXVK
   (`vendor/dxvk` + `patches/dxvk`) covers **D3D9 only**, which DXMT does not
   implement, and now runs on KosmicKrisp.
-- **Vulkan-on-Metal is shifting (July 2026):** LunarG's **KosmicKrisp** (in Mesa,
-  Google-sponsored) is a fully **conformant** Vulkan 1.3/1.4 driver built on
-  **Metal 4** (macOS 26+, Apple Silicon only), reached MoltenVK feature parity
-  Feb 2026; LunarG positions it as the future of Vulkan on Apple, with MoltenVK
-  (1.4.1, Metal 3) trending toward maintenance. If it works under Rosetta
-  (x86_64), the MoltenVK-workaround patches in `patches/dxvk`/`patches/moltenvk`
-  may become unnecessary, and vkd3d-proton (D3D12) gains a first plausible open
-  path. **Verified 2026-07-18: KosmicKrisp builds as x86_64 and works under
+- **KosmicKrisp is this repo's Vulkan backend (replaced MoltenVK):** LunarG's
+  **KosmicKrisp** (in Mesa, Google-sponsored) is a fully **conformant** Vulkan
+  1.3/1.4 driver built on **Metal 4** (macOS 26+, Apple Silicon only), reached
+  MoltenVK feature parity Feb 2026; MoltenVK (1.4.1, Metal 3) is now legacy here.
+  It runs under Rosetta (x86_64), so vkd3d-proton (D3D12) has a first open path.
+  **Verified 2026-07-18: KosmicKrisp builds as x86_64 and works under
   Rosetta** (currently Mesa 26.2.99, pin `8b794a5`; running device reports
   "KosmicKrisp 26.2.99", Apple M2, DRIVER_ID_MESA_KOSMICKRISP, and a real
   device-create → vkCmdFillBuffer → submit → verify test passes in an x86_64
@@ -33,8 +31,8 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
   place of libMoltenVK.dylib → KosmicKrisp): renders correctly plus DXVK's
   `fillModeNonSolid` made optional. The present-queue residencySet fix (Mesa
   MR 42811 — without it Metal 4 presented black) is now **merged upstream**, so
-  its former `patches/mesa/0001` is dropped and `patches/mesa/` is empty. See
-  CLAUDE.md "Vulkan backend: KosmicKrisp".
+  its former `patches/mesa/0001` is dropped and `patches/mesa/` has been removed.
+  See CLAUDE.md "Vulkan backend: KosmicKrisp".
 - **D3D12 (e.g. Black Myth: Wukong, UE5):** DXMT is D3D11-only (no `d3d12` in
   its source tree). Apple's closed **D3DMetal** (CrossOver-only) is still the
   only *shipping* D3D12 path on Mac. The **open** path —
@@ -52,7 +50,7 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
 
 ## Native ARM64 Wine (Rosetta-free): not viable here yet
 
-- Wine 11.13 on macOS is **x86_64 + Rosetta 2**. Source check: `loader/preloader_mac.c`
+- Proton (proton-wine 11.0) on macOS is **x86_64 + Rosetta 2**. Source check: `loader/preloader_mac.c`
   has only `__x86_64__`/`__i386__` branches — **no `__aarch64__`**, so a native
   ARM macOS build can't be produced. Generic ARM64 plumbing (complete WoW64,
   ARM64 large-page support, ARM64EC) *is* in Wine 11, but the macOS-specific
@@ -131,7 +129,8 @@ menus too → Wine-audio side; only under load → underrun.
 
 - `WINEDEBUG=-all` — disable Wine debug logging (the default `-fixme+err+warn`
   still let fixme spam flood stderr and stutter games).
-- `WINE_NX_COMPAT=1` + `patches/wine/0002-nx-compat-env-var.patch` — keep DEP on
+- `WINE_NX_COMPAT=1` + the NX-compat env patch (`patches/proton-wine/0011-macos-nx-compat-env.patch`
+  on the default Proton backend; `patches/wine/0004-nx-compat-env-var.patch` on legacy Whisky-Wine) — keep DEP on
   for legacy non-NX_COMPAT 32-bit images so Wine doesn't force PROT_EXEC on data
   pages, which makes Metal/DXMT a slideshow on Tahoe (3Shain/dxmt#161). 64-bit
   games are unaffected.
@@ -140,7 +139,7 @@ menus too → Wine-audio side; only under load → underrun.
 
 ## Bottom line for this repo
 
-- ✅ **x86 D3D11 games** (Unity/UE4, etc.): fully working today on Wine 11.13 + DXMT.
+- ✅ **x86 D3D11 games** (Unity/UE4, etc.): fully working today on Proton (proton-wine 11.0) + DXMT.
 - ✅ **x86 D3D9 games**: DXVK → KosmicKrisp/Metal 4 (`patches/dxvk`), verified end-to-end.
 - ⚠️ **D3D12 games** (UE5/Black Myth): open path (vkd3d-proton → KosmicKrisp)
   reaches device + compute + basic graphics, but not playable — blocked on
