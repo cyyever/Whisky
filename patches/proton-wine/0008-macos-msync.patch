@@ -122,10 +122,10 @@ index 4deeac7..a21833a 100644
  
 diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
 new file mode 100644
-index 0000000..efb90c0
+index 0000000..bd5d48a
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync.c
-@@ -0,0 +1,2356 @@
+@@ -0,0 +1,2367 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -1672,6 +1672,14 @@ index 0000000..efb90c0
 +    static int cached = -1;
 +    if (cached == -1)
 +    {
++        /* Event-driven bridge for mixed msync+server waits: the server subscribes
++         * to each object's get_sync so wake_up on the internal sync signals the
++         * bridge (fixes the poll's lost-wakeup; Phase 0 proved subscribing to the
++         * handle object instead missed 100% of wakeups). Correct, but still OFF by
++         * default: with auto-reset events on msync a Steam worker busy-polls a set
++         * of never-signalled manual events at ~20k/s (producer stalls upstream), so
++         * the shipped default stays WINEMSYNC_NO_AUTOEVENT + the legacy poll.
++         * WINEMSYNC_UNIFIED=1 opts into the bridge path. */
 +        const char *env = getenv( "WINEMSYNC_UNIFIED" );
 +        cached = env ? atoi( env ) : 0;
 +    }
@@ -1679,7 +1687,10 @@ index 0000000..efb90c0
 +}
 +
 +/* Per-thread bridge auto-event. Created as a real msync object regardless of
-+ * WINEMSYNC_NO_*EVENT (we need its shm), lazily on first mixed wait. */
++ * WINEMSYNC_NO_*EVENT (we need its shm), lazily on first mixed wait. AUTO-reset:
++ * msync_wait_multiple consumes it (CAS 1->0) on wake, so each server signal wakes
++ * the wait exactly once. (A manual event stays hot and, once server objects
++ * actually reach the bridge via the get_sync fix, spins the unified loop at 100%.) */
 +static NTSTATUS get_thread_bridge( struct msync **out )
 +{
 +    static __thread struct msync *bridge;
@@ -4220,7 +4231,7 @@ index fe3c045..24a266b 100644
      no_signal,                    /* signal */
      no_get_fd,                    /* get_fd */
 diff --git a/server/inproc_sync.c b/server/inproc_sync.c
-index a7020ef..81e2c6c 100644
+index a7020ef..d0cc3f9 100644
 --- a/server/inproc_sync.c
 +++ b/server/inproc_sync.c
 @@ -35,8 +35,28 @@
@@ -4383,7 +4394,7 @@ index a7020ef..81e2c6c 100644
 +{
 +    struct inproc_sync *sync = (struct inproc_sync *)obj;
 +    assert( obj->ops == &inproc_sync_ops );
-+    fprintf( stderr, "Inproc sync (msync) type=%d shm_idx=%d\n", sync->type, sync->fd );
++    (void)sync;
  }
  
  void signal_inproc_sync( struct inproc_sync *sync )
@@ -4537,10 +4548,10 @@ index 2b3ebd1..e29658b 100644
      mapping_get_fd,              /* get_fd */
 diff --git a/server/msync.c b/server/msync.c
 new file mode 100644
-index 0000000..c95b4c7
+index 0000000..17ade3e
 --- /dev/null
 +++ b/server/msync.c
-@@ -0,0 +1,1163 @@
+@@ -0,0 +1,1190 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -5298,14 +5309,7 @@ index 0000000..c95b4c7
 +            msync->shm_idx = msync_alloc_shm( low, high );
 +            msync->type = type;
 +            if (type == MSYNC_MUTEX)
-+            {
-+                char nbuf[160]; unsigned int k, n = name ? name->len / sizeof(WCHAR) : 0;
 +                list_add_tail( &mutex_list, &msync->mutex_entry );
-+                if (n > 159) n = 159;
-+                for (k = 0; k < n; k++) nbuf[k] = (char)name->str[k];
-+                nbuf[n] = 0;
-+                fprintf( stderr, "MTXNAME shm_idx=%d name='%s'\n", msync->shm_idx, n ? nbuf : "<anon>" );
-+            }
 +        }
 +        else
 +        {
@@ -5422,14 +5426,37 @@ index 0000000..c95b4c7
 +    }
 +}
 +
++/* Phase 0 diagnostic: trace bridge subscribe/signal to find which server object
++ * types' wakeups fire on an internal object (async/fd) instead of the subscribed
++ * handle object, so bridge_signal_for_obj misses them. Gated on WINE_BRIDGE_TRACE. */
++static int bridge_trace(void)
++{
++    static int c = -1;
++    if (c == -1) { const char *e = getenv( "WINE_BRIDGE_TRACE" ); c = e && *e != '0'; }
++    return c;
++}
++
++static void bridge_dump_type( const char *tag, struct object *obj, int matched )
++{
++    const struct unicode_str *tn = obj->ops->type ? &obj->ops->type->name : NULL;
++    unsigned int k;
++    fprintf( stderr, "%s obj=%p matched=%d type=", tag, obj, matched );
++    if (tn && tn->str) for (k = 0; k < tn->len / sizeof(WCHAR); k++) fputc( (char)tn->str[k], stderr );
++    else fputc( '?', stderr );
++    fputc( '\n', stderr );
++}
++
 +/* Signal every bridge subscribed to this object. Called from msync_wake_up(). */
 +static void bridge_signal_for_obj( struct object *obj )
 +{
 +    unsigned int ho = bridge_hash_obj( obj );
 +    struct bridge_sub *s;
++    int matched = 0;
 +
 +    for (s = obj_buckets[ho]; s; s = s->obj_next)
-+        if (s->obj == obj) msync_signal_all( s->bridge_idx );
++        if (s->obj == obj) { msync_signal_all( s->bridge_idx ); matched++; }
++
++    if (bridge_trace()) bridge_dump_type( "BRIDGE_SIG", obj, matched );
 +}
 +
 +void msync_wake_up( struct object *obj )
@@ -5688,6 +5715,7 @@ index 0000000..c95b4c7
 +    for (i = 0; i < count; i++)
 +    {
 +        struct object *obj = get_handle_obj( current->process, handles[i], SYNCHRONIZE, NULL );
++        struct object *sync;
 +        if (!obj)
 +        {
 +            /* A bad/closed handle can't be bridged; the client's post-register
@@ -5695,7 +5723,17 @@ index 0000000..c95b4c7
 +            clear_error();
 +            continue;
 +        }
-+        bridge_add( obj, req->bridge_idx );
++        /* Subscribe to the object's SYNC, not the object: on macOS server-backed
++         * objects (event/thread/process/...) wake their select-waiters through a
++         * separate sync object (event_sync etc.), so wake_up() fires on that sync,
++         * not the handle object. Subscribing to obj itself made bridge_signal_for_obj
++         * miss every wakeup (Phase 0: 100% matched=0) -> unified mixed wait deadlock.
++         * The sync is owned by obj (kept alive by the handle for the wait's
++         * lifetime), so we can drop get_sync's extra ref and store the bare ptr. */
++        sync = obj->ops->get_sync ? obj->ops->get_sync( obj ) : grab_object( obj );
++        bridge_add( sync, req->bridge_idx );
++        if (bridge_trace()) bridge_dump_type( "BRIDGE_SUB", sync, (int)req->bridge_idx );
++        release_object( sync );
 +        release_object( obj );
 +    }
 +}
@@ -7116,7 +7154,7 @@ index 238dcfa..0f3843c 100644
      no_signal,                    /* signal */
      no_get_fd,                    /* get_fd */
 diff --git a/server/thread.c b/server/thread.c
-index 7caf39b..3750cea 100644
+index 7caf39b..a0e5fc8 100644
 --- a/server/thread.c
 +++ b/server/thread.c
 @@ -60,6 +60,7 @@
@@ -7255,158 +7293,17 @@ index 7caf39b..3750cea 100644
  void signal_sync( struct object *obj )
  {
      obj->ops->signal( obj, 0, 1 );
-@@ -1353,7 +1412,51 @@ static int select_on( const union select_op *select_op, data_size_t op_size, cli
-             return 1;
-         }
-         if (!wait_on_handles( select_op, count, select_op->wait.handles, flags, when ))
-+        {
-+            /* ERRPROBE: a wait that FAILS (returns an error instead of creating a
-+             * wait) at high rate = a busy-return storm invisible to check_wait /
-+             * wake_up. Print the error + each handle's object type ONCE per
-+             * (thread,error). WINEDEBUG=-all safe. Remove after fix. */
-+            static struct { unsigned int tid; unsigned int err; unsigned int n; timeout_t first; int done; } ep[256];
-+            unsigned int eh = current->id % 256, pr = 0, err = get_error();
-+            while (pr < 256 && ep[eh].tid && ep[eh].tid != current->id) { eh = (eh + 1) % 256; pr++; }
-+            if (pr < 256)
-+            {
-+                if (!ep[eh].tid) { ep[eh].tid = current->id; ep[eh].first = current_time; ep[eh].err = err; }
-+                if (++ep[eh].n >= 6000 && !ep[eh].done)
-+                {
-+                    long long dt_us = (current_time - ep[eh].first) / 10;
-+                    if (dt_us < 3000000)
-+                    {
-+                        static const char * const mn[] = { "?", "SEM", "AUTO_EVENT",
-+                            "MANUAL_EVENT", "MUTEX", "AUTO_SERVER", "MANUAL_SERVER", "QUEUE" };
-+                        unsigned int j;
-+                        ep[eh].done = 1;
-+                        fprintf( stderr, "ERRPROBE tid=%04x err=%08x n=%u in_us=%lld count=%u set=[",
-+                                 current->id, err, ep[eh].n, dt_us, count );
-+                        for (j = 0; j < count && j < 8; j++)
-+                        {
-+                            struct object *o = get_handle_obj( current->process, select_op->wait.handles[j], 0, NULL );
-+                            if (o)
-+                            {
-+                                enum msync_type mt = 0; unsigned int mi = 0, k;
-+                                const struct unicode_str *tn = o->ops->type ? &o->ops->type->name : NULL;
-+                                if (o->ops->get_msync_idx) mi = o->ops->get_msync_idx( o, &mt );
-+                                fprintf( stderr, "%s:idx%u:", (mt >= 0 && mt <= 7) ? mn[mt] : "?", mi );
-+                                if (tn && tn->str) for (k = 0; k < tn->len / sizeof(WCHAR); k++) fputc( (char)tn->str[k], stderr );
-+                                fputc( ' ', stderr );
-+                                release_object( o );
-+                            }
-+                            else { fprintf( stderr, "BADH " ); clear_error(); }
-+                        }
-+                        fprintf( stderr, "]\n" );
-+                        fflush( stderr );
-+                        set_error( err );
-+                    }
-+                }
-+            }
-             return 1;
-+        }
-         break;
- 
-     case SELECT_SIGNAL_AND_WAIT:
-@@ -1387,8 +1490,56 @@ static int select_on( const union select_op *select_op, data_size_t op_size, cli
-         return 1;
-     }
- 
-+    /* PROBESPIN: localize a busy-return spin, keyed PER-THREAD. Track, per
-+     * thread, how many selects are immediately satisfied by check_wait vs block;
-+     * a thread whose selects are ~always satisfied at a high rate is a
-+     * busy-returner. Print the winning object ONCE. WINEDEBUG=-all safe. */
-+    struct thread_probe { unsigned int tid, n, sat; timeout_t first; int done; };
-+    static struct thread_probe tprobe[256];
-+    struct thread_probe *tp = NULL;
-+    if ((select_op->op == SELECT_WAIT || select_op->op == SELECT_WAIT_ALL)
-+        && current->wait && current->wait->count >= 1 && current->wait->count <= 8)
-+    {
-+        unsigned int th = current->id % 256, pr = 0;
-+        while (pr < 256 && tprobe[th].tid && tprobe[th].tid != current->id) { th = (th + 1) % 256; pr++; }
-+        if (pr < 256)
-+        {
-+            tp = &tprobe[th];
-+            if (!tp->tid) { tp->tid = current->id; tp->first = current_time; }
-+            tp->n++;
-+        }
-+    }
-+
-     if ((ret = check_wait( current )) != -1)
-     {
-+        if (tp)
-+        {
-+            tp->sat++;
-+            if (tp->n >= 6000 && tp->sat * 100 >= tp->n * 95 && !tp->done)
-+            {
-+                long long dt_us = (current_time - tp->first) / 10;
-+                if (dt_us < 3000000)
-+                {
-+                    static const char * const mn[] = { "?", "SEM", "AUTO_EVENT",
-+                        "MANUAL_EVENT", "MUTEX", "AUTO_SERVER", "MANUAL_SERVER", "QUEUE" };
-+                    int widx = (ret >= 0 && ret < current->wait->count) ? ret : -1;
-+                    tp->done = 1;
-+                    fprintf( stderr, "PROBESPIN tid=%04x selects=%u sat=%u in_us=%lld count=%u WIN_idx=%d win=[",
-+                             current->id, tp->n, tp->sat, dt_us, current->wait->count, widx );
-+                    if (widx >= 0)
-+                    {
-+                        struct object *o = current->wait->queues[widx].obj;
-+                        enum msync_type mt = 0; unsigned int mi = 0, k;
-+                        const struct unicode_str *tn = o->ops->type ? &o->ops->type->name : NULL;
-+                        if (o->ops->get_msync_idx) mi = o->ops->get_msync_idx( o, &mt );
-+                        fprintf( stderr, "%s:idx%u:", (mt >= 0 && mt <= 7) ? mn[mt] : "?", mi );
-+                        if (tn && tn->str) for (k = 0; k < tn->len / sizeof(WCHAR); k++) fputc( (char)tn->str[k], stderr );
-+                    }
-+                    fprintf( stderr, "]\n" );
-+                    fflush( stderr );
-+                }
-+            }
-+        }
-         /* condition is already satisfied */
-         set_error( end_wait( current, ret ));
-         return 1;
-@@ -1415,6 +1566,41 @@ void wake_up( struct object *obj, int max )
+@@ -1415,6 +1474,9 @@ void wake_up( struct object *obj, int max )
      struct list *ptr;
      int ret;
  
-+    /* WAKEPROBE: name an object whose wake_up fires at a high rate -- the source
-+     * of a spurious-wakeup storm. Keyed per object; print identity + rate ONCE
-+     * at 8000 wakes. WINEDEBUG=-all safe. Remove after fix. */
-+    {
-+        static struct { void *obj; unsigned int n; timeout_t first; int done; } wk[512];
-+        unsigned int h = ((unsigned long)obj >> 4) % 512, pr = 0;
-+        while (pr < 512 && wk[h].obj && wk[h].obj != obj) { h = (h + 1) % 512; pr++; }
-+        if (pr < 512)
-+        {
-+            if (!wk[h].obj) { wk[h].obj = obj; wk[h].first = current_time; }
-+            if (++wk[h].n >= 8000 && !wk[h].done)
-+            {
-+                long long dt_us = (current_time - wk[h].first) / 10;
-+                if (dt_us < 4000000)
-+                {
-+                    static const char * const mn[] = { "?", "SEM", "AUTO_EVENT",
-+                        "MANUAL_EVENT", "MUTEX", "AUTO_SERVER", "MANUAL_SERVER", "QUEUE" };
-+                    enum msync_type mt = 0; unsigned int mi = 0, k;
-+                    const struct unicode_str *tn = obj->ops->type ? &obj->ops->type->name : NULL;
-+                    wk[h].done = 1;
-+                    if (obj->ops->get_msync_idx) mi = obj->ops->get_msync_idx( obj, &mt );
-+                    fprintf( stderr, "WAKEPROBE obj=%p wakes=%u in_us=%lld rate=%lld/s %s:idx%u:",
-+                             obj, wk[h].n, dt_us, dt_us ? (long long)wk[h].n * 1000000 / dt_us : 0,
-+                             (mt >= 0 && mt <= 7) ? mn[mt] : "?", mi );
-+                    if (tn && tn->str) for (k = 0; k < tn->len / sizeof(WCHAR); k++) fputc( (char)tn->str[k], stderr );
-+                    fputc( '\n', stderr );
-+                    fflush( stderr );
-+                }
-+            }
-+        }
-+    }
-+
 +    if (do_msync())
 +        msync_wake_up( obj );
 +
      LIST_FOR_EACH( ptr, &obj->wait_queue )
      {
          struct wait_queue_entry *entry = LIST_ENTRY( ptr, struct wait_queue_entry, entry );
-@@ -1502,6 +1688,9 @@ static int queue_apc( struct process *process, struct thread *thread, struct thr
+@@ -1502,6 +1564,9 @@ static int queue_apc( struct process *process, struct thread *thread, struct thr
          if (apc->call.type == APC_USER && thread->alert_sync)
              signal_inproc_sync( thread->alert_sync );
          wake_thread( thread );
@@ -7416,7 +7313,7 @@ index 7caf39b..3750cea 100644
      }
  
      return 1;
-@@ -1553,6 +1742,10 @@ static struct thread_apc *thread_dequeue_apc( struct thread *thread, int system
+@@ -1553,6 +1618,10 @@ static struct thread_apc *thread_dequeue_apc( struct thread *thread, int system
          if (list_empty( &thread->user_apc ) && thread->alert_sync)
              reset_inproc_sync( thread->alert_sync );
      }
@@ -7427,7 +7324,7 @@ index 7caf39b..3750cea 100644
      return apc;
  }
  
-@@ -1648,6 +1841,8 @@ void kill_thread( struct thread *thread, int violent_death )
+@@ -1648,6 +1717,8 @@ void kill_thread( struct thread *thread, int violent_death )
      }
      kill_console_processes( thread, 0 );
      abandon_mutexes( thread );
