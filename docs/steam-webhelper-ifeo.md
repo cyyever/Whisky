@@ -18,8 +18,26 @@ renderer). So the wrapper now appends only `--no-sandbox --in-process-gpu`
 (`SteamHelper/webhelper_wrapper.c`). Caveat: ANGLE's Renderer11 caps the context
 at **GLES 2.0** — DXMT reports D3D feature level 11_1, but ANGLE downgrades ES
 (`eglCreateContext: Requested GLES 3.0 > max supported 2.0`), so CEF falls back to
-SwiftShader for the GLES-3 raster path; rendering is still correct. Full GLES 3.x
-(further CPU win) needs a DXMT-side fix so ANGLE enables ES 3.0 — a separate task.
+SwiftShader for the GLES-3 raster path; rendering is still correct.
+
+The GLES-2 cap is **not** a DXMT issue: investigated 2026-07-24 — the webhelper's
+ANGLE Renderer11 does **not** use DXMT (DXMT never loads in that process, even with
+`WINEDLLOVERRIDES=d3d11,dxgi,d3d10core,winemetal=b` forced — the `DXMT_LOG_PATH`
+log stays empty; and the `CheckInterfaceSupport: Error querying driver version`
+message DXMT would never emit, since it S_OKs `ID3D10Device`). So ANGLE's D3D11 is
+served by **wined3d** (D3D11-on-macOS-GL), which caps ES at 2.0. Root cause traced
+in wined3d: `feature_level_from_caps` (dlls/wined3d/adapter_gl.c) maps shader model
+→ feature level (SM4 → FL_10_0 → ES 3.0; SM3 → FL_9_3 → ES 2.0), and the webhelper's
+wined3d reports **FL_9_3 / SM3** — i.e. its GL context fell back to legacy (GL 2.1 /
+GLSL 1.20), not the core GL 3.2+ winemac requests (`kCGLOGLPVersion_3_2_Core`,
+dlls/winemac.drv/opengl.c). So ES 3.x would need the webhelper's wined3d to actually
+get a core GL context on macOS (a winemac/wined3d GL-context fix; bumping winemac's
+core request 3.2→4.1 alone wouldn't help while it falls back to legacy). Dropped as
+not worth forcing — the ES-2 GPU path above already renders correctly and roughly
+halves the CPU. Diagnostic env if revisited: `DXMT_LOG_PATH`/`DXMT_LOG_LEVEL` (DXMT
+never loads in the webhelper — confirms wined3d, not DXMT), and wined3d `+d3d` trace
+for the reported feature level.
+
 Verified on the **Proton** stack; spot-check Whisky-Wine 11.13 bottles (shared
 wrapper) — if a bottle black-windows, restore `--disable-gpu --disable-gpu-compositing`.
 
