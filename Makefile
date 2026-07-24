@@ -48,7 +48,7 @@ steam-helper:  ## Build the Steam webhelper wrapper (fixes the black Steam windo
 dxmt: wine  ## Build DXMT from source and install into Wine (needs full Xcode + llvm@15)
 	$(SCRIPTS_DIR)/build-dxmt.sh
 
-# === DXVK (D3D9 on MoltenVK) ===
+# === DXVK (D3D9 on KosmicKrisp) ===
 
 dxvk:  ## Build DXVK d3d9.dll (win32 + win64) and install into Libraries/DXVK
 	$(SCRIPTS_DIR)/build-dxvk.sh
