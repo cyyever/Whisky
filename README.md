@@ -1,15 +1,18 @@
 <div align="center">
 
-  # Whisky 🥃 
+  # Whisky 🥃
   *Wine but a bit stronger*
-  
-  ![](https://img.shields.io/github/actions/workflow/status/IsaacMarovitz/Whisky/SwiftLint.yml?style=for-the-badge)
-  [![](https://img.shields.io/discord/1115955071549702235?style=for-the-badge)](https://discord.gg/CsqAfs9CnM)
+
+  ![](https://img.shields.io/github/actions/workflow/status/cyyever/Whisky/SwiftLint.yml?style=for-the-badge)
 </div>
 
-## Maintenance Notice
+## About this fork
 
-[Whisky is no longer actively maintained](https://docs.getwhisky.app/maintenance-notice). Apps and games may break at any time.
+This is an actively-maintained fork of the archived
+[Whisky-App/Whisky](https://github.com/Whisky-App/Whisky), retargeted at running
+Windows games via Steam on Apple Silicon. The Wine backend and graphics stack
+have been substantially reworked — see [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs)
+for the architecture and build details.
 
 <img width="650" alt="Config" src="https://github.com/Whisky-App/Whisky/assets/42140194/d0a405e8-76ee-48f0-92b5-165d184a576b">
 
@@ -27,24 +30,31 @@ Debug and profile with ease
 
 ---
 
-Whisky provides a clean and easy to use graphical wrapper for Wine built in native SwiftUI. You can make and manage bottles, install and run Windows apps and games, and unlock the full potential of your Mac with no technical knowledge required. Whisky is built on top of CrossOver 22.1.1, and Apple's own `Game Porting Toolkit`.
+Whisky provides a clean and easy to use graphical wrapper for Wine built in
+native SwiftUI. You can make and manage bottles, install and run Windows apps and
+games, and unlock the full potential of your Mac with no technical knowledge
+required.
 
-Translated on [Crowdin](https://crowdin.com/project/whisky).
+This fork runs on **Valve proton-wine 11.0** (x86_64, under Rosetta 2), with
+**DXMT** for Metal-native D3D11/D3D10/DXGI, **DXVK** for D3D9, and **KosmicKrisp**
+(Mesa Vulkan-on-Metal-4) as the Vulkan backend.
 
 ---
 
 ## System Requirements
 - CPU: Apple Silicon (M-series chips)
-- OS: macOS Sonoma 14.0 or later
+- OS: macOS 26.0 or later
 
-## Homebrew
+## Install
 
-Whisky is on homebrew! Install with 
-`brew install --cask whisky`.
+Download the latest build from this fork's
+[Releases](https://github.com/cyyever/Whisky/releases), or build from source —
+see the build instructions in [`CLAUDE.md`](CLAUDE.md).
 
 ## My game isn't working!
 
-Some games need special steps to get working. Check out the [wiki](https://github.com/IsaacMarovitz/Whisky/wiki/Game-Support).
+Some games need special steps. See the notes in [`docs/`](docs) (Steam,
+D3D9/DXVK, Unity fullscreen, controllers, and the macOS gaming stack).
 
 ---
 
@@ -52,30 +62,13 @@ Some games need special steps to get working. Check out the [wiki](https://githu
 
 Whisky is possible thanks to the magic of several projects:
 
-- [msync](https://github.com/marzent/wine-msync) by marzent
-- [DXVK-macOS](https://github.com/Gcenx/DXVK-macOS) by Gcenx and doitsujin
-- [MoltenVK](https://github.com/KhronosGroup/MoltenVK) by KhronosGroup
+- [proton-wine](https://github.com/ValveSoftware/wine) by Valve, and [WineHQ](https://www.winehq.org)
+- [DXMT](https://github.com/3Shain/dxmt) by 3Shain
+- [DXVK](https://github.com/doitsujin/dxvk) by doitsujin
+- [KosmicKrisp / Mesa](https://gitlab.freedesktop.org/mesa/mesa) by LunarG and the Mesa project
 - [Sparkle](https://github.com/sparkle-project/Sparkle) by sparkle-project
 - [SemanticVersion](https://github.com/SwiftPackageIndex/SemanticVersion) by SwiftPackageIndex
 - [swift-argument-parser](https://github.com/apple/swift-argument-parser) by Apple
-- [SwiftTextTable](https://github.com/scottrhoyt/SwiftyTextTable) by scottrhoyt
-- [CrossOver 22.1.1](https://www.codeweavers.com/crossover) by CodeWeavers and WineHQ
-- D3DMetal by Apple
+- [SwiftyTextTable](https://github.com/scottrhoyt/SwiftyTextTable) by scottrhoyt
 
-Special thanks to Gcenx, ohaiibuzzle, and Nat Brown for their support and contributions!
-
----
-
-<table>
-  <tr>
-    <td>
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="./images/cw-dark.png">
-          <img src="./images/cw-light.png" width="500">
-        </picture>
-    </td>
-    <td>
-        Whisky doesn't exist without CrossOver. Support the work of CodeWeavers using our <a href="https://www.codeweavers.com/store?ad=1010">affiliate link</a>.
-    </td>
-  </tr>
-</table>
+Built on the original Whisky by Isaac Marovitz and contributors.

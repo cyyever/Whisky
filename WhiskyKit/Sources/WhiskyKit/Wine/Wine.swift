@@ -267,15 +267,16 @@ public class Wine {
             // DllMain access-violates on a garbage allocator vtable and Steam shows
             // "reinstall Steam". Ignored by Whisky-Wine 11.13 (no such code).
             "PROTON_DISABLE_LSTEAMCLIENT": "1",
-            // Proton msync only: route ANONYMOUS auto-reset events to server-sync.
-            // Everything else -- semaphore, mutex, manual event, msg-queue, AND
-            // named auto-events -- runs on msync fine. Only anonymous auto-reset
-            // events (a Steam threadpool "work-available" cluster busy-polled at
-            // ~20k/s) stall under fast msync delivery -> one core spins. Routing
-            // just those to the server keeps everything else on fast-sync and
-            // lets Steam log in + settle. (Coarser fallback if this regresses:
-            // WINEMSYNC_NO_AUTOEVENT=1, all auto-events -> server.) Ignored when
-            // msync is off / by any Wine without the lever.
+            // Proton msync: route anonymous auto-reset events to server-sync
+            // (everything else -- semaphore, mutex, manual event, msg-queue,
+            // named auto-events -- stays on fast msync). This targets a
+            // full-msync CPU spin, but it is an UNPROVEN workaround, not a fix:
+            // re-verification saw steam.exe still pin a core with this set, and
+            // the busy-poll was observed on a MANUAL event (which no auto-event
+            // lever touches), so the root cause is not localized. Kept as the
+            // current best-effort default. Coarser levers if it regresses:
+            // WINEMSYNC_NO_AUTOEVENT=1 (all auto-events) or WINEMSYNC_NO_EVENT=1
+            // (all events -> server). Ignored when msync is off / lever absent.
             "WINEMSYNC_NO_ANON_AUTOEVENT": "1"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
