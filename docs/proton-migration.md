@@ -7,22 +7,31 @@ virtual-device hiding, `WINE_NX_COMPAT` — while keeping D3D9/10/11 all working
 Proton ships Valve's game fixes, media-converter, `amd_ags`, fsync, and a maintained
 tree that plain WineHQ 11.13 lacks.
 
-## Status (in progress — NOT committed, NOT shipped)
-- Proton is **live-swapped** into the Whisky install dir:
-  `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine`, previous
-  Whisky Wine backed up alongside at `…/Libraries/Wine.whisky-bak`.
+## Status (2026-07-24 — Steam logs in fully under msync; experimental parallel track)
+- Proton lives **side-by-side** at `Libraries/WineProton` (canonical `Libraries/Wine`
+  untouched). During bring-up it was also live-swapped into `Libraries/Wine` with the
+  Whisky Wine backed up at `…/Libraries/Wine.whisky-bak`.
 - Built x86_64, runs under Rosetta 2; DXMT installed on top of the Proton build.
-- Reports `wine-11.0`; boots and runs (`cmd` works) after the msync crash fix below.
-- Source tree `vendor/proton-wine/` is **gitignored** (like `vendor/wine`); tag reads
-  `proton-wine-11.0-1-2-gff30ac6`.
-- Untracked / new: `patches/proton-wine/` (17-patch series) and
-  `scripts/install-proton.sh`. `scripts/build-dxmt.sh` gained env-var parameterization.
-- **Steam** boots through bootstrap + client startup + CEF webhelper but the client
-  still self-exits ~35 s in before reaching a CM (see "Steam on Proton" below). Three
-  runtime bugs found and fixed on the way there (patches `0014`–`0016`).
-- Not yet done: no Whisky-app wiring, no version-plist/appcast switch, no committed
-  submodule pin. Treat as an experimental parallel track next to the canonical
-  Wine 11.13 stack.
+  Reports `wine-11.0`.
+- **Steam logs in fully.** With the minimal-msync config Steam boots → CEF webhelper →
+  full CM logon: `RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, login window
+  interactive, zero `OBJECT_TYPE_MISMATCH`. The launch config is:
+  `WINEMSYNC=1` + `WINEMSYNC_NO_ANON_AUTOEVENT=1` (anon auto-reset events → server-sync,
+  everything else on msync — a workaround lever; the residual full-msync spin is not
+  reliably root-caused, see "Steam on Proton"), `PROTON_DISABLE_LSTEAMCLIENT=1`,
+  Follow-System-Proxy OFF, and msync-only (`WINEESYNC=0` — macOS has no eventfd).
+- Source tree `vendor/proton-wine/` is **gitignored** (like `vendor/wine`), tag
+  `proton-wine-11.0-…`. Tracked in main: `patches/proton-wine/` (**14-patch series**) +
+  `scripts/install-proton.sh`; `scripts/build-dxmt.sh` and `scripts/build-wine-x86.sh`
+  gained env-var / source-reset hooks.
+- **App wiring exists** (committed): per-bottle `BottleSettings.WineBackend`
+  (`.whiskyWine` default / `.proton`); `Wine.wineBinary(for:)`/`binFolder(for:)` resolve
+  per bottle; `WhiskyWineInstaller.protonBinFolder` = `Libraries/WineProton`; `ConfigView`
+  shows a Proton picker when `isProtonInstalled()`. `PROTON_DISABLE_LSTEAMCLIENT=1` is
+  wired into `Wine.swift`.
+- Not yet done: no version-plist/appcast switch, no committed submodule pin for the
+  Proton source. Treat as an experimental parallel track next to the canonical Wine 11.13
+  stack.
 
 ## The msync startup crash (root cause)
 Proton's `wineserver` crashed immediately at bottle init (0 files landed in
@@ -46,12 +55,13 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 17-patch series
-Disjoint file ownership (except the msync-refinement patches `0014`/`0017` which layer
-onto `0008`'s `msync.c`/`sync.c`, applied in order); all pass `git apply --check`.
-Exported as `git format-patch` style `.patch` files. Groups (`0001`–`0006` build (0007 dropped),
-`0008`–`0013` capability ports, `0014`–`0016` Steam-runtime sync/deadlock fixes, `0017`
-msync uniform-shadow rework):
+## patches/proton-wine/ — 14-patch series
+Disjoint file ownership; all 14 apply cleanly (`git apply --check`) and reproduce the live
+tree byte-for-byte (base `81d78e4`). Exported as `git format-patch` style `.patch` files.
+Groups: `0001`–`0006` build/portability (`0007` **dropped** → gap), `0008` the single
+consolidated msync patch, `0009`–`0013` macOS capability ports, `0014`–`0015`
+Steam-runtime deadlock fixes. There is **no `0016`/`0017`** — the old standalone
+msync-refinement patches were folded into `0008`.
 
 ### 0001–0006 — build / portability (make Proton compile + boot on macOS; 0007 dropped)
 - `0001-macos-de-linux-ntdll` — guard Linux-only futex/CPU paths in
@@ -73,9 +83,26 @@ msync uniform-shadow rework):
   at 0007. The Whisky-Wine `patches/wine/0001` variant is left in place pending its own
   re-verification on the 11.13 stack.
 
-### 0008–0013 — macOS capability ports
-- `0008-macos-msync-fast-sync` — the big one (~52 files): the CrossOver macOS fast-sync
-  (msync) port across `dlls/ntdll/unix/*` and `server/*`, plus the event-crash fix above.
+### 0008 — msync (single consolidated patch)
+- `0008-macos-msync` — the big one (**~55 files, ONE patch**, incl. regenerated protocol
+  files so a fresh apply needs no `make_requests`). All msync work lives here:
+  - CrossOver macOS fast-sync (msync) core across `dlls/ntdll/unix/*` and `server/*`;
+  - the boot-crash dispatch-guard fix above (`do_msync()` on `NtResetEvent`/`NtPulseEvent`/
+    `NtWaitForSingleObject` — else the client hits the server `event_op` path against an
+    msync object and wineserver asserts) plus the `req_event_op`/`query_event` handlers
+    branching on `obj.ops==&msync_ops`;
+  - `do_msync()` honoring `WINEMSYNC` (was hardcoded on);
+  - the `mach_msg2` → libSystem `mach_msg()` Rosetta wrapper (the raw `mach_msg2_trap`
+    is invoked through an untranslated pointer under Rosetta and crashes);
+  - the **mixed-wait hybrid** `msync_wait_mixed_any` + per-object msync idx for waits
+    (formerly the standalone `0014` refinement — see "Mixed waits" below);
+  - msg-queue wake consistency (formerly a standalone patch);
+  - the **socket-async / system-APC lost-wake fix** (`msync_run_system_apcs()` drains
+    system APCs on the SIGUSR1/EINTR interrupt so socket async completions deliver — the
+    fix that made Steam log in);
+  - the experimental `WINEMSYNC_UNIFIED` event-driven mixed-wait bridge (opt-in).
+
+### 0009–0013 — macOS capability ports
 - `0009-macos-dxmt-winemac-support` — winemac.drv Metal-swapchain client view;
   `macdrv_functions` export + `winemetal.so` Wine-ABI unix driver; RTLD_GLOBAL driver
   dlopen — the winemac side DXMT needs.
@@ -93,23 +120,26 @@ Mapping to the Whisky-Wine patch set: `0009`≈`patches/wine/0002`+`0005`,
 `0008`/`0013` (msync + fsync) and `0001`–`0006` are Proton-specific (WineHQ 11.13 already
 had msync-free sync and none of Proton's extra unixlibs).
 
-### 0014–0016 — Steam-runtime sync / deadlock fixes (all found live under Steam)
-- `0014-macos-msync-mixed-wait-hybrid` — `dlls/ntdll/unix/msync.c`. msync (like esync)
-  cannot natively wait on a set mixing fast msync objects (events/mutexes/semaphores)
-  with pure-server objects (named pipes, async I/O, completion ports). Upstream just
-  logs a FIXME and waits on the msync objects only → deadlock whenever a server object
-  is the waker (RpcSs startup, wine-mono MSI, cold-boot service handshake, Steam's
-  `reg add`). fsync escapes this via in-proc-sync fds the server can wait on; msync has
-  no server-side shadow, so we cannot delegate the whole set. Fix: `msync_wait_mixed_any()`
-  polls — grab any ready msync object in userspace, and between checks do a short bounded
-  `server_wait()` on just the server subset (`objs[i]==NULL` marks a server object). Only
-  mixed waits (RPC/service, never a game hot path) take this path. Hardened per review:
-  propagate real `server_wait` errors instead of busy-looping on non-`STATUS_TIMEOUT`;
-  back the poll interval off 2 ms → 16 ms when idle; NULL-guard `msync_apc_addr`; assert
-  no 64-bit truncation in the `mach_msg2` → `mach_msg()` wrapper (the wrapper routes
-  through libSystem's `mach_msg()` because the raw `mach_msg2_trap` is invoked through an
-  untranslated pointer under Rosetta and crashes).
-- `0015-combase-rpcss-cold-start-race` — `dlls/combase/rpc.c`. COM out-of-proc activation
+### Mixed waits (folded into 0008)
+msync (like esync) cannot natively wait on a set mixing fast msync objects
+(events/mutexes/semaphores) with pure-server objects (named pipes, async I/O, completion
+ports). Upstream just logs a FIXME and waits on the msync objects only → deadlock
+whenever a server object is the waker (RpcSs startup, wine-mono MSI, cold-boot service
+handshake, Steam's `reg add`). fsync escapes this via in-proc-sync fds the server can
+wait on; msync has no server-side shadow. Fix (now in `0008`): `msync_wait_mixed_any()`
+polls — grab any ready msync object in userspace, and between checks do a short bounded
+`server_wait()` on just the server subset (`objs[i]==NULL` marks a server object). Only
+mixed waits (RPC/service, never a game hot path) take this path. Hardened per review:
+propagate real `server_wait` errors instead of busy-looping on non-`STATUS_TIMEOUT`; back
+the poll interval off 2 ms → 16 ms when idle; NULL-guard `msync_apc_addr`. The
+experimental `WINEMSYNC_UNIFIED` bridge in `0008` is a later event-driven alternative to
+this poll path (opt-in). (The earlier "uniform inproc_sync shadows" rework was folded into
+`0008` as well.)
+
+### 0014–0015 — Steam-runtime deadlock fixes (all found live under Steam)
+Both are **PE** dlls built for BOTH arches (`dlls/{combase,ntdll}/{i386,x86_64}-windows/*.dll`
+→ `Wine/lib/wine/{i386,x86_64}-windows/`) because **steam.exe is 32-bit**.
+- `0014-combase-rpcss-cold-start-race` — `dlls/combase/rpc.c`. COM out-of-proc activation
   binds `ncalrpc:[irpcss]`; on a cold boot steam.exe races ahead and connects to the
   `\\.\pipe\lrpc\irpcss` endpoint ~tens-of-ms before rpcss creates it →
   `RPC_S_SERVER_UNAVAILABLE`, and `start_rpcss()`'s retry gave up because
@@ -118,7 +148,7 @@ had msync-free sync and none of Proton's extra unixlibs).
   (bounded 30 s) before returning success. Root cause is startup ordering (`OpenService`
   failing during cold boot), not "Rosetta slowness" per se; the pipe path is derived from
   `IRPCSS_ENDPOINT` so it can't drift.
-- `0016-ntdll-fls-callback-no-lock` — `dlls/ntdll/thread.c`. `RtlFlsFree` and
+- `0015-ntdll-fls-callback-no-lock` — `dlls/ntdll/thread.c`. `RtlFlsFree` and
   `RtlProcessFlsData` invoked the per-index FLS destructor callback **while holding the
   global `fls_section`**. A Steam thread-exit callback that blocks on another thread which
   itself needs `fls_section` (FlsAlloc/Free, or its own exit cleanup) deadlocks — one
@@ -131,54 +161,37 @@ had msync-free sync and none of Proton's extra unixlibs).
   double-calls), drop `fls_section` around the callback, re-acquire and `goto restart`.
   This is a genuine upstream Wine bug, not Proton- or msync-specific.
 
-### 0017 — msync uniform inproc_sync shadows (architectural)
-`server/{inproc_sync,object,msync}.{c,h}`, `dlls/ntdll/unix/{msync,sync}.c`. The deep
-fix behind `0014`: instead of *handling* mixed msync+server wait sets, eliminate them.
-`0008` left the macOS `inproc_sync` backend stubbed (`create_*` → NULL,
-`get_inproc_sync_fd` → -1) and only events/mutexes/semaphores had an msync shadow, so
-Process/Thread/Msg-queue/etc. stayed "server-only" and every wait mixing them fell to
-the poll path — which floods the wineserver and stalls under Rosetta. `0017` implements
-that backend (each `inproc_sync` owns an msync shm slot) and makes
-`server/object.c default_get_sync()` lazily give **every** waitable object an
-msync-backed `struct object.sync` shadow mirroring its signaled state (released in
-`free_object`; `inproc_self_get_sync` stops a shadow shadowing itself). Result:
-server-only Process waits dropped 3201 → ~6 and mixed-wait stalls 6+ → 0. Also folds in
-three fixes that shipped uncommitted next to `0008`: the **boot-crash** dispatch guards
-(`do_msync()` on `NtResetEvent`/`NtPulseEvent`/`NtWaitForSingleObject`, else the client
-hits the server `event_op` path against an msync object and wineserver asserts), the
-`mach_msg2` → libSystem `mach_msg()` Rosetta wrapper, and `do_msync()` honoring
-`WINEMSYNC` (was hardcoded on). Passing the inproc-sync fd as an shm index *by value*
-(`fsync_shm_idx` reply) since an msync slot is not a real fd. **NB:** `0017` was not the
-Steam fix — with all lost-wakeup paths instrumented, zero were found; the remaining
-client self-exit is a Rosetta/webhelper-handshake perf issue, not msync (see below).
-Uniform shadows is kept as a genuine architectural win (kills the wineserver poll storm).
-
-Build/install for `0014`–`0017`: `0014`/`0017` are unix ntdll + wineserver
-(`dlls/ntdll/ntdll.so` → `Wine/lib/wine/x86_64-unix/`, `server/wineserver` → `Wine/bin/`);
-`0015` is PE combase and `0016` is PE ntdll — build BOTH arches
-(`dlls/{combase,ntdll}/{i386,x86_64}-windows/*.dll`) and copy into
-`Wine/lib/wine/{i386,x86_64}-windows/` because **steam.exe is 32-bit**. Restart the
-bottle's `wineserver -k` after swapping the unix ntdll or wineserver (version-keyed).
-
 ## Steam on Proton — launch investigation
-Order of bugs hit while getting Steam to run (each unblocked the next):
-1. **msync mixed-wait deadlock** (`0014`) — blocked wine-mono MSI, cold-boot service
-   handshake (left `syswow64` empty), and Steam's `reg add`.
-2. **combase/rpcss cold-start race** (`0015`) — steam.exe crashed ~seconds in with an
+**Resolved 2026-07-24: Steam logs in fully.** Order of bugs hit and fixed to get there:
+1. **Proton lsteamclient tier0 crash** — the "reinstall Steam" box was Proton's
+   lsteamclient redirect stranding `steamclient64`'s tier0 imports (`g_pMemAllocSteam`)
+   on ntdll stubs. Fixed with `PROTON_DISABLE_LSTEAMCLIENT=1` (wired into `Wine.swift`).
+   Proton-only bug, not upstream Wine.
+2. **msync mixed-wait deadlock** (now folded into `0008`) — blocked wine-mono MSI,
+   cold-boot service handshake (left `syswow64` empty), and Steam's `reg add`.
+3. **combase/rpcss cold-start race** (`0014`) — steam.exe crashed ~seconds in with an
    uncaught `RPC_S_SERVER_UNAVAILABLE` during COM activation.
-3. **FLS-callback deadlock** (`0016`) — after `0014`+`0015` the crash was gone but the
-   bootstrap→client handoff hung 60 s on `fls_section`, then Steam self-terminated,
-   orphaning `steamwebhelper_real.exe`.
+4. **FLS-callback deadlock** (`0015`) — bootstrap→client handoff hung 60 s on
+   `fls_section`, then Steam self-terminated, orphaning `steamwebhelper_real.exe`.
+5. **msync socket-async / system-APC lost-wake** (now in `0008`) — the last blocker.
+   Socket async completions were not delivering under msync; `msync_run_system_apcs()`
+   drains system APCs on the SIGUSR1/EINTR interrupt. **This is the fix that made Steam
+   log in.**
 
-After all three: steam.exe **boots cleanly and gets far** — CEF webhelper launches
-(`logs/webhelper.txt` shows `Starting message loop`, network + storage child processes),
-runs its message loop ~24 s, then `Quit message loop` / `Shutdown` when the client
-(`-steampid`) exits. The **client itself self-exits ~35 s in (no crash, no exception),
-never writing `connection_log`** — i.e. before the CM stage. Signature is a client-side
-timeout on the steam.exe ↔ steamwebhelper handshake / login, not a CEF-start failure.
-Reproduced identically across runs 6/7/8 regardless of webhelper-wrapper config or proxy.
+After all of the above, under `WINEMSYNC=1` Steam completes a full CM logon
+(`RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, interactive login window, zero
+`OBJECT_TYPE_MISMATCH`).
 
-**It is NOT a network / VPN / winsock problem** (verified):
+**Remaining rough edge:** a full-msync (all-events-on-msync) CPU spin. The workaround
+lever `WINEMSYNC_NO_ANON_AUTOEVENT=1` (anon auto-reset events → server-sync, everything
+else on msync) makes Steam log in and settle to normal CPU, and is the intended
+Proton-backend default. An earlier attempt to localize the spin to anonymous auto-reset
+events was **retracted as unverified** — the root cause is not reliably localized; treat
+`NO_ANON_AUTOEVENT` as a workaround, not a diagnosis. Related bisection levers (env, read
+by `dlls/ntdll/unix/msync.c`): `WINEMSYNC_NO_EVENT`, `NO_AUTOEVENT`, and the finer
+`NO_ANON_AUTOEVENT` / `NO_NAMED_AUTOEVENT`.
+
+**It is NOT a network / VPN / winsock problem** (verified during the investigation):
 - Steam downloads its update manifest directly (`client-update.steamstatic.com`,
   "Verification complete") with no VPN.
 - China-channel CMs (`ISteamDirectory/GetCMList?cellid=47` → `103.28.54.x:27017`) are
@@ -186,17 +199,16 @@ Reproduced identically across runs 6/7/8 regardless of webhelper-wrapper config 
 - The user's geph runs in **proxy mode** (SOCKS `9909` / HTTP `9910`, no `utun`), so it
   neither transparently routes Steam's raw CM traffic nor is needed for it.
 
-**Two app-launch gotchas found** (via `WhiskyCmd shellenv SteamProton`):
-- **Follow System Proxy injects the geph HTTP proxy** (`http_proxy=http://127.0.0.1:9910`)
-  because geph registers a macOS system proxy. That HTTP proxy **breaks Steam's CM**
-  (WSS → 403) and the CM is directly reachable anyway → **turn Follow System Proxy OFF**
-  for the Steam bottle when using a proxy-mode VPN. (The bottle's internal `ProxyEnable`
-  registry is separate; keep both off.)
-- The env sets **both `WINEESYNC=1` and `WINEMSYNC=1`**; macOS has no eventfd for esync,
-  so this should be msync-only (`WINEESYNC=0`) — worth wiring for the Proton backend.
-
-Next blocker to chase: why steam.exe's client self-exits ~35 s in without connecting to a
-CM (client↔webhelper IPC / login handshake under Wine).
+**App-launch gotchas:**
+- **Follow System Proxy OFF.** Follow System Proxy injects the geph HTTP proxy
+  (`http_proxy=http://127.0.0.1:9910`) because geph registers a macOS system proxy; that
+  HTTP proxy **breaks Steam's CM** (WSS → 403) and the CM is directly reachable anyway.
+  (The bottle's internal `ProxyEnable` registry is separate; keep both off.)
+- **msync-only (`WINEESYNC=0`).** macOS has no eventfd for esync. Open conflict: DXMT sets
+  a `WINEESYNC` "lie" in `BottleSettings`, so the Proton backend must force `WINEESYNC=0`
+  independently of that flag.
+- **`PROTON_DISABLE_LSTEAMCLIENT=1`** (wired into `Wine.swift`).
+- CLI launch needs `whisky steam-fix <bottle>` first.
 
 ## scripts/install-proton.sh
 Installs `vendor/proton-wine/build` into a self-contained `Wine/` dir (default
@@ -210,7 +222,9 @@ Installs `vendor/proton-wine/build` into a self-contained `Wine/` dir (default
   to `~/.local/share/vulkan/icd.d/` (same wiring as `build-wine-x86.sh`).
 - `install_name_tool -add_rpath '@loader_path/../..'` on every `x86_64-unix/*.so`.
 - Append `[Drivers] Graphics=mac` to `share/wine/wine.inf`; symlink `wine64 → wine`.
-- Swap into Whisky manually: `cp -R "$INSTALL_DIR/Wine" …/Libraries/Wine`.
+- **`INSTALL_TO_WHISKY=1`** lays the result into `Libraries/WineProton` (side-by-side with
+  the canonical `Libraries/Wine`, which the per-bottle backend selector targets); or
+  `cp -R "$INSTALL_DIR/Wine" …/Libraries/Wine` to replace outright.
 
 ## DXMT against Proton — scripts/build-dxmt.sh parameterization
 `build-dxmt.sh` now reads two env vars (defaulting to the Whisky Wine):
