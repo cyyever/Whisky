@@ -49,11 +49,11 @@ frame.
 ## patches/proton-wine/ — 17-patch series
 Disjoint file ownership (except the msync-refinement patches `0014`/`0017` which layer
 onto `0008`'s `msync.c`/`sync.c`, applied in order); all pass `git apply --check`.
-Exported as `git format-patch` style `.patch` files. Groups (`0001`–`0007` build,
+Exported as `git format-patch` style `.patch` files. Groups (`0001`–`0006` build (0007 dropped),
 `0008`–`0013` capability ports, `0014`–`0016` Steam-runtime sync/deadlock fixes, `0017`
 msync uniform-shadow rework):
 
-### 0001–0007 — build / portability (make Proton compile + boot on macOS)
+### 0001–0006 — build / portability (make Proton compile + boot on macOS; 0007 dropped)
 - `0001-macos-de-linux-ntdll` — guard Linux-only futex/CPU paths in
   `signal_x86_64.c`/`system.c`/`fsync.c`; `set_thread_teb` a no-op on Apple (the
   dispatcher owns `%gs`/pthread TSD; raw TEB write → SIGBUS). Trimmed so `sync.c`/
@@ -67,8 +67,11 @@ msync uniform-shadow rework):
 - `0005-amd_ags_x64-guard-libdrm-non-linux` — guard libdrm/amdgpu use behind `__linux__`.
 - `0006-loader64-wine64-macos` — build a 64-bit `wine64` loader on macOS
   (`loader64/Makefile.in`).
-- `0007-rundll32-remove-ws-visible-wineboot-hang` — drop `WS_VISIBLE` to fix a wineboot
-  hang (same fix as Whisky Wine `patches/wine/0001`).
+- `0007-rundll32-remove-ws-visible-wineboot-hang` — **DROPPED 2026-07-24 (obsolete).**
+  Verified `wineboot --init` completes rc=0 in ~16s on a fresh prefix with upstream
+  `WS_VISIBLE` (twice); the winemac deadlock is gone in proton-wine 11.0. Leaves a gap
+  at 0007. The Whisky-Wine `patches/wine/0001` variant is left in place pending its own
+  re-verification on the 11.13 stack.
 
 ### 0008–0013 — macOS capability ports
 - `0008-macos-msync-fast-sync` — the big one (~52 files): the CrossOver macOS fast-sync
@@ -85,7 +88,7 @@ msync uniform-shadow rework):
 - `0013-macos-server-fsync-delinux` — de-linux the `server/fsync.c` stubs for the macOS
   build.
 
-Mapping to the Whisky-Wine patch set: `0007`≈`patches/wine/0001`, `0009`≈`patches/wine/0002`+`0005`,
+Mapping to the Whisky-Wine patch set: `0009`≈`patches/wine/0002`+`0005`,
 `0010`≈`patches/wine/0003`, `0011`≈`patches/wine/0004`, `0012`≈`patches/wine/0007`.
 `0008`/`0013` (msync + fsync) and `0001`–`0006` are Proton-specific (WineHQ 11.13 already
 had msync-free sync and none of Proton's extra unixlibs).
