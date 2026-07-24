@@ -31,12 +31,22 @@ public class WhiskyWineInstaller {
     /// URL to the installed `wine` `bin` directory
     public static let binFolder: URL = libraryFolder.appending(path: "Wine").appending(path: "bin")
 
-    /// URL to an optional side-by-side Proton (`proton-wine`) `bin` directory.
-    /// Bottles on the `.proton` backend run from here; the canonical Whisky Wine
-    /// at ``binFolder`` is left untouched. Populated by `scripts/install-proton.sh`
-    /// (copy its output into `Libraries/WineProton`).
-    public static let protonBinFolder: URL = libraryFolder
-        .appending(path: "WineProton").appending(path: "bin")
+    /// URL to the Proton (`proton-wine`) `bin` directory that `.proton` bottles
+    /// run from. Two install layouts are supported:
+    ///   * **side-by-side** — Proton at `Libraries/WineProton`, canonical Whisky
+    ///     Wine untouched at ``binFolder`` (`scripts/install-proton.sh` with
+    ///     `INSTALL_TO_WHISKY=1`).
+    ///   * **replace** — Proton laid directly over `Libraries/Wine` (Whisky Wine
+    ///     backed up alongside); no separate `WineProton` dir exists.
+    /// Prefer the side-by-side dir when present, otherwise fall back to
+    /// ``binFolder`` so `.proton` always resolves to a real install.
+    public static var protonBinFolder: URL {
+        let sideBySide = libraryFolder.appending(path: "WineProton").appending(path: "bin")
+        if FileManager.default.fileExists(atPath: sideBySide.appending(path: "wine64").path) {
+            return sideBySide
+        }
+        return binFolder
+    }
 
     public static func isWhiskyWineInstalled() -> Bool {
         return whiskyWineVersion() != nil

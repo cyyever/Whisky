@@ -48,17 +48,9 @@ struct ConfigView: View {
     var body: some View {
         Form {
             Section("config.title.wine", isExpanded: $wineSectionExpanded) {
-                // Experimental: only surfaced when a side-by-side Proton build is
-                // installed (Libraries/WineProton). Default backend is Whisky Wine.
-                if WhiskyWineInstaller.isProtonInstalled() {
-                    Picker(selection: $bottle.settings.wineBackend) {
-                        Text("config.wineBackend.whiskyWine").tag(WineBackend.whiskyWine)
-                        Text("config.wineBackend.proton").tag(WineBackend.proton)
-                    } label: {
-                        Text("config.wineBackend")
-                        Text("config.wineBackend.info")
-                    }
-                }
+                // Backend is locked to Proton (proton-wine 11.0) — the shipped
+                // default. No selector: the legacy Whisky-Wine 11.13 path stays in
+                // the enum for fallback but is no longer user-selectable.
                 SettingItemView(title: "config.winVersion", loadingState: winVersionLoadingState) {
                     Picker("config.winVersion", selection: $bottle.settings.windowsVersion) {
                         ForEach(WinVersion.allCases.reversed(), id: \.self) {

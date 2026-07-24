@@ -89,12 +89,14 @@ public enum EnhancedSync: Codable, Equatable {
     case none, esync, msync
 }
 
-/// Which Wine build a bottle runs on. `.whiskyWine` is the canonical, shipped
-/// x86_64 Wine 11.13 stack (``WhiskyWineInstaller/binFolder``). `.proton` is an
-/// optional, experimental side-by-side Valve `proton-wine` 11.0 install
-/// (``WhiskyWineInstaller/protonBinFolder``); it is only selectable when that
-/// install is present. Default stays `.whiskyWine` so existing bottles are
-/// unaffected.
+/// Which Wine build a bottle runs on. `.proton` is the default and shipped
+/// backend — Valve `proton-wine` 11.0 (x86_64/Rosetta) with the full Whisky
+/// macOS capability set (msync, DXMT, KosmicKrisp, DXVK, Steam IFEO). It
+/// resolves through ``WhiskyWineInstaller/protonBinFolder``, which points at a
+/// side-by-side `Libraries/WineProton` when present, otherwise at the canonical
+/// `Libraries/Wine` (replace-mode install). `.whiskyWine` is the legacy Wine
+/// 11.13 stack (``WhiskyWineInstaller/binFolder``), kept for fallback; the app
+/// no longer surfaces a selector.
 public enum WineBackend: String, Codable, Equatable, CaseIterable, Sendable {
     case whiskyWine
     case proton
@@ -107,7 +109,7 @@ public struct BottleWineConfig: Codable, Equatable {
     var enhancedSync: EnhancedSync = .msync
     var avxEnabled: Bool = false
     var followSystemProxy: Bool = true
-    var wineBackend: WineBackend = .whiskyWine
+    var wineBackend: WineBackend = .proton
 
     public init() {}
 
@@ -119,7 +121,7 @@ public struct BottleWineConfig: Codable, Equatable {
         self.enhancedSync = try container.decodeIfPresent(EnhancedSync.self, forKey: .enhancedSync) ?? .msync
         self.avxEnabled = try container.decodeIfPresent(Bool.self, forKey: .avxEnabled) ?? false
         self.followSystemProxy = try container.decodeIfPresent(Bool.self, forKey: .followSystemProxy) ?? true
-        self.wineBackend = try container.decodeIfPresent(WineBackend.self, forKey: .wineBackend) ?? .whiskyWine
+        self.wineBackend = try container.decodeIfPresent(WineBackend.self, forKey: .wineBackend) ?? .proton
     }
     // swiftlint:enable line_length
 }
@@ -296,10 +298,12 @@ public struct BottleSettings: Codable, Equatable {
             wineEnv.updateValue("1", forKey: "WINEESYNC")
         case .msync:
             wineEnv.updateValue("1", forKey: "WINEMSYNC")
-            // D3DM detects ESYNC and changes behaviour accordingly
-            // so we have to lie to it so that it doesn't break
-            // under MSYNC. Values hardcoded in lid3dshared.dylib
-            wineEnv.updateValue("1", forKey: "WINEESYNC")
+            // macOS has no eventfd, so esync can't work. proton-wine requires
+            // WINEESYNC=0 (with it set, esync init misbehaves). The legacy
+            // Whisky-Wine 11.13 backend instead needs the "esync lie": D3DM
+            // (lid3dshared.dylib) hardcodes an ESYNC check and changes behaviour
+            // without it, so we set WINEESYNC=1 there to keep it happy under msync.
+            wineEnv.updateValue(wineBackend == .proton ? "0" : "1", forKey: "WINEESYNC")
         }
 
         if metalHud {

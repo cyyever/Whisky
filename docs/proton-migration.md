@@ -24,11 +24,13 @@ tree that plain WineHQ 11.13 lacks.
   `proton-wine-11.0-…`. Tracked in main: `patches/proton-wine/` (**14-patch series**) +
   `scripts/install-proton.sh`; `scripts/build-dxmt.sh` and `scripts/build-wine-x86.sh`
   gained env-var / source-reset hooks.
-- **App wiring exists** (committed): per-bottle `BottleSettings.WineBackend`
-  (`.whiskyWine` default / `.proton`); `Wine.wineBinary(for:)`/`binFolder(for:)` resolve
-  per bottle; `WhiskyWineInstaller.protonBinFolder` = `Libraries/WineProton`; `ConfigView`
-  shows a Proton picker when `isProtonInstalled()`. `PROTON_DISABLE_LSTEAMCLIENT=1` is
-  wired into `Wine.swift`.
+- **App wiring — Proton locked as default**: `BottleSettings.WineBackend` defaults to
+  `.proton` (struct default + decode fallback); the `ConfigView` backend selector is
+  removed. `.whiskyWine` (legacy Wine 11.13) stays in the enum for fallback but is not
+  user-selectable. `Wine.wineBinary(for:)`/`binFolder(for:)` resolve per bottle;
+  `WhiskyWineInstaller.protonBinFolder` prefers a side-by-side `Libraries/WineProton`,
+  else falls back to `Libraries/Wine` (works whether Proton is side-by-side or laid over
+  `Libraries/Wine`). `PROTON_DISABLE_LSTEAMCLIENT=1` is wired into `Wine.swift`.
 - Not yet done: no version-plist/appcast switch, no committed submodule pin for the
   Proton source. Treat as an experimental parallel track next to the canonical Wine 11.13
   stack.
@@ -204,9 +206,9 @@ by `dlls/ntdll/unix/msync.c`): `WINEMSYNC_NO_EVENT`, `NO_AUTOEVENT`, and the fin
   (`http_proxy=http://127.0.0.1:9910`) because geph registers a macOS system proxy; that
   HTTP proxy **breaks Steam's CM** (WSS → 403) and the CM is directly reachable anyway.
   (The bottle's internal `ProxyEnable` registry is separate; keep both off.)
-- **msync-only (`WINEESYNC=0`).** macOS has no eventfd for esync. Open conflict: DXMT sets
-  a `WINEESYNC` "lie" in `BottleSettings`, so the Proton backend must force `WINEESYNC=0`
-  independently of that flag.
+- **msync-only (`WINEESYNC=0`).** macOS has no eventfd for esync. Resolved: `BottleSettings`
+  now sets `WINEESYNC=0` for the Proton backend while keeping the DXMT `WINEESYNC=1` "lie"
+  (`lid3dshared.dylib` esync-detection) for the legacy Whisky-Wine backend.
 - **`PROTON_DISABLE_LSTEAMCLIENT=1`** (wired into `Wine.swift`).
 - CLI launch needs `whisky steam-fix <bottle>` first.
 
