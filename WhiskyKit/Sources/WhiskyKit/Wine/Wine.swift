@@ -266,7 +266,15 @@ public class Wine {
             // stubs (our de-linux'd ntdll lacks those 297 symbols) -> steamclient64
             // DllMain access-violates on a garbage allocator vtable and Steam shows
             // "reinstall Steam". Ignored by Whisky-Wine 11.13 (no such code).
-            "PROTON_DISABLE_LSTEAMCLIENT": "1"
+            "PROTON_DISABLE_LSTEAMCLIENT": "1",
+            // Proton msync only: route auto-reset events to server-sync. Every
+            // other object type (semaphore, mutex, manual event, msg-queue) runs
+            // on msync fine and lets Steam log in, but auto-reset events on msync
+            // hit a consume race in the mixed-wait poll -> steam.exe spins one
+            // core and connectivity fails. Keeping just auto-events on the server
+            // is the working config (full CM logon). Ignored when msync is off /
+            // by any Wine without the WINEMSYNC_NO_AUTOEVENT lever.
+            "WINEMSYNC_NO_AUTOEVENT": "1"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
         guard !environment.isEmpty else { return result }

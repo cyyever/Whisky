@@ -31,6 +31,14 @@ lost-wake fix that lets Steam log in with WINEMSYNC=1:
     (Steam socket I/O hung -> "Unexpected Transport Error"). msync_run_system_apcs()
     does a 0-timeout interruptible server_wait to run any pending system APC.
     Verified: Steam completes full CM logon under WINEMSYNC=1.
+  - server-side event-on-msync guard: with events on msync, get_event_obj()
+    hands req_event_op/query_event a msync object cast as `struct event`, whose
+    ->sync field is garbage. Both handlers now branch on obj.ops == &msync_ops
+    (like set_event/reset_event already did) and read state via
+    msync_get_event_state()/msync_is_manual_event() instead of dereferencing
+    ->sync -- fixes an EXC_BAD_ACCESS wineserver crash under full msync.
+    (Auto-reset events on msync still have a consume-race spin -- run them on
+    server-sync with WINEMSYNC_NO_AUTOEVENT=1; everything else stays on msync.)
 
 do_msync() respects WINEMSYNC (default on). Builds x86_64 under Rosetta.
 
@@ -3866,7 +3874,7 @@ index c56c216..8a1fbb3 100644
      no_signal,                    /* signal */
      no_get_fd,                    /* get_fd */
 diff --git a/server/event.c b/server/event.c
-index b70e9e0..a1a806e 100644
+index b70e9e0..7aed926 100644
 --- a/server/event.c
 +++ b/server/event.c
 @@ -35,6 +35,7 @@
@@ -3985,6 +3993,64 @@ index b70e9e0..a1a806e 100644
  }
  
  struct keyed_event *create_keyed_event( struct object *root, const struct unicode_str *name,
+@@ -411,14 +457,22 @@ DECL_HANDLER(open_event)
+ /* do an event operation */
+ DECL_HANDLER(event_op)
+ {
+-    struct event_sync *sync;
+     struct event *event;
+ 
+     if (!(event = get_event_obj( current->process, req->handle, EVENT_MODIFY_STATE ))) return;
+-    assert( event->sync->ops == &event_sync_ops ); /* never called with inproc syncs */
+-    sync = (struct event_sync *)event->sync;
+ 
+-    reply->state = sync->signaled;
++    /* Under msync the handle may resolve to an msync object handed back as a
++     * struct event (see get_event_obj); its ->sync field is meaningless, so read
++     * the previous state from the msync object instead of dereferencing ->sync.
++     * set_event()/reset_event() already branch on obj.ops == &msync_ops. */
++    if (do_msync() && event->obj.ops == &msync_ops)
++        reply->state = msync_get_event_state( (struct msync *)event );
++    else
++    {
++        assert( event->sync->ops == &event_sync_ops ); /* never called with inproc syncs */
++        reply->state = ((struct event_sync *)event->sync)->signaled;
++    }
++
+     switch(req->op)
+     {
+     case PULSE_EVENT:
+@@ -441,15 +495,25 @@ DECL_HANDLER(event_op)
+ /* return details about the event */
+ DECL_HANDLER(query_event)
+ {
+-    struct event_sync *sync;
+     struct event *event;
+ 
+     if (!(event = get_event_obj( current->process, req->handle, EVENT_QUERY_STATE ))) return;
+-    assert( event->sync->ops == &event_sync_ops ); /* never called with inproc syncs */
+-    sync = (struct event_sync *)event->sync;
+ 
+-    reply->manual_reset = sync->manual;
+-    reply->state = sync->signaled;
++    /* Same as event_op: under msync the handle may be an msync object cast as a
++     * struct event, so read manual/state from the msync object, never ->sync. */
++    if (do_msync() && event->obj.ops == &msync_ops)
++    {
++        reply->manual_reset = msync_is_manual_event( (struct msync *)event );
++        reply->state = msync_get_event_state( (struct msync *)event );
++    }
++    else
++    {
++        struct event_sync *sync;
++        assert( event->sync->ops == &event_sync_ops ); /* never called with inproc syncs */
++        sync = (struct event_sync *)event->sync;
++        reply->manual_reset = sync->manual;
++        reply->state = sync->signaled;
++    }
+ 
+     release_object( event );
+ }
 diff --git a/server/fd.c b/server/fd.c
 index aa71e6d..69d7bcb 100644
 --- a/server/fd.c
@@ -4471,10 +4537,10 @@ index 2b3ebd1..e29658b 100644
      mapping_get_fd,              /* get_fd */
 diff --git a/server/msync.c b/server/msync.c
 new file mode 100644
-index 0000000..c3032e9
+index 0000000..c95b4c7
 --- /dev/null
 +++ b/server/msync.c
-@@ -0,0 +1,1144 @@
+@@ -0,0 +1,1163 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -5452,6 +5518,25 @@ index 0000000..c3032e9
 +    __atomic_store_n( &event->signaled, 0, __ATOMIC_SEQ_CST );
 +}
 +
++/* Read the signaled state of an msync event object. Used by the event_op /
++ * query_event request handlers on the msync branch, where the object is a
++ * struct msync (not a struct event) so its ->sync field must never be touched. */
++int msync_get_event_state( struct msync *msync )
++{
++    struct msync_event *event = get_shm( msync->shm_idx );
++    assert( msync->obj.ops == &msync_ops );
++
++    return __atomic_load_n( &event->signaled, __ATOMIC_SEQ_CST );
++}
++
++/* Whether an msync event object is manual-reset (vs auto-reset). */
++int msync_is_manual_event( struct msync *msync )
++{
++    assert( msync->obj.ops == &msync_ops );
++
++    return msync->type == MSYNC_MANUAL_EVENT;
++}
++
 +struct mutex
 +{
 +    int tid;
@@ -5621,10 +5706,10 @@ index 0000000..c3032e9
 +}
 diff --git a/server/msync.h b/server/msync.h
 new file mode 100644
-index 0000000..69d1a05
+index 0000000..186b85d
 --- /dev/null
 +++ b/server/msync.h
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,39 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -5661,6 +5746,8 @@ index 0000000..69d1a05
 +extern const struct object_ops msync_ops;
 +extern void msync_set_event( struct msync *msync );
 +extern void msync_reset_event( struct msync *msync );
++extern int msync_get_event_state( struct msync *msync );
++extern int msync_is_manual_event( struct msync *msync );
 +extern void msync_abandon_mutexes( struct thread *thread );
 diff --git a/server/mutex.c b/server/mutex.c
 index a168453..a9c30e0 100644

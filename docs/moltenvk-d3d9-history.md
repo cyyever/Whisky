@@ -45,9 +45,10 @@ always black** — the diff to chase was window mode, present mode `IMMEDIATE`
 vs `FIFO`, and how winemac attaches the `CAMetalLayer` for the Vulkan
 swapchain surface vs the DXMT path in `patches/wine/0003`/`0004`.
 
-On KosmicKrisp the equivalent symptom was fixed by `patches/mesa/0001`
-(MR 42811: make the CAMetalLayer residencySet resident for the presenting
-queue — a Metal 4 requirement).
+On KosmicKrisp the equivalent symptom was fixed by MR 42811 (make the
+CAMetalLayer residencySet resident for the presenting queue — a Metal 4
+requirement), which is now **merged upstream** (mesa `51ffe55`); its former
+`patches/mesa/0001` has been dropped and `patches/mesa/` is empty.
 
 ## Debug tooling that worked
 

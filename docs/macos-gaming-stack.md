@@ -23,18 +23,17 @@ Apple Silicon (M2, macOS Tahoe 26.5). Current as of July 2026.
   (x86_64), the MoltenVK-workaround patches in `patches/dxvk`/`patches/moltenvk`
   may become unnecessary, and vkd3d-proton (D3D12) gains a first plausible open
   path. **Verified 2026-07-18: KosmicKrisp builds as x86_64 and works under
-  Rosetta** (Mesa 26.1.5; vulkaninfo enumerates Apple M2 as
-  DRIVER_ID_MESA_KOSMICKRISP, Vulkan 1.3.354, and a real
+  Rosetta** (currently Mesa 26.2.99, pin `8b794a5`; running device reports
+  "KosmicKrisp 26.2.99", Apple M2, DRIVER_ID_MESA_KOSMICKRISP, and a real
   device-create → vkCmdFillBuffer → submit → verify test passes in an x86_64
-  process). The 26.1.5 release still drives classic Metal (no `MTL4*`
-  references), but **Mesa main's MTL4 rework also verified under Rosetta**
-  (26.3.0-devel via `scripts/build-kosmickrisp-x86.sh` + `vendor/mesa`:
-  Vulkan 1.4.354, MTL4 command queue/compiler in the binary, same GPU-submit
-  test passes) — so Metal 4 API is usable from Rosetta processes. Wine wiring
-  verified with a real game (Witch on the Holy Night, 64-bit D3D9 → DXVK →
-  winevulkan → x86 Vulkan loader in place of libMoltenVK.dylib → KosmicKrisp):
-  renders correctly with Mesa MR 42811 (present-queue residencySet,
-  `patches/mesa/0001`) plus DXVK's `fillModeNonSolid` made optional. See
+  process). Mesa main's **MTL4 rework verified under Rosetta** (MTL4 command
+  queue/compiler in the binary, GPU-submit test passes) — so Metal 4 API is
+  usable from Rosetta processes. Wine wiring verified with a real game (Witch
+  on the Holy Night, 64-bit D3D9 → DXVK → winevulkan → x86 Vulkan loader in
+  place of libMoltenVK.dylib → KosmicKrisp): renders correctly plus DXVK's
+  `fillModeNonSolid` made optional. The present-queue residencySet fix (Mesa
+  MR 42811 — without it Metal 4 presented black) is now **merged upstream**, so
+  its former `patches/mesa/0001` is dropped and `patches/mesa/` is empty. See
   CLAUDE.md "Vulkan backend: KosmicKrisp".
 - **D3D12 (e.g. Black Myth: Wukong, UE5):** DXMT is D3D11-only (no `d3d12` in
   its source tree). Apple's closed **D3DMetal** (CrossOver-only) is still the
