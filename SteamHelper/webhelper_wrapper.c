@@ -77,7 +77,7 @@ int main(int argc, char *argv[]) {
     // Append our Wine-compatibility flags only if not already present
     if (!already_patched) {
         int needed = snprintf(cmdline + offset, sizeof(cmdline) - offset,
-                              " --no-sandbox --in-process-gpu --disable-gpu --disable-gpu-compositing");
+                              " --no-sandbox --in-process-gpu");
         if (needed < 0 || (size_t)(offset + needed) >= sizeof(cmdline)) return 1;
     }
 

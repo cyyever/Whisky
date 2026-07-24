@@ -7,8 +7,21 @@ Two Steam-under-Wine problems and how Whisky solves them.
 Steam's CEF host `steamwebhelper.exe` renders a black window under Wine: its
 sandbox hooks the NT kernel and the out-of-process GPU can't reset the D3D
 device (`problems[10]: Some drivers are unable to reset the D3D device in the GPU
-process sandbox`). It needs `--no-sandbox --in-process-gpu --disable-gpu
---disable-gpu-compositing`; Steam's own `--disable-gpu` fallback is not enough.
+process sandbox`). It needs `--no-sandbox --in-process-gpu`.
+
+**GPU rendering re-enabled (2026-07-24, KosmicKrisp + DXMT stack).** The wrapper
+used to also force `--disable-gpu --disable-gpu-compositing` (software raster).
+That is no longer needed: on the current stack CEF's GPU process comes up via
+ANGLE → D3D11 (DXMT) → Metal without black-windowing, renders the UI correctly,
+and roughly **halves the webhelper CPU** (software-raster ~44% → ~24% on the main
+renderer). So the wrapper now appends only `--no-sandbox --in-process-gpu`
+(`SteamHelper/webhelper_wrapper.c`). Caveat: ANGLE's Renderer11 caps the context
+at **GLES 2.0** — DXMT reports D3D feature level 11_1, but ANGLE downgrades ES
+(`eglCreateContext: Requested GLES 3.0 > max supported 2.0`), so CEF falls back to
+SwiftShader for the GLES-3 raster path; rendering is still correct. Full GLES 3.x
+(further CPU win) needs a DXMT-side fix so ANGLE enables ES 3.0 — a separate task.
+Verified on the **Proton** stack; spot-check Whisky-Wine 11.13 bottles (shared
+wrapper) — if a bottle black-windows, restore `--disable-gpu --disable-gpu-compositing`.
 
 ### Why not just overwrite steamwebhelper.exe
 
