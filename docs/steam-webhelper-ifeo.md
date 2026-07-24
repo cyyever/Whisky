@@ -70,21 +70,49 @@ supported 2.0` error DISAPPEARS (that error is emitted only by ANGLE's D3D11/Ren
 path). It bypasses wined3d, DXMT, **and** Apple's frozen GL entirely — the cleanest ES3
 route for the CEF UI.
 
-**OPEN BUG — the Steam UI FLICKERS constantly under ANGLE-Vulkan → KosmicKrisp.** Not
-shippable as-is; investigation in progress. Ruled out so far: not a Chromium flag
-(`--disable-partial-swap` did NOT fix it); not "content-not-preserved" (the KosmicKrisp
-Metal WSI, `vendor/mesa/src/vulkan/wsi/wsi_common_metal.c`, blits the full persistent
-app-image → drawable each present). Current lead: present-mode/vsync — KosmicKrisp
-offers only **IMMEDIATE + FIFO** present modes (no MAILBOX; `minImageCount=2`/`max=3`),
-and if ANGLE picks IMMEDIATE, `wsi_metal_layer_set_immediate` disables displaySync →
-tearing/flicker. A **force-FIFO experiment is in progress**. Note: DXVK fullscreen games
-via KosmicKrisp do NOT flicker (full-frame present) — only the CEF compositor does.
+**OPEN BUG — the Steam UI FLICKERS under ANGLE-Vulkan → KosmicKrisp. Investigated
+deeply (2026-07-24), root-caused to KosmicKrisp's Metal-4 WSI, and SHELVED as an
+upstream item.** What was ruled out, in order:
 
-**Status: EXPERIMENTAL / UNCOMMITTED.** The `--use-angle=vulkan --use-cmd-decoder=passthrough
---disable-partial-swap` flags are currently in the working tree of
-`SteamHelper/webhelper_wrapper.c` but not committed and **not the shipped default**,
-pending the flicker fix. Until then the shipped path stays wined3d-ES2 (stable). Do NOT
-set a bottle-global `d3d11=native`/DXMT override just for the UI — DXMT is for games.
+- **Not a Chromium flag** — `--disable-partial-swap` had no effect.
+- **Not content-preservation** — the KosmicKrisp Metal WSI
+  (`vendor/mesa/src/vulkan/wsi/wsi_common_metal.c`) blits the full persistent
+  app-image → drawable each present, so undamaged regions are never stale.
+- **Not present-mode / vsync** — temporary `KKWSI` prints in
+  `wsi_metal_surface_create_swapchain` showed ANGLE requests **presentMode=IMMEDIATE,
+  minImageCount=3** for *all* ~10 CEF swapchains (main 1280×800 + many tiny
+  tooltip/subview surfaces). Patching KosmicKrisp to **force FIFO / displaySync ON did
+  NOT stop the flicker.**
+- **Not a WineMetalView layer property** — setting the CAMetalLayer `framebufferOnly =
+  NO` (`dlls/winemac.drv/cocoa_window.m`; MoltenVK recommends it when the WSI blits
+  into the drawable) turned the flicker into a **FREEZE** (UI static + click-dead —
+  drawable starvation in the acquire loop). Reverted.
+- **The present path is structurally correct Metal-4** — KosmicKrisp uses
+  `MTL4CommandQueue waitForDrawable:` → commit(blit) → `signalDrawable:` →
+  `[drawable present]` (`kk_queue.c`, `mtl_command_queue.m`). No ordering bug — which
+  is exactly why **single-swapchain DXVK games render fine** through the same WSI.
+
+**Leading (unfixed) hypothesis:** KosmicKrisp has a **single device queue**
+(`dev->queue`); CEF drives **~10 swapchains** that all interleave
+`waitForDrawable`/`signalDrawable`/`present` on that one Metal-4 queue — a
+multi-swapchain-on-single-queue Metal-4 present interaction that DXVK (one swapchain)
+never hits. This is genuine KosmicKrisp WSI-maturity territory (driver ~8 months old;
+the Metal-4 drawable-present model requires macOS 26+ and is bleeding-edge), **not** a
+Wine/wrapper-side fix. Revisit when KosmicKrisp's WSI matures.
+
+To reproduce the experiment: append `--use-angle=vulkan --use-cmd-decoder=passthrough`
+to the wrapper flags and rebuild `SteamHelper/webhelper_wrapper.c`. **These are NOT in
+the tree and NOT the shipped default** — the shipped Steam UI stays on the stable
+GPU path (DXMT builtin d3d11 / wined3d-ES2), which renders correctly, responds, and
+does not flicker. ES3 is not functionally needed for the 2D CEF UI. Do NOT set a
+bottle-global `d3d11=native` override just for the UI — DXMT is for games.
+
+**Testing note:** the "webhelper won't boot / steam.exe pins ~100% / no window" seen
+during CLI testing was **not** the Vulkan path — it was a hand-rolled minimal launch
+env missing `WINEDLLOVERRIDES=…winemetal=b` and `DYLD_FALLBACK_LIBRARY_PATH`. The full
+bottle env (dump it with `WhiskyCmd shellenv <bottle>`) boots cleanly (steam.exe
+~1.3%, healthy webhelpers). Always test Steam with the full env. (A separate
+intermittent msync producer-stall can also pin steam.exe — unrelated to graphics.)
 
 ### Why not just overwrite steamwebhelper.exe
 
