@@ -2,11 +2,14 @@ SHELL := /bin/bash
 SCRIPTS_DIR := $(CURDIR)/scripts
 WINE_SRC := $(CURDIR)/vendor/wine
 X86_BREW := $(CURDIR)/vendor/homebrew-x86/bin/brew
-WINE_INSTALL := $(HOME)/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin/wine64
 WINE_STAMP := $(CURDIR)/vendor/.wine-installed
-APP_BUILD := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products/Debug/Whisky.app
+APP_PRODUCTS := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products
 
-.PHONY: all app wine wine-debug steam-helper dxmt dxvk setup-x86-brew clean clean-wine help
+XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
+CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+
+.PHONY: all help setup-x86-brew wine wine-debug clean-wine steam-helper \
+        dxmt dxvk app app-release run submodule clean
 
 all: app wine steam-helper  ## Build everything (app + Wine + Steam helper)
 
@@ -34,8 +37,7 @@ wine-debug:  ## Reinstall Wine keeping PE debug info (for winedbg sessions)
 	@touch $(WINE_STAMP)
 
 clean-wine:  ## Remove Wine build artifacts (keeps installed Wine)
-	rm -rf $(WINE_SRC)/build-x86_64
-	rm -rf $(WINE_SRC)/build
+	rm -rf $(WINE_SRC)/build-x86_64 $(WINE_SRC)/build
 	rm -f $(WINE_STAMP)
 
 # === Steam helper ===
@@ -55,33 +57,19 @@ dxvk:  ## Build DXVK d3d9.dll (win32 + win64) and install into Libraries/DXVK
 
 # === Whisky App ===
 
-app:  ## Build the Whisky macOS app
-	xcodebuild -project Whisky.xcodeproj \
-		-scheme Whisky \
-		-configuration Debug \
-		build \
-		CODE_SIGN_IDENTITY="-" \
-		CODE_SIGNING_REQUIRED=NO \
-		CODE_SIGNING_ALLOWED=NO
+app:  ## Build the Whisky macOS app (Debug)
+	$(XCODEBUILD) -configuration Debug build $(CODESIGN_OFF)
 
-app-release:  ## Build the Whisky app in Release mode
-	xcodebuild -project Whisky.xcodeproj \
-		-scheme Whisky \
-		-configuration Release \
-		build \
-		CODE_SIGN_IDENTITY="-" \
-		CODE_SIGNING_REQUIRED=NO \
-		CODE_SIGNING_ALLOWED=NO
+app-release:  ## Build the Whisky app (Release)
+	$(XCODEBUILD) -configuration Release build $(CODESIGN_OFF)
 
 run: app  ## Build and run Whisky
-	@open $$(ls -dt $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products/Debug/Whisky.app | head -1)
+	@open $$(ls -dt $(APP_PRODUCTS)/Debug/Whisky.app | head -1)
 
-# === Submodule ===
+# === Submodule / clean ===
 
 submodule:  ## Init/update git submodules
 	git submodule update --init --recursive
 
-# === Clean ===
-
 clean: clean-wine  ## Remove all build artifacts
-	xcodebuild -project Whisky.xcodeproj -scheme Whisky clean 2>/dev/null || true
+	$(XCODEBUILD) clean 2>/dev/null || true
