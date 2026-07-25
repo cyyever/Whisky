@@ -1,0 +1,124 @@
+Subject: [PATCH] msync: enforce SYNCHRONIZE access on the wait fast path
+
+msync caches each NT sync object per handle (get_cached_object) and the
+userspace wait path never consults the wineserver, so it was access-agnostic:
+a handle opened to an existing named object with restricted rights (e.g.
+GENERIC_READ | GENERIC_WRITE, which does NOT map to SYNCHRONIZE) could be
+waited on successfully, where Windows -- and the wineserver baseline -- reject
+the wait with STATUS_ACCESS_DENIED.
+
+Record the granted (possibly generic) access mask in struct msync when a handle
+is cached (create/open, and the get_msync_idx resolution path where the server
+already vouched for SYNCHRONIZE), and deny a wait whose object lacks SYNCHRONIZE.
+
+Fixes kernel32:sync test:300 (WaitForSingleObject on a GENERIC_READ|GENERIC_WRITE
+mutex handle must fail) and its cascade test:330 (the bogus extra acquisition
+unbalanced the mutex recursion count so a later ReleaseMutex wrongly succeeded
+instead of failing with ERROR_NOT_OWNER).
+
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+index 1586ca68..20ed3ae2 100644
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -275,6 +275,7 @@ struct msync
+     void *shm;              /* pointer to shm section */
+     enum msync_type type;
+     unsigned int shm_idx;
++    unsigned int access;    /* granted (possibly generic) access mask for this handle */
+ };
+ 
+ typedef struct
+@@ -686,7 +687,8 @@ static inline UINT_PTR handle_to_index( HANDLE handle, UINT_PTR *entry )
+     return idx % MSYNC_LIST_BLOCK_SIZE;
+ }
+ 
+-static struct msync *add_to_list( HANDLE handle, enum msync_type type, unsigned int shm_idx )
++static struct msync *add_to_list( HANDLE handle, enum msync_type type, unsigned int shm_idx,
++                                  unsigned int access )
+ {
+     UINT_PTR entry, idx = handle_to_index( handle, &entry );
+     void *shm = (type == MSYNC_SERVER_ONLY) ? NULL : get_shm( shm_idx );
+@@ -713,6 +715,7 @@ static struct msync *add_to_list( HANDLE handle, enum msync_type type, unsigned
+     {
+         msync_list[entry][idx].shm = shm;
+         msync_list[entry][idx].shm_idx = shm_idx;
++        msync_list[entry][idx].access = access;
+     }
+ 
+     return &msync_list[entry][idx];
+@@ -767,7 +770,7 @@ static NTSTATUS get_object( HANDLE handle, struct msync **obj )
+         /* A server-only object (no msync shadow): remember it so future waits
+          * don't re-query the server for the same handle. */
+         if (ret == STATUS_NOT_IMPLEMENTED)
+-            add_to_list( handle, MSYNC_SERVER_ONLY, 0 );
++            add_to_list( handle, MSYNC_SERVER_ONLY, 0, 0 );
+         else
+             WARN("Failed to retrieve shm index for handle %p, status %#x.\n", handle, ret);
+         *obj = NULL;
+@@ -775,7 +778,12 @@ static NTSTATUS get_object( HANDLE handle, struct msync **obj )
+     }
+ 
+     TRACE("Got shm index %d for handle %p.\n", shm_idx, handle);
+-    *obj = add_to_list( handle, type, shm_idx );
++    /* This resolution path is only reached for handles not opened through the
++     * msync create/open wrappers (e.g. duplicated handles). The server's
++     * get_msync_idx handler already required SYNCHRONIZE to hand us the shm idx,
++     * so this handle can be waited on; record full access (its exact granted
++     * mask is unknown here, but SYNCHRONIZE is guaranteed present). */
++    *obj = add_to_list( handle, type, shm_idx, ~0u );
+     return ret;
+ }
+ 
+@@ -843,7 +851,7 @@ static NTSTATUS create_msync( enum msync_type type, HANDLE *handle,
+ 
+     if (!ret || ret == STATUS_OBJECT_NAME_EXISTS)
+     {
+-        add_to_list( *handle, type, shm_idx );
++        add_to_list( *handle, type, shm_idx, access );
+         TRACE("-> handle %p, shm index %d.\n", *handle, shm_idx);
+     }
+ 
+@@ -876,7 +884,7 @@ static NTSTATUS open_msync( enum msync_type type, HANDLE *handle,
+ 
+     if (!ret)
+     {
+-        add_to_list( *handle, type, shm_idx );
++        add_to_list( *handle, type, shm_idx, access );
+         TRACE("-> handle %p, shm index %u.\n", *handle, shm_idx);
+     }
+     return ret;
+@@ -1756,6 +1764,15 @@ done:
+     return ret;
+ }
+ 
++/* Does this (possibly generic) access mask grant SYNCHRONIZE, i.e. the right to
++ * wait on the object? Mirrors the server generic mapping (msync_map_access):
++ * SYNCHRONIZE is conferred by the explicit SYNCHRONIZE bit (also present in every
++ * *_ALL_ACCESS constant), GENERIC_EXECUTE, GENERIC_ALL, or MAXIMUM_ALLOWED. */
++static inline int msync_can_wait( unsigned int access )
++{
++    return (access & (SYNCHRONIZE | GENERIC_EXECUTE | GENERIC_ALL | MAXIMUM_ALLOWED)) != 0;
++}
++
+ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
+     BOOLEAN wait_any, BOOLEAN alertable, const LARGE_INTEGER *timeout )
+ {
+@@ -1808,7 +1825,18 @@ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
+     {
+         ret = get_object( handles[i], &objs[i] );
+         if (ret == STATUS_SUCCESS)
++        {
+             has_msync = 1;
++            /* Windows requires SYNCHRONIZE access to wait on an object. msync
++             * caches the object per handle and the fast wait path never consults
++             * the server, so a handle opened with restricted rights (e.g.
++             * GENERIC_READ|GENERIC_WRITE, no SYNCHRONIZE) would otherwise wait
++             * successfully. Deny it here to match the server oracle (kernel32
++             * sync test:300, and its cascade :330 where the extra bogus
++             * acquisition unbalances the mutex recursion count). */
++            if (!msync_can_wait( objs[i]->access ))
++                return STATUS_ACCESS_DENIED;
++        }
+         else if (ret == STATUS_NOT_IMPLEMENTED)
+             has_server = 1;
+         else

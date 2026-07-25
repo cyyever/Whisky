@@ -1,0 +1,44 @@
+Subject: [PATCH] msync: fall through to server for NtPulseEvent on non-msync handles
+
+msync_pulse_event returned get_object()'s raw error. When the handle names a
+server-only object (e.g. a keyed event) or otherwise lacks the SYNCHRONIZE
+access that the get_msync_idx server round-trip demands, that error is
+STATUS_ACCESS_DENIED, which was surfaced to the caller directly instead of
+letting the wineserver apply the correct per-op semantics.
+
+Return STATUS_NOT_IMPLEMENTED on any unresolved handle so NtPulseEvent falls
+through to the server (which yields STATUS_OBJECT_TYPE_MISMATCH for a keyed
+event), and reject non-event msync objects up front like msync_set_event does.
+
+Fixes ntdll:sync test:338 (NtPulseEvent on a keyed-event handle must return
+STATUS_OBJECT_TYPE_MISMATCH, not STATUS_ACCESS_DENIED).
+
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+index 20ed3ae2..555927cb 100644
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -1228,13 +1228,22 @@ NTSTATUS msync_pulse_event( HANDLE handle, LONG *prev )
+     struct event *event;
+     struct msync *obj;
+     LONG current;
+-    NTSTATUS ret;
+ 
+     TRACE("%p.\n", handle);
+ 
+-    if ((ret = get_object( handle, &obj ))) return ret;
++    /* If the handle can't be resolved as an msync object (e.g. it names a
++     * server-only object such as a keyed event, or lacks the SYNCHRONIZE access
++     * that get_msync_idx demands), fall through to the server so it can apply the
++     * correct per-op semantics -- NtPulseEvent on a non-event must yield
++     * STATUS_OBJECT_TYPE_MISMATCH, not the raw STATUS_ACCESS_DENIED msync would
++     * otherwise surface (ntdll sync test:338). */
++    if (get_object( handle, &obj )) return STATUS_NOT_IMPLEMENTED;
+     event = obj->shm;
+ 
++    /* Reject non-event msync objects like msync_set_event does. */
++    if (obj->type != MSYNC_MANUAL_EVENT && obj->type != MSYNC_AUTO_EVENT)
++        return STATUS_OBJECT_TYPE_MISMATCH;
++
+     /* This isn't really correct; an application could miss the write.
+      * Unfortunately we can't really do much better. Fortunately this is rarely
+      * used (and publicly deprecated). */
