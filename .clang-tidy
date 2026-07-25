@@ -1,0 +1,63 @@
+# Whisky clang-tidy configuration.
+#
+# High-signal, bug-hunting check set for the vendored C/C++ backends (DXVK,
+# DXMT, KosmicKrisp/Mesa) and our own SteamHelper PE shim. The goal is REAL
+# bugs and portability traps on the macOS/Rosetta/mingw cross builds — NOT
+# style. Whole style families (readability-, modernize-, llvm-, google-,
+# fuchsia-, altera-, hicpp-, cppcoreguidelines-) are simply never enabled.
+#
+# Enabled families and why:
+#   clang-analyzer-*  — the static analyzer: use-after-free, null deref, leaks,
+#                       uninitialized reads. Highest value; catches real defects.
+#   bugprone-*        — likely-wrong code: bad casts, sizeof misuse, dangling
+#                       handles, integer/signedness traps, macro hazards.
+#   performance-*     — needless copies, inefficient container/string use.
+#   portability-*     — non-portable constructs (matters across Rosetta/mingw).
+#   cert-*            — CERT secure-coding rules not already covered above.
+#   misc-*            — grab-bag correctness (unused values, redundant expr, etc).
+#
+# Explicit opt-outs (noise or irrelevant to this codebase):
+#   optin.* analyzer checks       — opt-in extras (cplusplus.*, portability
+#                                   unix APIs) that fire heavily on Wine/Mesa.
+#   security.insecureAPI.DeprecatedOrUnsafeBufferHandling — nags to swap every
+#                                   strncpy/snprintf for C11 _s variants that
+#                                   mingw/glibc do not even provide. Pure noise.
+#   bugprone-easily-swappable-parameters — pure API-shape nag, not a bug.
+#   bugprone-narrowing-conversions       — thousands of hits in graphics code.
+#   misc-no-recursion             — recursion is legitimate here (parsers, trees).
+#   misc-include-cleaner          — include hygiene, not a bug; huge noise.
+#   cert-err58-cpp / cert-dcl*    — static-init and declaration style nags.
+#   *-avoid-c-arrays, misc-non-private-member-* — style, not correctness.
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  cert-*,
+  misc-*,
+  -clang-analyzer-optin.performance.Padding,
+  -clang-analyzer-optin.cplusplus.VirtualCall,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-reserved-identifier,
+  -misc-no-recursion,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  -misc-use-anonymous-namespace,
+  -cert-err58-cpp,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp,
+  -cert-dcl21-cpp
+
+# Keep the analyzer honest but never break a scan on findings — this is a report
+# tool, not a gate.
+WarningsAsErrors: ''
+
+# Only diagnose headers that live inside this repo (our patched backend sources),
+# never system, mingw, SDK, or subproject-vendored third-party headers.
+HeaderFilterRegex: 'vendor/(dxvk|dxmt|mesa)/src/.*\.(h|hpp)$|SteamHelper/.*\.h$'
+
+FormatStyle: none
