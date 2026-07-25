@@ -54,12 +54,12 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
 
                 bottle.settings.windowsVersion = winVersion
                 bottle.settings.name = bottleName
-                // Disable winemac.drv during initial prefix creation to avoid
-                // wineboot hang on macOS 26+ (winemac.drv enters WM_TIMER loop)
-                try await Wine.changeWinVersion(
-                    bottle: bottle, win: winVersion,
-                    environment: ["WINEDLLOVERRIDES": "winemac.drv=d;winemenubuilder.exe=d"]
-                )
+                // The winemac.drv=d init workaround (macOS-26 WM_TIMER wineboot hang)
+                // was dropped 2026-07-25: the hang is gone on proton-wine 11.0 —
+                // wineboot --init completes in ~14s with winemac.drv enabled (mirrors
+                // the dropped patch 0007). Re-add the environment override if a fresh
+                // GUI bottle creation hangs.
+                try await Wine.changeWinVersion(bottle: bottle, win: winVersion)
                 let wineVer = try await Wine.wineVersion()
                 bottle.settings.wineVersion = SemanticVersion(wineVer) ?? SemanticVersion(0, 0, 0)
                 // Add record
