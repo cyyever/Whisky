@@ -120,7 +120,7 @@ public final class SteamLibraryWatcher: @unchecked Sendable {
         let bottle = self.bottle
         let work = DispatchWorkItem {
             Logger.wineKit.info("Steam library changed; rescanning \(bottle.settings.name) for D3D9 games")
-            Steam.rescanDXVKForD3D9Games(in: bottle)
+            Steam.rescanDXVKForGames(in: bottle)
         }
         debounce = work
         queue.asyncAfter(deadline: .now() + debounceInterval, execute: work)

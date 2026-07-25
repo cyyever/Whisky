@@ -1,13 +1,15 @@
 #!/bin/bash
 set -e
 
-# Build DXVK's d3d9.dll (32- and 64-bit PE, cross-compiled with mingw-w64) and
-# install the payload into the Whisky Libraries folder. Whisky auto-copies the
-# matching d3d9.dll into Steam game dirs whose executables import d3d9.dll
-# (see WhiskyKit's Steam.installDXVKForD3D9Games).
+# Build DXVK's d3d9.dll + d3d8.dll (32- and 64-bit PE, cross-compiled with
+# mingw-w64) and install the payload into the Whisky Libraries folder. Whisky
+# auto-copies the matching dll(s) into Steam game dirs whose executables import
+# d3d9.dll / d3d8.dll (see WhiskyKit's Steam.installDXVKForGames).
 #
-# Only d3d9 is built: D3D11/D3D10/DXGI are served by DXMT, and upstream DXVK's
-# d3d11 path cannot initialize on Apple GPUs (needs Vulkan geometryShader).
+# d3d8 is a thin wrapper over DXVK's d3d9 (it calls Direct3DCreate9 from
+# d3d9.dll), so it ships alongside d3d9 and the auto-drop provides both to a
+# D3D8 game. D3D11/D3D10/DXGI are still NOT built: DXMT owns them, and upstream
+# DXVK's d3d11 path cannot initialize on Apple GPUs (needs Vulkan geometryShader).
 #
 # Requires: ARM brew mingw-w64 + meson + ninja. The ~/.local/bin meson has a
 # broken interpreter — keep it off PATH.
@@ -27,10 +29,10 @@ echo "=== Building DXVK d3d9 from $DXVK_SRC ==="
 # fail loudly on conflicts.
 apply_patches "$DXVK_SRC" "$PROJECT_DIR/patches/dxvk" DXVK
 
-# d3d9-only build; everything else is off (DXMT owns D3D11/D3D10/DXGI).
+# d3d9 + d3d8 (its wrapper); everything else is off (DXMT owns D3D11/D3D10/DXGI).
 MESON_OPTS=(
     -Denable_d3d9=true
-    -Denable_d3d8=false
+    -Denable_d3d8=true
     -Denable_d3d10=false
     -Denable_d3d11=false
     -Denable_dxgi=false
@@ -40,21 +42,28 @@ MESON_OPTS=(
 
 setup_arch() {  # <cross-file> <build-dir> <install-subdir>
     local cross_file="$1" build_dir="$2" subdir="$3"
-    # Incremental: reuse an existing build dir, set up otherwise. Kept
-    # sequential — concurrent meson setups race on the shared subprojects cache.
+    # Fresh dir → configure; existing dir → --reconfigure so option changes
+    # (e.g. flipping enable_d3d8 on) actually take, instead of silently reusing
+    # the old options and failing on a now-missing ninja target. Both are
+    # incremental (object files are kept). Kept sequential — concurrent meson
+    # setups race on the shared subprojects cache.
     if [ ! -d "$DXVK_SRC/$build_dir" ]; then
         echo "=== Configuring DXVK ($subdir) ==="
         (cd "$DXVK_SRC" && meson setup --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
+    else
+        echo "=== Reconfiguring DXVK ($subdir) ==="
+        (cd "$DXVK_SRC" && meson setup --reconfigure --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
     fi
 }
 
 build_arch() {  # <build-dir> <install-subdir>
     local build_dir="$1" subdir="$2"
     echo "=== Building DXVK ($subdir) ==="
-    ninja -C "$DXVK_SRC/$build_dir" src/d3d9/d3d9.dll
-    echo "=== Installing d3d9.dll ($subdir) ==="
+    ninja -C "$DXVK_SRC/$build_dir" src/d3d9/d3d9.dll src/d3d8/d3d8.dll
+    echo "=== Installing d3d9.dll + d3d8.dll ($subdir) ==="
     mkdir -p "$INSTALL_DIR/DXVK/$subdir"
     cp "$DXVK_SRC/$build_dir/src/d3d9/d3d9.dll" "$INSTALL_DIR/DXVK/$subdir/d3d9.dll"
+    cp "$DXVK_SRC/$build_dir/src/d3d8/d3d8.dll" "$INSTALL_DIR/DXVK/$subdir/d3d8.dll"
 }
 
 setup_arch build-win32.txt build.w32 win32
@@ -77,4 +86,5 @@ wait "$pid_w64" || build_failed=1
 # driver to (re-)assert it.
 
 echo "=== Done! ==="
-file "$INSTALL_DIR/DXVK/win32/d3d9.dll" "$INSTALL_DIR/DXVK/win64/d3d9.dll"
+file "$INSTALL_DIR/DXVK/win32/d3d9.dll" "$INSTALL_DIR/DXVK/win64/d3d9.dll" \
+     "$INSTALL_DIR/DXVK/win32/d3d8.dll" "$INSTALL_DIR/DXVK/win64/d3d8.dll"
