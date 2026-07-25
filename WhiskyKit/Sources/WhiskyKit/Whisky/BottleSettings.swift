@@ -302,10 +302,21 @@ public struct BottleSettings: Codable, Equatable {
     }
 
     public func environmentVariables(wineEnv: inout [String: String]) {
+        // vulkan-1=b forces Wine's builtin winevulkan for vulkan-1.dll. Some apps
+        // ship their own vulkan-1.dll next to the exe (notably Steam's CEF host in
+        // bin/cef/cef.win64) — loaded natively under Wine that is a Windows Vulkan
+        // loader which finds no ICD, so it exposes no VK_KHR_surface/VK_KHR_win32_surface.
+        // ANGLE's Vulkan and SwiftShader backends then abort ("Extension not supported")
+        // and CEF spins in a gl_factory_win init loop with no window. `builtin` makes
+        // Wine substitute winevulkan (which does expose the WSI -> KosmicKrisp) even for
+        // those app-directory loads, while the on-disk file stays byte-identical so
+        // Steam's startup file verification still passes.
+        var dllOverrides = "vulkan-1=b"
         if dxmt {
             // Use the Metal-native DXMT D3D11 builtin (installed by `make dxmt`).
-            wineEnv.updateValue("d3d11,d3d10core,dxgi,winemetal=b", forKey: "WINEDLLOVERRIDES")
+            dllOverrides += ";d3d11,d3d10core,dxgi,winemetal=b"
         }
+        wineEnv.updateValue(dllOverrides, forKey: "WINEDLLOVERRIDES")
 
         switch enhancedSync {
         case .none:
