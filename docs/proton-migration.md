@@ -228,7 +228,8 @@ source of truth):
   (the env dict fully replaces the parent, so unset ≡ 0). (There is no "DXMT esync-detection
   lie" — that was a myth; no such `lid3dshared.dylib` exists.)
 - **`PROTON_DISABLE_LSTEAMCLIENT=1`** (wired into `Wine.swift`).
-- CLI launch needs `whisky steam-fix <bottle>` first.
+- The Steam webhelper wrapper is applied automatically on launch — from the GUI
+  (`Steam.configureSteam`) or via `whisky run` (`Wine.prepareForLaunch`).
 
 ## scripts/build-proton-x86.sh (was install-proton.sh + build-wine-x86.sh)
 `make proton` runs `scripts/build-proton-x86.sh`, the single Proton build: it resets

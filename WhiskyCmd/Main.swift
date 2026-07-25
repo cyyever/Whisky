@@ -18,7 +18,6 @@
 
 import ArgumentParser
 import Foundation
-import SemanticVersion
 import SwiftyTextTable
 import WhiskyKit
 
@@ -27,13 +26,8 @@ struct Whisky: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "A CLI interface for Whisky.",
         subcommands: [List.self,
-                      Create.self,
-                      Add.self,
-                      Delete.self,
-                      Remove.self,
                       Run.self,
-                      Shellenv.self,
-                      SteamFix.self])
+                      Shellenv.self])
 }
 
 extension Whisky {
@@ -59,95 +53,6 @@ extension Whisky {
         }
     }
 
-    struct Create: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Create a new bottle.")
-
-        @Argument var name: String
-
-        mutating func run() throws {
-            let bottleURL = BottleData.defaultBottleDir.appending(path: UUID().uuidString)
-
-            do {
-                try FileManager.default.createDirectory(atPath: bottleURL.path(percentEncoded: false),
-                                                        withIntermediateDirectories: true)
-                let bottle = Bottle(bottleUrl: bottleURL, inFlight: true)
-                // Should allow customisation
-                bottle.settings.windowsVersion = .win10
-                bottle.settings.name = name
-//                try await Wine.changeWinVersion(bottle: bottle, win: winVersion)
-//                let wineVer = try await Wine.wineVersion()
-                bottle.settings.wineVersion = SemanticVersion(0, 0, 0)
-
-                var bottlesList = BottleData()
-                bottlesList.paths.append(bottleURL)
-                print("Created new bottle \"\(name)\".")
-            } catch {
-                throw ValidationError("\(error)")
-            }
-        }
-    }
-
-    struct Add: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Add an existing bottle.")
-
-        @Argument var path: String
-
-        mutating func run() throws {
-            // Should be sanitised
-            let bottleURL = URL(filePath: path)
-            let metadataURL = bottleURL.appending(path: "Metadata").appendingPathExtension("plist")
-            let settings = try BottleSettings.decode(from: metadataURL)
-            var bottlesList = BottleData()
-            bottlesList.paths.append(bottleURL)
-            print("Bottle \"\(settings.name)\" added.")
-        }
-    }
-
-    struct Delete: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Delete an existing bottle from disk.")
-
-        @Argument var name: String
-
-        mutating func run() throws {
-            var bottlesList = BottleData()
-            let bottles = bottlesList.loadBottles()
-
-            // Should ask for confirmation
-            let bottleToRemove = bottles.first(where: { $0.settings.name == name })
-            if let bottleToRemove {
-                bottlesList.paths.removeAll(where: { $0 == bottleToRemove.url })
-                do {
-                    try FileManager.default.removeItem(at: bottleToRemove.url)
-                    print("Deleted \"\(name)\".")
-                } catch {
-                    print(error)
-                }
-            } else {
-                throw ValidationError("No bottle called \"\(name)\" found.")
-            }
-        }
-    }
-
-    struct Remove: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Remove an existing bottle from Whisky.",
-                                                        discussion: "This will not remove the bottle from disk.")
-
-        @Argument var name: String
-
-        mutating func run() throws {
-            var bottlesList = BottleData()
-            let bottles = bottlesList.loadBottles()
-
-            let bottleToRemove = bottles.first(where: { $0.settings.name == name })
-            if let bottleToRemove {
-                bottlesList.paths.removeAll(where: { $0 == bottleToRemove.url })
-                print("Removed \"\(name)\".")
-            } else {
-                throw ValidationError("No bottle called \"\(name)\" found.")
-            }
-        }
-    }
-
     struct Run: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Run a program with Whisky.")
 
@@ -169,27 +74,6 @@ extension Whisky {
             let url = URL(fileURLWithPath: path)
             let program = Program(url: url, bottle: bottle)
             program.runInTerminal()
-        }
-    }
-
-    struct SteamFix: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(
-            commandName: "steam-fix",
-            abstract: "Install the Steam webhelper wrapper into a bottle (fixes the black Steam window)."
-        )
-
-        @Argument var bottleName: String
-
-        mutating func run() async throws {
-            var bottlesList = BottleData()
-            let bottles = bottlesList.loadBottles()
-
-            guard let bottle = bottles.first(where: { $0.settings.name == bottleName }) else {
-                throw ValidationError("A bottle with that name doesn't exist.")
-            }
-
-            await Steam.configure(in: bottle)
-            print("Steam webhelper wrapper installed for bottle \"\(bottleName)\".")
         }
     }
 

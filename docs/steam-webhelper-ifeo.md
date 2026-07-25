@@ -85,8 +85,9 @@ the patch series (`patches/proton-wine/*`) so the vendored source stays clean.
 Driven by `Steam.swift` (via `Wine.configureSteam`, called from
 `Wine.runProgram`): installs the wrapper at `C:\windows\steamwebhelper_wrapper.exe`,
 restores a genuine `steamwebhelper.exe` (migrates old bottles), refreshes the
-`steamwebhelper_real.exe` copy, and writes the IFEO registry value. CLI:
-`whisky steam-fix <bottle>`.
+`steamwebhelper_real.exe` copy, and writes the IFEO registry value. Applied
+automatically on every launch — from the GUI (`Steam.configureSteam`) or via
+`whisky run` (`Wine.prepareForLaunch`); there is no separate CLI command.
 
 ## 2. "Steam is updating" stuck
 
