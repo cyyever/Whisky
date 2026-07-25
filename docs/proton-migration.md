@@ -96,7 +96,33 @@ msync-refinement patches were folded into `0008`.
   - the **socket-async / system-APC lost-wake fix** (`msync_run_system_apcs()` drains
     system APCs on the SIGUSR1/EINTR interrupt so socket async completions deliver — the
     fix that made Steam log in);
-  - the experimental `WINEMSYNC_UNIFIED` event-driven mixed-wait bridge (opt-in).
+  - the experimental `WINEMSYNC_UNIFIED` event-driven mixed-wait bridge (opt-in);
+  - **four NT-sync conformance fixes** (formerly standalone `0016`/`0017` in two rounds,
+    now all folded into `0008` to keep `dlls/ntdll/unix/msync.c` single-owner): mutex
+    `NtReleaseMutant` previous-count (`*prev = 1 - mutex->count`); msync/fsync alertable
+    `NtDelayExecution` returning `STATUS_TIMEOUT` instead of `STATUS_SUCCESS`; wait fast-path
+    now enforces `SYNCHRONIZE` on the object (records the granted access mask per cached
+    handle, denies a wait that lacks it — clears kernel32:sync test:300 + cascade test:330);
+    `NtPulseEvent` falls through to the wineserver for handles that don't resolve to an
+    msync event, so a keyed event yields `STATUS_OBJECT_TYPE_MISMATCH` not
+    `STATUS_ACCESS_DENIED` (clears ntdll:sync test:338).
+
+### Validating msync (conformance harness)
+msync is a *transparent* backend for the NT sync primitives, so it has no tests of its own.
+`scripts/test-msync.sh` runs Wine's `ntdll:sync` + `kernel32:sync` subtests under
+`WINEMSYNC=1` (fast path) vs `WINEMSYNC=0` (wineserver baseline) and diffs them — a subtest
+that passes on the baseline but fails under msync is a real msync bug; one that fails under
+both is a pre-existing non-msync issue and is filtered out. `--guard-malloc` reruns under
+macOS libgmalloc to catch heap corruption in msync's unix-side allocations. The test PEs are
+built by `scripts/build-msync-tests.sh` (re-configures the already-compiled
+`vendor/proton-wine/build` *without* `--disable-tests` and links just the two `*_test.exe` —
+never runs `make install`, so the shipping build is untouched). This harness drove the msync
+conformance work above: msync-only failures went **6 → 2**.
+- **Still open (deferred):** kernel32:sync test:393/397 **abandoned-mutex** — msync tracks
+  mutex ownership client-side only, so the object is freed at last handle-close before the
+  owner thread's `TerminateThread` runs `msync_abandon_mutexes`. A proper fix needs
+  server-side ownership refcounting; judged too risky, deferred (in progress in a separate
+  task, not committed).
 
 ### 0009–0013 — macOS capability ports
 - `0009-macos-dxmt-winemac-support` — winemac.drv Metal-swapchain client view;
