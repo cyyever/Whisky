@@ -101,5 +101,8 @@ tests/d3d12/.build/
 # vkd3d-proton pipeline cache dropped in cwd when running D3D12 probes
 vkd3d-proton.cache
 vkd3d-proton.cache.write
+
+# built PE from scripts/run-msync-close-test.sh (regenerated on each run)
+scripts/msync-close-during-wait-test.exe
 vendor/proton-wine/
 vendor/.proton-installed
