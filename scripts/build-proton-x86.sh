@@ -94,6 +94,7 @@ arch -x86_64 env -i \
         --with-vulkan \
         --without-gstreamer \
         --disable-tests \
+        --disable-win16 \
         --without-x \
         --without-cups \
         --without-krb5 \
