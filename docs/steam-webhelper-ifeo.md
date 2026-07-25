@@ -42,6 +42,27 @@ issue, not a Wine/wrapper fix. The flags are **not** in the tree and **not** shi
 the Steam UI stays on stable DXMT/wined3d-ES2 (renders fine, no flicker; ES3 isn't
 needed for a 2D UI). Do NOT set a bottle-global `d3d11=native` override for the UI.
 
+**Bundled `cef.win64/vulkan-1.dll` shadows winevulkan — fixed with `vulkan-1=b`
+(2026-07-26).** In a freshly created bottle CEF would spin in a tight GL-init retry
+loop: `cef_log` floods ~40k lines/s, a core pinned at ~160%, and no login window ever
+paints. Root cause: Steam's CEF host ships **its own `vulkan-1.dll`** in
+`bin/cef/cef.win64` (and `cef.win7x64`). Loaded from the app directory it wins over
+Wine's builtin, and it is a **Windows** Vulkan loader — under Wine it finds no ICD, so
+it exposes **no** `VK_KHR_surface` / `VK_KHR_win32_surface`. ANGLE's Vulkan backend
+**and** the SwiftShader fallback then both abort (`Extension VK_KHR_surface is not
+supported`), Chromium's `gl_factory_win` NOTREACHEs, and CEF retries GL-init forever.
+(ANGLE-GL is not an escape hatch either: it needs `WGL_NV_DX_interop2`, which macOS GL
+lacks.) The earlier "`make proton` regression broke Wine's WSI" theory was **refuted** —
+a standalone probe confirmed **builtin winevulkan** exposes `VK_KHR_surface` +
+`VK_KHR_win32_surface` (14 instance extensions) and reaches KosmicKrisp fine; the WSI
+was always healthy, the wrong loader was just shadowing it. Fix: add **`vulkan-1=b`** to
+the bottle's `WINEDLLOVERRIDES` (`BottleSettings.swift`) so Wine substitutes builtin
+winevulkan even for that app-directory load. The on-disk `vulkan-1.dll` stays
+byte-identical, so Steam's `BVerifyInstalledFiles` (see below) still passes. Verified:
+with the override a real launch cleared **all** `VK_KHR_surface`/`gl_factory_win` errors,
+CPU dropped from ~160% to ~0.5%, and the log flood stopped. (The login window then still
+needs network connectivity — a separate proxy/GFW matter, see §2.)
+
 Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXMT_LOG_PATH` stays empty
 in the webhelper (it's wined3d). Always launch Steam with the **full bottle env**
 (`WhiskyCmd shellenv <bottle>`) — a minimal env missing `winemetal=b` /
