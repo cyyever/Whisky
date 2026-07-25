@@ -102,3 +102,4 @@ tests/d3d12/.build/
 vkd3d-proton.cache
 vkd3d-proton.cache.write
 vendor/proton-wine/
+vendor/.proton-installed

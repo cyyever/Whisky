@@ -41,7 +41,16 @@ export_homebrew_mirrors() {
 apply_patches() {
     local src_dir="$1" patch_dir="$2" label="$3" reset="${4:-}"
     [ -d "$patch_dir" ] || return 0
-    [ -n "$reset" ] && git -C "$src_dir" checkout -- .
+    if [ -n "$reset" ]; then
+        git -C "$src_dir" checkout -- .
+        # checkout -- . only reverts tracked files; untracked files created by add-file
+        # patches (e.g. msync.c/.h, server/msync.c) linger and make a re-apply hit
+        # "already exists" and hard-fail. `git clean -fdq` removes untracked NON-ignored
+        # files (patch leftovers + generated inputs + stray dirs) for a deterministic base.
+        # Deliberately no -x, so gitignored paths survive — notably an out-of-tree build/
+        # tree, keeping compiles incremental across forced rebuilds.
+        git -C "$src_dir" clean -fdq
+    fi
     local patch
     for patch in "$patch_dir"/*.patch; do
         [ -e "$patch" ] || continue

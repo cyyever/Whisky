@@ -11,14 +11,36 @@ WINE_BUILD="${WHISKY_WINE_BUILD:-release}"
 
 echo "=== Building Proton (proton-wine) x86_64 from $WINE_SRC ==="
 
-# Apply the Proton macOS patch series (patches/proton-wine/, base 81d78e4). Reset
-# tracked source to a clean HEAD first so the state is deterministic: patches
-# already committed into the vendored proton-wine HEAD reverse-check as
-# already-applied and are skipped; any not yet in HEAD apply fresh. checkout
-# touches only tracked files, so build/ is kept. NOTE: this discards uncommitted
-# working-tree edits (e.g. local env-gated msync diagnostics) — commit them to
-# proton-wine's git or capture them as a patch if they must survive a rebuild.
+# Apply the Proton macOS patch series (patches/proton-wine/, base 81d78e4). The reset arg
+# cleans the source first (`git checkout -- .` + `git clean -fdq`), so add-file patches
+# (msync.c, server/msync.c, …) re-apply cleanly on a forced rebuild. `git clean -fdq`
+# removes untracked NON-ignored files — patch leftovers, the generated inputs, and stray
+# dist/.cache — but KEEPS gitignored paths: build/ (intentional — incremental compiles)
+# and configure. NOTE: also discards uncommitted proton-wine edits (e.g. local msync
+# diagnostics) — commit them or capture as a patch to survive a rebuild.
 apply_patches "$WINE_SRC" "$PROJECT_DIR/patches/proton-wine" Wine reset
+
+# Wine's generator bootstrap needs autotools + python3 + perl (Wine's own generators).
+for t in autoreconf python3 perl; do
+    command -v "$t" >/dev/null 2>&1 || {
+        echo "ERROR: $t not found (brew install autoconf; python3/perl ship with macOS/brew)" >&2
+        exit 1
+    }
+done
+
+# Regenerate Wine's generated build inputs. The clean removed the non-ignored ones
+# (include/config.h.in, include/wine/vulkan.h, server_protocol.h, syscall headers);
+# configure is gitignored so the clean KEPT it — remove it too so autoreconf regenerates
+# it fresh from the current configure.ac. All generators are offline (vk.xml is vendored).
+# These are build artifacts, deliberately kept OUT of git (committing them caused the past
+# base-drift). build/ (also gitignored) is intentionally preserved for incremental builds.
+echo "=== Regenerating Wine build inputs (generator bootstrap) ==="
+rm -f "$WINE_SRC/configure"
+( cd "$WINE_SRC" && \
+    tools/make_requests && \
+    python3 dlls/winevulkan/make_vulkan && \
+    tools/make_specfiles && \
+    autoreconf -f )
 
 export_homebrew_mirrors
 
@@ -33,7 +55,9 @@ X86_PREFIX=$(arch -x86_64 "$X86_BREW" --prefix)
 # the libraries linked into x86_64 Wine (freetype, gnutls, sdl2, gettext/libintl,
 # MoltenVK) must be x86_64, and those are picked up via PKG_CONFIG_PATH below.
 
-# Incremental by default; run `make clean-proton` for a clean rebuild.
+# The reset above KEEPS the gitignored build/ tree, so configure+make below are
+# incremental (ccache further speeds recompiles). `make clean-proton` (rm -rf build/)
+# for a true from-scratch build tree.
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
