@@ -55,6 +55,14 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
             Logger.wineKit.error(
               "Failed to load settings for bottle `\(metadataURL.path(percentEncoded: false))`: \(error)"
             )
+            // Individual stale/malformed fields now fall back on their own (see
+            // `decodeResilient`), so reaching here means the file is corrupt as a
+            // whole (truncated, not a plist). Preserve it before the reset-to-
+            // defaults below gets persisted over it by the first settings change,
+            // so a transient/partial read can't silently erase the real settings.
+            let backup = metadataURL.appendingPathExtension("corrupt")
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.copyItem(at: metadataURL, to: backup)
             self.settings = BottleSettings()
         }
 

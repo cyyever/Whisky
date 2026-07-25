@@ -20,6 +20,31 @@ import Foundation
 import os.log
 import SemanticVersion
 
+/// Decode-time resilience for the bottle-settings structs below.
+///
+/// Every settings field has a sensible default, and the loader is meant to fall
+/// back to it when a value can't be read — the migration comments throughout
+/// (`esync → msync`, `win7 → win10`) depend on that. But `decodeIfPresent` only
+/// tolerates an *absent* key: a key that is *present but malformed* — a stale
+/// on-disk format, a removed enum case, a truncated write, a hand-edit — makes
+/// it throw. One field throwing fails the entire `init(from:)`, and the bottle
+/// loader reacts by resetting the WHOLE bottle to defaults and persisting that,
+/// silently wiping unrelated fields (name, pins, proxy). These helpers keep the
+/// blast radius to the single bad field: it falls back to its default while
+/// every other field decodes normally.
+private extension KeyedDecodingContainer {
+    /// The value for `key`, or `defaultValue` if the key is absent OR its stored
+    /// value is malformed/unrecognized. Never throws for a field-level problem.
+    func decodeResilient<T: Decodable>(_ type: T.Type, forKey key: Key, default defaultValue: T) -> T {
+        (try? decode(type, forKey: key)) ?? defaultValue
+    }
+
+    /// Optional value for `key`: `nil` when the key is absent or its value is malformed.
+    func decodeResilient<T: Decodable>(_ type: T.Type, forKey key: Key) -> T? {
+        try? decode(type, forKey: key)
+    }
+}
+
 public struct PinnedProgram: Codable, Hashable, Equatable {
     public var name: String
     public var url: URL?
@@ -38,9 +63,9 @@ public struct PinnedProgram: Codable, Hashable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
-        self.url = try container.decodeIfPresent(URL.self, forKey: .url)
-        self.removable = try container.decodeIfPresent(Bool.self, forKey: .removable) ?? false
+        self.name = container.decodeResilient(String.self, forKey: .name, default: "")
+        self.url = container.decodeResilient(URL.self, forKey: .url)
+        self.removable = container.decodeResilient(Bool.self, forKey: .removable, default: false)
     }
 }
 
@@ -53,9 +78,9 @@ public struct BottleInfo: Codable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Bottle"
-        self.pins = try container.decodeIfPresent([PinnedProgram].self, forKey: .pins) ?? []
-        self.blocklist = try container.decodeIfPresent([URL].self, forKey: .blocklist) ?? []
+        self.name = container.decodeResilient(String.self, forKey: .name, default: "Bottle")
+        self.pins = container.decodeResilient([PinnedProgram].self, forKey: .pins, default: [])
+        self.blocklist = container.decodeResilient([URL].self, forKey: .blocklist, default: [])
     }
 }
 
@@ -104,25 +129,24 @@ public struct BottleWineConfig: Codable, Equatable {
 
     public init() {}
 
-    // swiftlint:disable line_length
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.wineVersion = try container.decodeIfPresent(SemanticVersion.self, forKey: .wineVersion) ?? Self.defaultWineVersion
+        self.wineVersion = container.decodeResilient(
+            SemanticVersion.self, forKey: .wineVersion, default: Self.defaultWineVersion)
         // Steam requires Windows 10+ (dropped 7/8/8.1 in Jan 2024); an old bottle
         // pinned to XP/7/8/8.1 would break the Steam client, so migrate it to win10
         // — the same decode-migration shape as the `.esync → .msync` fix below.
         // Keeps the Picker (which only offers win10/win11) able to represent every bottle.
-        let winVersion = try container.decodeIfPresent(WinVersion.self, forKey: .windowsVersion) ?? .win10
+        let winVersion = container.decodeResilient(WinVersion.self, forKey: .windowsVersion, default: .win10)
         self.windowsVersion = WinVersion.selectable.contains(winVersion) ? winVersion : .win10
         // esync can't exist on macOS (no eventfd); an old `.esync` selection meant
         // "fast-sync wanted", so migrate it to msync — the working macOS backend.
         // Keeps the Picker (which only offers none/msync) able to represent every bottle.
-        let sync = try container.decodeIfPresent(EnhancedSync.self, forKey: .enhancedSync) ?? .msync
+        let sync = container.decodeResilient(EnhancedSync.self, forKey: .enhancedSync, default: .msync)
         self.enhancedSync = sync == .esync ? .msync : sync
-        self.avxEnabled = try container.decodeIfPresent(Bool.self, forKey: .avxEnabled) ?? false
-        self.followSystemProxy = try container.decodeIfPresent(Bool.self, forKey: .followSystemProxy) ?? true
+        self.avxEnabled = container.decodeResilient(Bool.self, forKey: .avxEnabled, default: false)
+        self.followSystemProxy = container.decodeResilient(Bool.self, forKey: .followSystemProxy, default: true)
     }
-    // swiftlint:enable line_length
 }
 
 public struct BottleMetalConfig: Codable, Equatable {
@@ -139,12 +163,11 @@ public struct BottleMetalConfig: Codable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.metalHud = try container.decodeIfPresent(Bool.self, forKey: .metalHud) ?? false
-        self.dxrEnabled = try container.decodeIfPresent(Bool.self, forKey: .dxrEnabled) ?? false
-        self.dxmt = try container.decodeIfPresent(Bool.self, forKey: .dxmt) ?? true
-        self.hideVirtualAudioDevices = try container.decodeIfPresent(
-            Bool.self, forKey: .hideVirtualAudioDevices
-        ) ?? true
+        self.metalHud = container.decodeResilient(Bool.self, forKey: .metalHud, default: false)
+        self.dxrEnabled = container.decodeResilient(Bool.self, forKey: .dxrEnabled, default: false)
+        self.dxmt = container.decodeResilient(Bool.self, forKey: .dxmt, default: true)
+        self.hideVirtualAudioDevices = container.decodeResilient(
+            Bool.self, forKey: .hideVirtualAudioDevices, default: true)
     }
 }
 
@@ -162,15 +185,16 @@ public struct BottleSettings: Codable, Equatable {
         self.metalConfig = BottleMetalConfig()
     }
 
-    // swiftlint:disable line_length
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.fileVersion = try container.decodeIfPresent(SemanticVersion.self, forKey: .fileVersion) ?? Self.defaultFileVersion
-        self.info = try container.decodeIfPresent(BottleInfo.self, forKey: .info) ?? BottleInfo()
-        self.wineConfig = try container.decodeIfPresent(BottleWineConfig.self, forKey: .wineConfig) ?? BottleWineConfig()
-        self.metalConfig = try container.decodeIfPresent(BottleMetalConfig.self, forKey: .metalConfig) ?? BottleMetalConfig()
+        self.fileVersion = container.decodeResilient(
+            SemanticVersion.self, forKey: .fileVersion, default: Self.defaultFileVersion)
+        self.info = container.decodeResilient(BottleInfo.self, forKey: .info, default: BottleInfo())
+        self.wineConfig = container.decodeResilient(
+            BottleWineConfig.self, forKey: .wineConfig, default: BottleWineConfig())
+        self.metalConfig = container.decodeResilient(
+            BottleMetalConfig.self, forKey: .metalConfig, default: BottleMetalConfig())
     }
-    // swiftlint:enable line_length
 
     /// The name of this bottle
     public var name: String {
