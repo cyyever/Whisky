@@ -117,15 +117,23 @@ public class Wine {
         await Steam.configure(in: bottle)
     }
 
-    /// Execute a `wine start /unix {url}` command returning the output result
+    /// Execute a `wine start /unix {url}` command returning the output result.
+    ///
+    /// `start` is non-blocking by default: it launches the program and returns
+    /// immediately, so this call resolves while the program is still running
+    /// (correct for games). Pass `waitForExit: true` to insert `/wait` so the
+    /// call resolves only once the launched program exits — needed for
+    /// installers, where callers act on the *result* of the install.
     public static func runProgram(
-        at url: URL, args: [String] = [], bottle: Bottle, environment: [String: String] = [:]
+        at url: URL, args: [String] = [], bottle: Bottle,
+        environment: [String: String] = [:], waitForExit: Bool = false
     ) async throws {
         await prepareForLaunch(bottle: bottle)
 
+        let startArgs = waitForExit ? ["start", "/wait", "/unix"] : ["start", "/unix"]
         for await _ in try Self.runWineProcess(
             name: url.lastPathComponent,
-            args: ["start", "/unix", url.path(percentEncoded: false)] + args,
+            args: startArgs + [url.path(percentEncoded: false)] + args,
             bottle: bottle, environment: environment
         ) { }
     }

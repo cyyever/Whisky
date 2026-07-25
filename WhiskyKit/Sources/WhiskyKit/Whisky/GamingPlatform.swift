@@ -91,7 +91,9 @@ public enum GamingPlatformInstaller {
     /// installer and per exe/msi, and a visible wizard is the robust common path.
     public static func install(_ platform: GamingPlatform, in bottle: Bottle) async throws {
         let installer = try await download(platform, in: bottle)
-        try await Wine.runProgram(at: installer, bottle: bottle)
+        // waitForExit so we only configure / report done once the installer has
+        // actually finished — `start` alone is non-blocking.
+        try await Wine.runProgram(at: installer, bottle: bottle, waitForExit: true)
         if platform.id == GamingPlatform.steam.id {
             await Steam.configure(in: bottle)
         }
@@ -109,31 +111,56 @@ public enum GamingPlatformInstaller {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let dest = dir.appending(path: platform.installerFilename)
 
-        // Reuse a prior non-empty download (installers are large; vendors are slow).
-        if let size = try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 0 {
+        // Reuse a prior download only if it still looks like a real installer.
+        // A truncated transfer or an HTTP-200 HTML error/redirect body would
+        // otherwise be cached forever and reused on every retry — validate the
+        // magic bytes so a corrupt cache is re-fetched instead.
+        if isValidInstaller(dest) {
             Logger.wineKit.info("Reusing cached \(platform.name) installer at \(dest.path)")
             return dest
         }
+        try? FileManager.default.removeItem(at: dest)
 
         Logger.wineKit.info("Downloading \(platform.name) installer from \(platform.installerURL)")
         let (tempURL, response) = try await URLSession.shared.download(from: platform.installerURL)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            try? FileManager.default.removeItem(at: tempURL)
             throw GamingPlatformError.badResponse(platform: platform.name, status: http.statusCode)
         }
-        // Move into place atomically (replace any zero-byte leftover).
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: tempURL, to: dest)
+        // A 200 can still carry an HTML error page — reject anything that isn't a
+        // PE (.exe: "MZ") or MSI compound file (0xD0CF11E0).
+        guard isValidInstaller(dest) else {
+            try? FileManager.default.removeItem(at: dest)
+            throw GamingPlatformError.corruptDownload(platform: platform.name)
+        }
         return dest
+    }
+
+    /// True if `url` exists and begins with an installer magic number: "MZ" for a
+    /// PE `.exe`, or the OLE compound-file signature for an `.msi`.
+    private static func isValidInstaller(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 8), !head.isEmpty else { return false }
+        let peMagic: [UInt8] = [0x4D, 0x5A]                                  // "MZ" (PE/exe)
+        let oleMagic: [UInt8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1] // MSI compound file
+        let bytes = [UInt8](head)
+        return bytes.starts(with: peMagic) || bytes.starts(with: oleMagic)
     }
 }
 
 public enum GamingPlatformError: LocalizedError {
     case badResponse(platform: String, status: Int)
+    case corruptDownload(platform: String)
 
     public var errorDescription: String? {
         switch self {
         case let .badResponse(platform, status):
             return "Failed to download the \(platform) installer (HTTP \(status))."
+        case let .corruptDownload(platform):
+            return "The downloaded \(platform) installer was not a valid program — please try again."
         }
     }
 }

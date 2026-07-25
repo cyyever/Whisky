@@ -108,7 +108,9 @@ echo "=== Done ==="
 # Multi-arch Wine (--enable-archs=i386,x86_64) emits the PE under an
 # <arch>-windows/ subdir; older layouts drop it directly in the tests dir.
 # Report every ntdll_test.exe / kernel32_test.exe found under the two dirs.
-found_any=0
+# test-msync.sh needs BOTH PEs, so require both — reporting success when only
+# one built would just make test-msync.sh abort later on the missing one.
+missing=0
 for name in \
     "dlls/ntdll/tests/ntdll_test.exe" \
     "dlls/kernel32/tests/kernel32_test.exe"; do
@@ -117,15 +119,15 @@ for name in \
     hits=$(find "$base_dir" -name "$exe_name" 2>/dev/null || true)
     if [ -n "$hits" ]; then
         echo "$hits" | while read -r h; do echo "  built: $h"; done
-        found_any=1
     else
         echo "  MISSING: $exe_name under $base_dir" >&2
+        missing=$((missing + 1))
     fi
 done
 echo ""
-if [ "$found_any" = 1 ]; then
+if [ "$missing" -eq 0 ]; then
     echo "Next: scripts/test-msync.sh [bottle]  (runs sync tests, WINEMSYNC=1 vs =0)"
 else
-    echo "ERROR: no test PEs were produced." >&2
+    echo "ERROR: $missing test PE(s) missing — both are required." >&2
     exit 1
 fi
