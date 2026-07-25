@@ -39,8 +39,7 @@ make app / make run  # build Whisky app / build and launch
 5. Open Whisky, create bottle, install Steam, log in — the rest is automatic: Steam launch installs the webhelper wrapper, auto-drops the right-arch DXVK `d3d9.dll` next to d3d9 games' executables (PE import scan) and sets `d3d9=native,builtin`. Re-run `make proton` after rebuilding KosmicKrisp to re-assert the loader swap.
 
 ## Key paths
-- **Build source is Proton** (`vendor/proton-wine` + `patches/proton-wine/`, see Proton section) — `make proton` is the only Wine build. The legacy Whisky-Wine below is **deprecated / no longer built**.
-- ~~Legacy~~ Wine submodule: `vendor/wine` (branch `dxmt-fixes-11.13`: wine-11.13) and its `patches/wine/` (`0001`/`0002` base-commit mirrors; `0003` kernelbase IFEO Debugger, `0004` `WINE_NX_COMPAT`, `0005`–`0006` winemac Metal view/borderless, `0007` coreaudio hide virtual devices) are **no longer applied by any build** — their macOS-capability equivalents live in `patches/proton-wine/` (`0009`–`0012` etc.). Kept only as reference; safe to remove the submodule + `patches/wine/` to fully excise legacy.
+- **Build source is Proton** (`vendor/proton-wine` + `patches/proton-wine/`, see Proton section) — `make proton` is the only Wine build. Legacy Whisky-Wine 11.13 (`vendor/wine` submodule + `patches/wine/`) has been **removed entirely**; its macOS-capability patches are folded into `patches/proton-wine/` (`0009`≈old `0002`+`0005`+`0006`, `0010`≈`0003`, `0011`≈`0004`, `0012`≈`0007`; the old rundll32 WS_VISIBLE patch is obsolete — proton 11.0 has no wineboot deadlock).
 - x86 Homebrew: `vendor/homebrew-x86/` (gitignored); build scripts in `scripts/`
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`; bottles: `~/Library/Containers/com.isaacmarovitz.Whisky/Bottles/`
 

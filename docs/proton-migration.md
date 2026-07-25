@@ -77,8 +77,7 @@ msync-refinement patches were folded into `0008`.
 - `0007-rundll32-remove-ws-visible-wineboot-hang` — **DROPPED 2026-07-24 (obsolete).**
   Verified `wineboot --init` completes rc=0 in ~16s on a fresh prefix with upstream
   `WS_VISIBLE` (twice); the winemac deadlock is gone in proton-wine 11.0. Leaves a gap
-  at 0007. The Whisky-Wine `patches/wine/0001` variant is left in place pending its own
-  re-verification on the 11.13 stack.
+  at 0007.
 
 ### 0008 — msync (single consolidated patch)
 - `0008-macos-msync` — the big one (**~55 files, ONE patch**, incl. regenerated protocol
@@ -112,10 +111,12 @@ msync-refinement patches were folded into `0008`.
 - `0013-macos-server-fsync-delinux` — de-linux the `server/fsync.c` stubs for the macOS
   build.
 
-Mapping to the Whisky-Wine patch set: `0009`≈`patches/wine/0002`+`0005`,
-`0010`≈`patches/wine/0003`, `0011`≈`patches/wine/0004`, `0012`≈`patches/wine/0007`.
-`0008`/`0013` (msync + fsync) and `0001`–`0006` are Proton-specific (WineHQ 11.13 already
-had msync-free sync and none of Proton's extra unixlibs).
+Provenance — these were ported from the now-removed Whisky-Wine `patches/wine/` set:
+`0009`≈old `0002`+`0005`+`0006` (macdrv export + Metal view position + borderless
+fullscreen-snap), `0010`≈`0003`, `0011`≈`0004`, `0012`≈`0007`. The old rundll32
+WS_VISIBLE patch was obsolete (dropped above). `0008`/`0013` (msync + fsync) and
+`0001`–`0006` are Proton-specific (WineHQ 11.13 already had msync-free sync and none of
+Proton's extra unixlibs).
 
 ### Mixed waits (folded into 0008)
 msync (like esync) cannot natively wait on a set mixing fast msync objects
