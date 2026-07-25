@@ -1,0 +1,25 @@
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -2615,13 +2615,22 @@
+         {
+             NTSTATUS ret = msync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
+             if (ret != STATUS_NOT_IMPLEMENTED)
++            {
++                /* An expired zero-object wait yields STATUS_TIMEOUT, but a completed
++                 * alertable NtDelayExecution returns STATUS_SUCCESS -- the server branch
++                 * below maps it likewise; the msync/fsync branches must too. */
++                if (ret == STATUS_TIMEOUT) ret = STATUS_SUCCESS;
+                 return ret;
++            }
+         }
+         if (do_fsync())
+         {
+             NTSTATUS ret = fsync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
+             if (ret != STATUS_NOT_IMPLEMENTED)
++            {
++                if (ret == STATUS_TIMEOUT) ret = STATUS_SUCCESS;
+                 return ret;
++            }
+         }
+         /* Since server_wait will result in an unconditional implicit yield,
+            we never return STATUS_NO_YIELD_PERFORMED */
