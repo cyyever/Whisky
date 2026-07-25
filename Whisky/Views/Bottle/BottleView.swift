@@ -30,6 +30,10 @@ struct BottleView: View {
     @ObservedObject var bottle: Bottle
     @State private var path = NavigationPath()
     @State private var programLoading: Bool = false
+    /// Non-nil while a gaming-platform installer is downloading (shown next to the spinner).
+    @State private var loadingStatus: String?
+    /// Non-nil surfaces an install/run failure in an alert.
+    @State private var installError: String?
 
     private let gridLayout = [GridItem(.adaptive(minimum: 100, maximum: .infinity))]
 
@@ -68,47 +72,54 @@ struct BottleView: View {
                     Button("button.terminal") {
                         bottle.openTerminal()
                     }
-                    Button("button.run") {
-                        let panel = NSOpenPanel()
-                        panel.allowsMultipleSelection = false
-                        panel.canChooseDirectories = false
-                        panel.canChooseFiles = true
-                        panel.allowedContentTypes = [UTType.exe,
-                                                     UTType(exportedAs: "com.microsoft.msi-installer"),
-                                                     UTType(exportedAs: "com.microsoft.bat")]
-                        panel.directoryURL = bottle.url.appending(path: "drive_c")
-                        panel.begin { result in
-                            programLoading = true
-                            Task(priority: .userInitiated) {
-                                if result == .OK {
-                                    if let url = panel.urls.first {
-                                        do {
-                                            if url.pathExtension == "bat" {
-                                                try await Wine.runBatchFile(url: url, bottle: bottle)
-                                            } else {
-                                                try await Wine.runProgram(at: url, bottle: bottle)
-                                            }
-                                        } catch {
-                                            print("Failed to run external program: \(error)")
-                                        }
-                                        programLoading = false
+                    // One entry point for getting a program into the bottle: fetch
+                    // a known gaming platform's installer, or pick a local file.
+                    Menu {
+                        Section("menu.installPlatform") {
+                            ForEach(GamingPlatform.all) { platform in
+                                Button {
+                                    install(platform)
+                                } label: {
+                                    Label {
+                                        Text(verbatim: platform.name)
+                                    } icon: {
+                                        Image(systemName: platform.symbol)
                                     }
-                                } else {
-                                    programLoading = false
                                 }
-                                updateStartMenu()
                             }
                         }
+                        Divider()
+                        Button {
+                            runFileFromPanel()
+                        } label: {
+                            Label("menu.chooseFile", systemImage: "folder")
+                        }
+                    } label: {
+                        Text("button.installOrRun")
                     }
+                    .fixedSize()
                     .disabled(programLoading)
                     if programLoading {
                         Spacer()
                             .frame(width: 10)
+                        if let loadingStatus {
+                            Text(loadingStatus)
+                                .foregroundStyle(.secondary)
+                                .font(.footnote)
+                        }
                         ProgressView()
                             .controlSize(.small)
                     }
                 }
                 .padding()
+            }
+            .alert(
+                "menu.platformInstallFailed",
+                isPresented: Binding(get: { installError != nil }, set: { if !$0 { installError = nil } })
+            ) {
+                Button(role: .cancel) { installError = nil } label: { Text(verbatim: "OK") }
+            } message: {
+                if let installError { Text(installError) }
             }
             .onAppear {
                 updateStartMenu()
@@ -134,6 +145,54 @@ struct BottleView: View {
             }
             .navigationDestination(for: Program.self) { program in
                 ProgramView(program: program)
+            }
+        }
+    }
+
+    /// Download the platform's official installer into the bottle and launch it.
+    private func install(_ platform: GamingPlatform) {
+        programLoading = true
+        loadingStatus = String(
+            format: NSLocalizedString("menu.platformInstalling", comment: ""), platform.name
+        )
+        Task(priority: .userInitiated) {
+            do {
+                try await GamingPlatformInstaller.install(platform, in: bottle)
+            } catch {
+                installError = error.localizedDescription
+            }
+            programLoading = false
+            loadingStatus = nil
+            updateStartMenu()
+        }
+    }
+
+    /// Pick a local `.exe`/`.msi`/`.bat` and run it in the bottle (the classic
+    /// "Run..." flow, folded into the unified install/run menu).
+    private func runFileFromPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [UTType.exe,
+                                     UTType(exportedAs: "com.microsoft.msi-installer"),
+                                     UTType(exportedAs: "com.microsoft.bat")]
+        panel.directoryURL = bottle.url.appending(path: "drive_c")
+        panel.begin { result in
+            guard result == .OK, let url = panel.urls.first else { return }
+            programLoading = true
+            Task(priority: .userInitiated) {
+                do {
+                    if url.pathExtension == "bat" {
+                        try await Wine.runBatchFile(url: url, bottle: bottle)
+                    } else {
+                        try await Wine.runProgram(at: url, bottle: bottle)
+                    }
+                } catch {
+                    installError = error.localizedDescription
+                }
+                programLoading = false
+                updateStartMenu()
             }
         }
     }
