@@ -42,6 +42,12 @@ fi
 # --- submodule ---------------------------------------------------------------
 git -C "$PROJECT_DIR" submodule update --init --recursive vendor/dxmt
 
+# --- out-of-tree DXMT patches (tracked in patches/dxmt/) ----------------------
+# e.g. 0001 releases owned ColorSync CF objects in winemetal (leak fixes). Idempotent:
+# reverse-check-skips already-applied patches. Left applied (submodule stays dirty) —
+# same pattern as build-dxvk.sh; the patch files are the source of truth in main.
+apply_patches "$DXMT_SRC" "$PROJECT_DIR/patches/dxmt" DXMT
+
 # --- zstd link fix -----------------------------------------------------------
 # brew's llvm@15 is built with zstd enabled, so its static libs reference zstd
 # symbols. DXMT's link lists don't include zstd, so inject it. (Idempotent;
@@ -61,12 +67,26 @@ export PATH="$(brew --prefix)/bin:$PATH"   # native meson/ninja/mingw
 # meson resolves the source dir from cwd, so build from inside the DXMT tree.
 cd "$DXMT_SRC"
 
+# Gate out subdirs we don't ship so they never enter the compile graph. These
+# match the current upstream defaults (meson.options), but DXMT has active
+# D3D12/vkd3d WIP (~55 recent commits) that could flip enable_d3d12's default —
+# pin explicitly so a submodule bump can't silently pull the D3D12 subdir (and
+# unused nvapi/nvngx/tests) into the build. Each gates its src/ subdir
+# (src/meson.build).
+DXMT_GATE_OPTS=(
+    -Denable_d3d12=false   # WIP D3D12/vkd3d target — not shipped (DXMT serves D3D11/10/DXGI)
+    -Denable_nvapi=false   # NVIDIA NVAPI shim — irrelevant on Metal/Apple GPUs
+    -Denable_nvngx=false   # NVIDIA NGX/DLSS shim — irrelevant on Metal/Apple GPUs
+    -Denable_tests=false   # unit tests — not needed for the shipped dlls
+)
+
 # --- build 64-bit (PE dlls + x86_64 unixlib) ---------------------------------
 echo "=== Building DXMT (win64) ==="
 rm -rf build
 meson setup --cross-file build-win64.txt \
     -Dnative_llvm_path="$LLVM15" \
     -Dwine_build_path="$WINE_BUILD" \
+    "${DXMT_GATE_OPTS[@]}" \
     build --buildtype release
 meson compile -C build
 
@@ -76,6 +96,7 @@ rm -rf build32
 meson setup --cross-file build-win32.txt \
     -Dnative_llvm_path="$LLVM15" \
     -Dwine_build_path="$WINE_BUILD" \
+    "${DXMT_GATE_OPTS[@]}" \
     build32 --buildtype release
 meson compile -C build32
 
