@@ -1,46 +1,26 @@
 #!/bin/bash
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-WINE_SRC="$PROJECT_DIR/vendor/wine"
-BUILD_DIR="$WINE_SRC/build-x86_64"
-INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
-X86_BREW_HOME="$PROJECT_DIR/vendor/homebrew-x86"
-X86_BREW="$X86_BREW_HOME/bin/brew"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+WINE_SRC="$PROJECT_DIR/vendor/proton-wine"
+BUILD_DIR="$WINE_SRC/build"
 # release (default) strips PE debug info at install time; debug keeps it for
-# winedbg (`make wine-debug`). Compilation always carries -g, so switching
+# winedbg (`make proton-debug`). Compilation always carries -g, so switching
 # modes never invalidates the build tree or ccache — only the install differs.
 WINE_BUILD="${WHISKY_WINE_BUILD:-release}"
 
-echo "=== Building Wine x86_64 from $WINE_SRC ==="
+echo "=== Building Proton (proton-wine) x86_64 from $WINE_SRC ==="
 
-# Apply out-of-tree Wine patches. Patches 0001-0002 mirror the branch's own
-# base commits (already in HEAD); 0003+ are out-of-tree. Reset tracked source to
-# a clean HEAD first so the state is deterministic: the base-commit patches are
-# then detected as already-applied and skipped, while the out-of-tree patches
-# apply fresh. checkout touches only tracked files, so build-x86_64/ is kept.
-PATCH_DIR="$PROJECT_DIR/patches/wine"
-if [ -d "$PATCH_DIR" ]; then
-    git -C "$WINE_SRC" checkout -- .
-    for patch in "$PATCH_DIR"/*.patch; do
-        [ -e "$patch" ] || continue
-        if git -C "$WINE_SRC" apply --reverse --check "$patch" >/dev/null 2>&1; then
-            echo "=== Patch already applied: $(basename "$patch") ==="
-        elif git -C "$WINE_SRC" apply --check "$patch" >/dev/null 2>&1; then
-            echo "=== Applying Wine patch: $(basename "$patch") ==="
-            git -C "$WINE_SRC" apply "$patch"
-        else
-            echo "ERROR: cannot apply $(basename "$patch") (conflict or partial apply)"
-            exit 1
-        fi
-    done
-fi
+# Apply the Proton macOS patch series (patches/proton-wine/, base 81d78e4). Reset
+# tracked source to a clean HEAD first so the state is deterministic: patches
+# already committed into the vendored proton-wine HEAD reverse-check as
+# already-applied and are skipped; any not yet in HEAD apply fresh. checkout
+# touches only tracked files, so build/ is kept. NOTE: this discards uncommitted
+# working-tree edits (e.g. local env-gated msync diagnostics) — commit them to
+# proton-wine's git or capture them as a patch if they must survive a rebuild.
+apply_patches "$WINE_SRC" "$PROJECT_DIR/patches/proton-wine" Wine reset
 
-export HOMEBREW_BREW_GIT_REMOTE=https://mirrors.ustc.edu.cn/brew.git
-export HOMEBREW_CORE_GIT_REMOTE=https://mirrors.ustc.edu.cn/homebrew-core.git
-export HOMEBREW_BOTTLE_DOMAIN=https://mirrors.ustc.edu.cn/homebrew-bottles
-export HOMEBREW_API_DOMAIN=https://mirrors.ustc.edu.cn/homebrew-bottles/api
+export_homebrew_mirrors
 
 if [ ! -f "$X86_BREW" ]; then
     echo "ERROR: x86_64 Homebrew not found. Run scripts/setup-x86-brew.sh first."
@@ -53,7 +33,7 @@ X86_PREFIX=$(arch -x86_64 "$X86_BREW" --prefix)
 # the libraries linked into x86_64 Wine (freetype, gnutls, sdl2, gettext/libintl,
 # MoltenVK) must be x86_64, and those are picked up via PKG_CONFIG_PATH below.
 
-# Incremental by default; run `make clean-wine` for a clean rebuild.
+# Incremental by default; run `make clean-proton` for a clean rebuild.
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
@@ -61,11 +41,12 @@ ARM_BREW_PREFIX="$(brew --prefix)"
 # bison is keg-only (macOS ships an old one), so its keg bin must be on PATH explicitly.
 CLEAN_PATH="$ARM_BREW_PREFIX/opt/bison/bin:$ARM_BREW_PREFIX/bin:$X86_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# Use ccache if available
+# ccache on by default; WHISKY_CCACHE=0 disables it (release/reproducible builds
+# or to rule out a stale-object bug) — see whisky_ccache_on in lib/common.sh.
 CC_CMD="gcc"
 CXX_CMD="g++"
-if command -v ccache &>/dev/null; then
-    echo "=== Using ccache ==="
+if whisky_ccache_on; then
+    echo "=== Using ccache (WHISKY_CCACHE=0 to disable) ==="
     CC_CMD="ccache gcc"
     CXX_CMD="ccache g++"
 fi
@@ -96,7 +77,7 @@ arch -x86_64 env -i \
         --without-pcap \
         --without-pcsclite
 
-NCPU=$(sysctl -n hw.ncpu)
+NCPU=$(whisky_ncpu)
 echo "=== Building Wine (x86_64) with $NCPU cores ==="
 arch -x86_64 env -i \
     HOME="$HOME" \
@@ -114,7 +95,7 @@ WINE_INSTALL_ROOT=$(dirname "$(dirname "$WINE_INSTALL_BIN")")
 # --- Trim the install --------------------------------------------------------
 # winegcc import libs (.a, ~97 MB) and man pages are dev-only. PE debug
 # sections are ~2/3 of lib/wine and only useful to winedbg — stripped in
-# release installs, kept by `make wine-debug`. (.tlb/.msstyles are data, not
+# release installs, kept by `make proton-debug`. (.tlb/.msstyles are data, not
 # PE — excluded.)
 find "$WINE_INSTALL_ROOT/lib/wine" -name '*.a' -delete
 rm -rf "$WINE_INSTALL_ROOT/share/man"
@@ -170,7 +151,7 @@ cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/
 # keg uses "libvulkan.1.dylib" instead. Install the real Khronos loader at BOTH
 # names so ICD discovery picks KosmicKrisp up either way. This lives here (not
 # in build-dxvk.sh) because the Wine/lib bundling above just re-copied the
-# brew dylibs — asserting the swap right after keeps every `make wine` correct.
+# brew dylibs — asserting the swap right after keeps every `make proton` correct.
 # Skipped entirely when the KosmicKrisp artifacts are absent (stock MoltenVK
 # stays in place).
 KK_DYLIB="$PROJECT_DIR/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib"

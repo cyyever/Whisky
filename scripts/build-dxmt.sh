@@ -5,18 +5,17 @@
 # via Metal (wined3d on macOS caps at FL10).
 #
 # Requires: full Xcode (Metal toolchain), meson, ninja, mingw-w64, and the x86
-# Homebrew (for x86_64 llvm@15). Run `make wine` first (needs the Wine build dir).
+# Homebrew (for x86_64 llvm@15). Run `make proton` first (needs the Wine build dir).
 #
 set -euo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+whisky_ccache_guard   # honor WHISKY_CCACHE=0 for the meson/clang build
 DXMT_SRC="$PROJECT_DIR/vendor/dxmt"
-X86_BREW="$PROJECT_DIR/vendor/homebrew-x86/bin/brew"
-INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
 # WINE_BUILD (Wine build tree for headers) and WINE_LIB (install target) default
-# to the Whisky Wine, but can be overridden to build DXMT against another Wine
-# (e.g. Proton): DXMT_WINE_BUILD=/path/to/proton/build DXMT_WINE_LIB=/path/Wine/lib/wine
-WINE_BUILD="${DXMT_WINE_BUILD:-$PROJECT_DIR/vendor/wine/build-x86_64}"
+# to the Proton build (the shipped backend); override to build DXMT against a
+# different Wine: DXMT_WINE_BUILD=/path/to/build DXMT_WINE_LIB=/path/Wine/lib/wine
+WINE_BUILD="${DXMT_WINE_BUILD:-$PROJECT_DIR/vendor/proton-wine/build}"
 WINE_LIB="${DXMT_WINE_LIB:-$INSTALL_DIR/Wine/lib/wine}"
 
 # --- prerequisites -----------------------------------------------------------
@@ -26,11 +25,9 @@ if ! xcrun -f metal >/dev/null 2>&1; then
     echo "  xcodebuild -downloadComponent MetalToolchain" >&2
     exit 1
 fi
-for t in meson ninja x86_64-w64-mingw32-gcc; do
-    command -v "$t" >/dev/null 2>&1 || { echo "ERROR: $t not found (brew install meson ninja mingw-w64)" >&2; exit 1; }
-done
-[ -d "$WINE_BUILD" ] || { echo "ERROR: Wine build dir missing ($WINE_BUILD). Run 'make wine' first." >&2; exit 1; }
-[ -d "$WINE_LIB/x86_64-windows" ] || { echo "ERROR: Wine not installed. Run 'make wine' first." >&2; exit 1; }
+require_tools meson ninja x86_64-w64-mingw32-gcc
+[ -d "$WINE_BUILD" ] || { echo "ERROR: Wine build dir missing ($WINE_BUILD). Run 'make proton' first." >&2; exit 1; }
+[ -d "$WINE_LIB/x86_64-windows" ] || { echo "ERROR: Wine not installed. Run 'make proton' first." >&2; exit 1; }
 
 X86_PREFIX="$(arch -x86_64 "$X86_BREW" --prefix)"
 LLVM15="$X86_PREFIX/opt/llvm@15"

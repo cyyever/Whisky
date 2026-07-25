@@ -38,6 +38,7 @@ opt_in_rules:
 excluded:
   - .build
   - WhiskyKit/.build
+  - build          # Xcode/SPM build output (build/cmd/SourcePackages checkouts etc.)
   - vendor
 
 file_length:

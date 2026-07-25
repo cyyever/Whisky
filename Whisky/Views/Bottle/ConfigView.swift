@@ -92,7 +92,8 @@ struct ConfigView: View {
                 }
                 Picker("config.enhancedSync", selection: $bottle.settings.enhancedSync) {
                     Text("config.enhancedSync.none").tag(EnhancedSync.none)
-                    Text("config.enhacnedSync.esync").tag(EnhancedSync.esync)
+                    // esync omitted: macOS has no eventfd, so esync can't exist here.
+                    // The .esync enum case is kept only for backward decode of old bottles.
                     Text("config.enhacnedSync.msync").tag(EnhancedSync.msync)
                 }
                 SettingItemView(title: "config.dpi", loadingState: dpiConfigLoadingState) {

@@ -49,4 +49,4 @@ curl -s "$API/issues/14209" | $PY -c 'import json,sys; d=json.load(sys.stdin); p
 
 echo
 echo "When geometryShader flips true: git submodule update --remote vendor/mesa;"
-echo "scripts/build-kosmickrisp-x86.sh; make wine; tests/d3d12/run.sh"
+echo "scripts/build-kosmickrisp-x86.sh; make proton; tests/d3d12/run.sh"

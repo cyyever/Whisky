@@ -7,10 +7,10 @@ virtual-device hiding, `WINE_NX_COMPAT` — while keeping D3D9/10/11 all working
 Proton ships Valve's game fixes, media-converter, `amd_ags`, fsync, and a maintained
 tree that plain WineHQ 11.13 lacks.
 
-## Status (2026-07-24 — Proton is the shipped default backend; Steam logs in fully under msync)
-- Proton lives **side-by-side** at `Libraries/WineProton` (canonical `Libraries/Wine`
-  untouched). During bring-up it was also live-swapped into `Libraries/Wine` with the
-  Whisky Wine backed up at `…/Libraries/Wine.whisky-bak`.
+## Status (Proton is the shipped, single backend; Steam logs in fully under msync)
+- Proton is laid **directly over** `Libraries/Wine` — the single shipped backend. The
+  `WineBackend` enum and the side-by-side `Libraries/WineProton` plumbing that existed
+  during bring-up are gone; legacy Whisky-Wine 11.13 (`vendor/wine`) is removed entirely.
 - Built x86_64, runs under Rosetta 2; DXMT installed on top of the Proton build.
   Reports `wine-11.0`.
 - **Steam logs in fully.** With the minimal-msync config Steam boots → CEF webhelper →
@@ -19,21 +19,16 @@ tree that plain WineHQ 11.13 lacks.
   `WINEMSYNC=1` + `WINEMSYNC_NO_ANON_AUTOEVENT=1` (anon auto-reset events → server-sync,
   everything else on msync — a workaround lever; the residual full-msync spin is not
   reliably root-caused, see "Steam on Proton"), `PROTON_DISABLE_LSTEAMCLIENT=1`,
-  Follow-System-Proxy OFF, and msync-only (`WINEESYNC=0` — macOS has no eventfd).
-- Source tree `vendor/proton-wine/` is **gitignored** (like `vendor/wine`), tag
-  `proton-wine-11.0-…`. Tracked in main: `patches/proton-wine/` (**14-patch series**) +
-  `scripts/install-proton.sh`; `scripts/build-dxmt.sh` and `scripts/build-wine-x86.sh`
-  gained env-var / source-reset hooks.
-- **App wiring — Proton locked as default**: `BottleSettings.WineBackend` defaults to
-  `.proton` (struct default + decode fallback); the `ConfigView` backend selector is
-  removed. `.whiskyWine` (legacy Wine 11.13) stays in the enum for fallback but is not
-  user-selectable. `Wine.wineBinary(for:)`/`binFolder(for:)` resolve per bottle;
-  `WhiskyWineInstaller.protonBinFolder` prefers a side-by-side `Libraries/WineProton`,
-  else falls back to `Libraries/Wine` (works whether Proton is side-by-side or laid over
-  `Libraries/Wine`). `PROTON_DISABLE_LSTEAMCLIENT=1` is wired into `Wine.swift`.
-- Not yet done: no version-plist/appcast switch (end-user shipping), no committed
-  submodule pin for the Proton source. Legacy Whisky-Wine 11.13 remains only as a
-  non-user-selectable fallback backend.
+  Follow-System-Proxy OFF, and msync-only (no eventfd on macOS, so WINEESYNC is unset).
+- Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
+  in main: `patches/proton-wine/` (**14-patch series**) + `scripts/build-proton-x86.sh`
+  (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
+  `scripts/build-dxmt.sh` defaults `DXMT_WINE_BUILD` to `vendor/proton-wine/build`.
+- **App wiring**: single backend, no selector. `BottleSettings` has no `WineBackend`;
+  `Wine.wineBinary(for:)`/`binFolder(for:)` resolve to `WhiskyWineInstaller.binFolder`
+  (`Libraries/Wine/bin`). `PROTON_DISABLE_LSTEAMCLIENT=1` is wired into `Wine.swift`.
+  `BottleWineConfig.enhancedSync` defaults to `.msync`; a legacy `.esync` bottle is
+  decode-migrated to `.msync`.
 
 ## The msync startup crash (root cause)
 Proton's `wineserver` crashed immediately at bottle init (0 files landed in
@@ -226,37 +221,46 @@ source of truth):
   (`http_proxy=http://127.0.0.1:9910`) because geph registers a macOS system proxy; that
   HTTP proxy **breaks Steam's CM** (WSS → 403) and the CM is directly reachable anyway.
   (The bottle's internal `ProxyEnable` registry is separate; keep both off.)
-- **msync-only (`WINEESYNC=0`).** macOS has no eventfd for esync. Resolved: `BottleSettings`
-  now sets `WINEESYNC=0` for the Proton backend while keeping the DXMT `WINEESYNC=1` "lie"
-  (`lid3dshared.dylib` esync-detection) for the legacy Whisky-Wine backend.
+- **msync-only (no eventfd on macOS → esync can't exist).** Resolved: nothing on the
+  stack reads WINEESYNC (no `esync.c` in the wine tree; DXMT doesn't read it — verified
+  by binary scan), so `BottleSettings` sets only `WINEMSYNC=1` and leaves WINEESYNC unset
+  (the env dict fully replaces the parent, so unset ≡ 0). (There is no "DXMT esync-detection
+  lie" — that was a myth; no such `lid3dshared.dylib` exists.)
 - **`PROTON_DISABLE_LSTEAMCLIENT=1`** (wired into `Wine.swift`).
 - CLI launch needs `whisky steam-fix <bottle>` first.
 
-## scripts/install-proton.sh
-Installs `vendor/proton-wine/build` into a self-contained `Wine/` dir (default
-`INSTALL_DIR=vendor/proton-wine/dist`), mirroring `build-wine-x86.sh`'s install:
+## scripts/build-proton-x86.sh (was install-proton.sh + build-wine-x86.sh)
+`make proton` runs `scripts/build-proton-x86.sh`, the single Proton build: it resets
+`vendor/proton-wine` tracked source to HEAD, (reverse-check-)applies
+`patches/proton-wine/*`, configures + builds x86_64 (WoW64), then installs into
+`Libraries/Wine` — the single shipped backend. Install steps:
 - `make install DESTDIR=` into a tmp tree under `arch -x86_64`, drop `.a` import libs
-  and `share/man`, copy `bin`/`lib`/`share`.
+  and `share/man`, PE-strip in release (`WHISKY_WINE_BUILD=debug` keeps debug info),
+  copy `bin`/`lib`/`share`.
 - Bundle x86_64 dylibs (freetype, sdl2, molten-vk, gnutls, gettext, our
   `vendor/ffmpeg-x86` libs), materializing brew link-farm symlinks.
 - **KosmicKrisp loader swap**: install the Khronos Vulkan loader as BOTH
   `Wine/lib/libMoltenVK.dylib` and `Wine/lib/libvulkan.1.dylib`; drop the ICD manifest
-  to `~/.local/share/vulkan/icd.d/` (same wiring as `build-wine-x86.sh`).
+  to `~/.local/share/vulkan/icd.d/`.
 - `install_name_tool -add_rpath '@loader_path/../..'` on every `x86_64-unix/*.so`.
-- Append `[Drivers] Graphics=mac` to `share/wine/wine.inf`; symlink `wine64 → wine`.
-- **`INSTALL_TO_WHISKY=1`** lays the result into `Libraries/WineProton` (side-by-side with
-  `Libraries/Wine`, the legacy fallback that `Wine.binFolder(for:)` resolves to for a
-  `.whiskyWine` bottle); or `cp -R "$INSTALL_DIR/Wine" …/Libraries/Wine` to replace outright.
+- Append `[Drivers] Graphics=mac` to `share/wine/wine.inf`; symlink `wine64 → wine`;
+  write `WhiskyWineVersion.plist`.
+
+(The old `install-proton.sh` — which assumed a pre-built tree and had an
+`INSTALL_TO_WHISKY=1` side-by-side `Libraries/WineProton` option — was folded into
+`build-proton-x86.sh` and removed. Proton now installs straight over `Libraries/Wine`.)
 
 ## DXMT against Proton — scripts/build-dxmt.sh parameterization
-`build-dxmt.sh` now reads two env vars (defaulting to the Whisky Wine):
-- `DXMT_WINE_BUILD` — Wine build tree for headers (default `vendor/wine/build-x86_64`).
+`build-dxmt.sh` reads two env vars, both **defaulting to the Proton build** (the
+shipped backend):
+- `DXMT_WINE_BUILD` — Wine build tree for headers (default `vendor/proton-wine/build`).
 - `DXMT_WINE_LIB` — install target (default `…/Libraries/Wine/lib/wine`).
 
-Build DXMT against Proton with:
+The defaults are correct for the normal `make dxmt`; override only to build DXMT
+against a *different* Wine tree:
 ```
-DXMT_WINE_BUILD=vendor/proton-wine/build \
-DXMT_WINE_LIB=<ProtonInstall>/Wine/lib/wine \
+DXMT_WINE_BUILD=<other>/build \
+DXMT_WINE_LIB=<OtherInstall>/Wine/lib/wine \
 scripts/build-dxmt.sh
 ```
 Everything else (LLVM 15 pin, zstd link fix, win64+win32 PE dlls, `winemetal.so`

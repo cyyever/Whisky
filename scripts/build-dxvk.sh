@@ -12,40 +12,20 @@ set -e
 # Requires: ARM brew mingw-w64 + meson + ninja. The ~/.local/bin meson has a
 # broken interpreter — keep it off PATH.
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+whisky_ccache_guard   # honor WHISKY_CCACHE=0 for the meson build
 DXVK_SRC="$PROJECT_DIR/vendor/dxvk"
-INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
 
 export PATH="/opt/homebrew/bin:/usr/bin:/bin"
 
-for t in meson ninja i686-w64-mingw32-gcc x86_64-w64-mingw32-gcc; do
-    command -v "$t" >/dev/null 2>&1 || {
-        echo "ERROR: $t not found (brew install meson ninja mingw-w64)" >&2
-        exit 1
-    }
-done
+require_tools meson ninja i686-w64-mingw32-gcc x86_64-w64-mingw32-gcc
 
 echo "=== Building DXVK d3d9 from $DXVK_SRC ==="
 
 # Apply out-of-tree DXVK patches (MoltenVK adaptations), kept as files so the
 # submodule stays clean. Idempotent: skip a patch that is already applied,
-# fail loudly on conflicts. Same pattern as build-wine-x86.sh.
-PATCH_DIR="$PROJECT_DIR/patches/dxvk"
-if [ -d "$PATCH_DIR" ]; then
-    for patch in "$PATCH_DIR"/*.patch; do
-        [ -e "$patch" ] || continue
-        if git -C "$DXVK_SRC" apply --reverse --check "$patch" >/dev/null 2>&1; then
-            echo "=== Patch already applied: $(basename "$patch") ==="
-        elif git -C "$DXVK_SRC" apply --check "$patch" >/dev/null 2>&1; then
-            echo "=== Applying DXVK patch: $(basename "$patch") ==="
-            git -C "$DXVK_SRC" apply "$patch"
-        else
-            echo "ERROR: cannot apply $(basename "$patch") (conflict or partial apply)"
-            exit 1
-        fi
-    done
-fi
+# fail loudly on conflicts.
+apply_patches "$DXVK_SRC" "$PROJECT_DIR/patches/dxvk" DXVK
 
 # d3d9-only build; everything else is off (DXMT owns D3D11/D3D10/DXGI).
 MESON_OPTS=(
@@ -91,9 +71,9 @@ wait "$pid_w32" || build_failed=1
 wait "$pid_w64" || build_failed=1
 [ "$build_failed" -eq 0 ] || { echo "ERROR: a DXVK build failed" >&2; exit 1; }
 
-# The KosmicKrisp Vulkan loader swap lives in build-wine-x86.sh (it owns
+# The KosmicKrisp Vulkan loader swap lives in build-proton-x86.sh (it owns
 # Wine/lib and re-copies it on every build, so a swap here would be clobbered
-# by the next `make wine`). Run `make wine` after building the KosmicKrisp
+# by the next `make proton`). Run `make proton` after building the KosmicKrisp
 # driver to (re-)assert it.
 
 echo "=== Done! ==="

@@ -21,13 +21,11 @@ import os.log
 
 public class Wine {
     /// The `bin` directory for a bottle's selected Wine backend — the canonical
-    /// Whisky Wine, or the optional side-by-side Proton install. A nil bottle
-    /// (bottle-less `runWine` calls) resolves to the canonical Whisky Wine.
-    public static func binFolder(for bottle: Bottle?) -> URL {
-        switch bottle?.settings.wineBackend {
-        case .proton: return WhiskyWineInstaller.protonBinFolder
-        default: return WhiskyWineInstaller.binFolder
-        }
+    /// Path to the installed Wine `bin` directory. Proton is the only backend and
+    /// installs over `Libraries/Wine`, so every bottle resolves to the same place.
+    /// (The `bottle` argument is kept for call-site stability / future per-bottle Wine.)
+    public static func binFolder(for _: Bottle?) -> URL {
+        return WhiskyWineInstaller.binFolder
     }
     /// Path to the `wine64` binary for a bottle's selected backend
     public static func wineBinary(for bottle: Bottle?) -> URL {

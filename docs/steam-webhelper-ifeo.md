@@ -78,11 +78,9 @@ CEF propagates the flags to its own child processes.
 
 Stock Wine ignores the IFEO `Debugger` value at `CreateProcess`; support is added
 by a kernelbase patch — `patches/proton-wine/0010-macos-kernelbase-ifeo-debugger.patch`
-on the default Proton backend (and `patches/wine/0003-kernelbase-ifeo-debugger.patch`
-on legacy Whisky-Wine) — which, in `CreateProcessInternalW`, prepends the IFEO
-`Debugger` to the command line and runs that instead. Patches live as files and are
-applied at build time from the patch series (`patches/proton-wine/*` for Proton;
-`scripts/build-wine-x86.sh` for Whisky-Wine) so the vendored source stays clean.
+— which, in `CreateProcessInternalW`, prepends the IFEO `Debugger` to the command
+line and runs that instead. Patches live as files and are applied at build time from
+the patch series (`patches/proton-wine/*`) so the vendored source stays clean.
 
 Driven by `Steam.swift` (via `Wine.configureSteam`, called from
 `Wine.runProgram`): installs the wrapper at `C:\windows\steamwebhelper_wrapper.exe`,

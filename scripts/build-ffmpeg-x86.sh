@@ -7,8 +7,7 @@ set -e
 # Built from source because Homebrew has no usable x86_64 ffmpeg bottle on
 # Tahoe and its source build is gated on the newest Xcode.
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 FFMPEG_SRC="$PROJECT_DIR/vendor/ffmpeg"
 FFMPEG_PREFIX="$PROJECT_DIR/vendor/ffmpeg-x86"
 FFMPEG_TAG=n8.1.1
@@ -39,7 +38,7 @@ echo "=== Configuring FFmpeg (x86_64, minimal) ==="
     --disable-network
 
 echo "=== Building FFmpeg ==="
-make -j"$(sysctl -n hw.ncpu)"
+make -j"$(whisky_ncpu)"
 make install
 
 echo "=== Done ==="
