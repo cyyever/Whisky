@@ -42,12 +42,17 @@ public struct GamingPlatform: Identifiable, Hashable, Sendable {
     /// Filename to save the download as. The extension matters: Wine's `start`
     /// dispatches `.msi` to msiexec and `.exe` directly, so it must be correct.
     public let installerFilename: String
+    /// Extra arguments passed to the installer, e.g. a silent-install flag so the
+    /// one-click flow doesn't strand the user on an interactive wizard. Only set
+    /// where the flag is known-good for that vendor's installer (else interactive).
+    public var installerArgs: [String] = []
 
     // swiftlint:disable line_length
     public static let steam = Self(
         id: "steam", name: "Steam", symbol: "cloud",
         installerURL: URL(string: "https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe")!,
-        installerFilename: "SteamSetup.exe"
+        installerFilename: "SteamSetup.exe",
+        installerArgs: ["/S"]  // NSIS silent install — Steam bootstrapper, no wizard
     )
 
     public static let all: [Self] = [
@@ -93,7 +98,9 @@ public enum GamingPlatformInstaller {
         let installer = try await download(platform, in: bottle)
         // waitForExit so we only configure / report done once the installer has
         // actually finished — `start` alone is non-blocking.
-        try await Wine.runProgram(at: installer, bottle: bottle, waitForExit: true)
+        try await Wine.runProgram(
+            at: installer, args: platform.installerArgs, bottle: bottle, waitForExit: true
+        )
         if platform.id == GamingPlatform.steam.id {
             await Steam.configure(in: bottle)
         }
