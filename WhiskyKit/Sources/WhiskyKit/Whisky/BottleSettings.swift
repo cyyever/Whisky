@@ -67,6 +67,11 @@ public enum WinVersion: String, CaseIterable, Codable, Sendable {
     case win10 = "win10"
     case win11 = "win11"
 
+    /// Versions offered in the UI. Steam requires Windows 10+ (dropped 7/8/8.1 in
+    /// Jan 2024) — older versions break the Steam client, so only these are
+    /// user-selectable. The other cases stay in the enum for decode compat.
+    public static let selectable: [Self] = [.win10, .win11]
+
     public func pretty() -> String {
         switch self {
         case .winXP:
@@ -103,7 +108,12 @@ public struct BottleWineConfig: Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.wineVersion = try container.decodeIfPresent(SemanticVersion.self, forKey: .wineVersion) ?? Self.defaultWineVersion
-        self.windowsVersion = try container.decodeIfPresent(WinVersion.self, forKey: .windowsVersion) ?? .win10
+        // Steam requires Windows 10+ (dropped 7/8/8.1 in Jan 2024); an old bottle
+        // pinned to XP/7/8/8.1 would break the Steam client, so migrate it to win10
+        // — the same decode-migration shape as the `.esync → .msync` fix below.
+        // Keeps the Picker (which only offers win10/win11) able to represent every bottle.
+        let winVersion = try container.decodeIfPresent(WinVersion.self, forKey: .windowsVersion) ?? .win10
+        self.windowsVersion = WinVersion.selectable.contains(winVersion) ? winVersion : .win10
         // esync can't exist on macOS (no eventfd); an old `.esync` selection meant
         // "fast-sync wanted", so migrate it to msync — the working macOS backend.
         // Keeps the Picker (which only offers none/msync) able to represent every bottle.

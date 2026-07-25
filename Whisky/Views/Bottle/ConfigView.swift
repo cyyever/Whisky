@@ -44,6 +44,7 @@ struct ConfigView: View {
     @State private var dpiSheetPresented: Bool = false
     @AppStorage("wineSectionExpanded") private var wineSectionExpanded: Bool = true
     @AppStorage("metalSectionExpanded") private var metalSectionExpanded: Bool = true
+    @AppStorage("advancedSectionExpanded") private var advancedSectionExpanded: Bool = false
 
     var body: some View {
         Form {
@@ -53,7 +54,7 @@ struct ConfigView: View {
                 // the enum for fallback but is no longer user-selectable.
                 SettingItemView(title: "config.winVersion", loadingState: winVersionLoadingState) {
                     Picker("config.winVersion", selection: $bottle.settings.windowsVersion) {
-                        ForEach(WinVersion.allCases.reversed(), id: \.self) {
+                        ForEach(WinVersion.selectable.reversed(), id: \.self) {
                             Text($0.pretty())
                         }
                     }
@@ -90,12 +91,9 @@ struct ConfigView: View {
                             }
                         })
                 }
-                Picker("config.enhancedSync", selection: $bottle.settings.enhancedSync) {
-                    Text("config.enhancedSync.none").tag(EnhancedSync.none)
-                    // esync omitted: macOS has no eventfd, so esync can't exist here.
-                    // The .esync enum case is kept only for backward decode of old bottles.
-                    Text("config.enhacnedSync.msync").tag(EnhancedSync.msync)
-                }
+                // Enhanced Sync selector removed: the backend is locked to msync on
+                // this stack (macOS has no eventfd for esync). `enhancedSync` stays in
+                // the model at its `.msync` default for decode compat.
                 SettingItemView(title: "config.dpi", loadingState: dpiConfigLoadingState) {
                     Button("config.inspect") {
                         dpiSheetPresented = true
@@ -142,7 +140,9 @@ struct ConfigView: View {
                     Text("config.hideVirtualAudioDevices")
                     Text("config.hideVirtualAudioDevices.info")
                 }
-                if Self.supportsRaytracing {
+            }
+            if Self.supportsRaytracing {
+                Section("config.title.advanced", isExpanded: $advancedSectionExpanded) {
                     Toggle(isOn: $bottle.settings.dxrEnabled) {
                         Text("config.dxr")
                         Text("config.dxr.info")
@@ -153,6 +153,7 @@ struct ConfigView: View {
         .formStyle(.grouped)
         .animation(.whiskyDefault, value: wineSectionExpanded)
         .animation(.whiskyDefault, value: metalSectionExpanded)
+        .animation(.whiskyDefault, value: advancedSectionExpanded)
         .bottomBar {
             HStack {
                 Spacer()
