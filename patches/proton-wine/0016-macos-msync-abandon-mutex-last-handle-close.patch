@@ -1,0 +1,199 @@
+From: cyy <cyyever@gmail.com>
+Date: Sat, 25 Jul 2026 00:00:00 +0000
+Subject: [PATCH] macOS: msync - abandon owned mutex after its last handle closes
+
+Fixes kernel32:sync's abandoned-mutex subtest (sync.c:393/:397) under
+WINEMSYNC=1: a thread owns an msync mutex, another thread waits on it, the
+last handle is closed, and the owner is then terminated - the waiter must
+receive STATUS_ABANDONED (WAIT_ABANDONED). Under msync it hung instead.
+
+Two independent lifetime bugs, one server-side and one client-side:
+
+1. Server object lifetime (server/msync.c). A regular server mutex survives
+   its last-handle-close while owned because do_grab() references its sync
+   object and links it into the owner thread's mutex_list, so a killed owner
+   is still abandoned. An msync mutex is acquired purely client-side via a shm
+   CAS and a single-object msync wait blocks in userspace (__ulock_wait2) with
+   no server reference, so closing the last handle destroyed the object and its
+   shm out from under the blocked waiter (which then parked forever on the shm
+   "destroyed" flag), and the subsequent owner kill found nothing in mutex_list
+   to abandon. Mirror the server mutex: add an msync close_handle op that, when
+   the last handle of a still-owned mutex is closed, takes an extra reference to
+   keep the object alive and linked; msync_abandon_mutexes() then abandons it on
+   the owner's exit. The retained object is reclaimed by a deferred sweep at the
+   top of a later msync_abandon_mutexes() pass, once it is unowned (shm tid ==
+   ~0, which guarantees no thread is blocked in __ulock_wait2 on it) - so the
+   reclaim never destroys an shm out from under a live waiter, and it does not
+   leak.
+
+2. Client wait binding (dlls/ntdll/unix/msync.c). msync caches objects per
+   handle; closing a handle runs msync_close(), which zeroes that cache slot's
+   ->type. An in-flight waiter re-read ->type == 0 and bailed with
+   STATUS_INVALID_HANDLE (WAIT_FAILED) instead of completing. Windows (and the
+   wineserver oracle) keep an in-flight wait valid across a concurrent handle
+   close. Bind the wait to a private snapshot of each object taken at wait
+   entry (->type/->shm_idx/->shm/->access); live shm contents are still read
+   through the shared ->shm pointer, so signals and destroy detection are
+   unaffected. This also correctly pins the wait to the original object if the
+   handle number is reused mid-wait.
+
+Verified with scripts/test-msync.sh (SteamProton): msync-only failure count for
+the sync suites drops from 2 (sync.c:393, :397) to 0, with no other location
+regressing across repeated runs.
+---
+diff --git a/server/msync.c b/server/msync.c
+--- a/server/msync.c
++++ b/server/msync.c
+@@ -577,11 +577,17 @@
+     unsigned int   shm_idx;
+     enum msync_type type;
+     struct list     mutex_entry;
++    /* MSYNC_MUTEX only: set when the last handle was closed while the mutex was
++     * still owned and we took an extra reference to keep the object (and its
++     * shm) alive so a killed owner can still be abandoned. See
++     * msync_close_handle() / msync_abandon_mutexes(). */
++    int             owned_retained;
+ };
+ 
+ static void msync_dump( struct object *obj, int verbose );
+ static unsigned int msync_get_msync_idx( struct object *obj, enum msync_type *type );
+ static unsigned int msync_map_access( struct object *obj, unsigned int access );
++static int msync_close_handle( struct object *obj, struct process *process, obj_handle_t handle );
+ static void msync_destroy( struct object *obj );
+ 
+ const struct object_ops msync_ops =
+@@ -606,7 +612,7 @@
+     default_unlink_name,       /* unlink_name */
+     no_open_file,              /* open_file */
+     no_kernel_obj_list,        /* get_kernel_obj_list */
+-    no_close_handle,           /* close_handle */
++    msync_close_handle,        /* close_handle */
+     msync_destroy              /* destroy */
+ };
+ 
+@@ -754,6 +760,7 @@
+ 
+             msync->shm_idx = msync_alloc_shm( low, high );
+             msync->type = type;
++            msync->owned_retained = 0;
+             if (type == MSYNC_MUTEX)
+                 list_add_tail( &mutex_list, &msync->mutex_entry );
+         }
+@@ -1015,11 +1022,66 @@
+     int tid;
+     int count;  /* recursion count */
+ };
++
++/* Keep an OWNED msync mutex alive past its last-handle-close so a killed owner
++ * can still be abandoned (waiters must get STATUS_ABANDONED).
++ *
++ * A regular server mutex survives this because do_grab() references its sync
++ * object and links it into the owner thread's mutex_list; a blocked waiter's
++ * server-side select references it too. An msync mutex has no such server-side
++ * ownership: it is acquired purely client-side by a shm CAS, and a single-object
++ * msync wait blocks in userspace (__ulock_wait2) with no server reference. So
++ * closing the last handle here would run msync_destroy() -> destroy the object
++ * and its shm out from under a still-blocked waiter (the waiter then sees the
++ * shm "destroyed" flag and parks forever), and the subsequent TerminateThread of
++ * the owner would find nothing left in mutex_list to abandon.
++ *
++ * Mirror the server mutex: if this is the last handle and the shm shows a live
++ * owner, take an extra reference. The object stays linked in mutex_list until
++ * msync_abandon_mutexes() abandons it on the owner's exit and drops the
++ * reference. Nothing changes for non-mutexes or unowned/abandoned mutexes. */
++static int msync_close_handle( struct object *obj, struct process *process, obj_handle_t handle )
++{
++    struct msync *msync = (struct msync *)obj;
++
++    if (msync->type == MSYNC_MUTEX && obj->handle_count == 1 && !msync->owned_retained)
++    {
++        struct mutex *mutex = get_shm( msync->shm_idx );
++        int tid = __atomic_load_n( &mutex->tid, __ATOMIC_SEQ_CST );
+ 
++        /* 0 == free, ~0 == already abandoned; any other value is a live owner. */
++        if (tid && tid != ~0)
++        {
++            grab_object( obj );
++            msync->owned_retained = 1;
++        }
++    }
++    return 1;
++}
++
+ void msync_abandon_mutexes( struct thread *thread )
+ {
+-    struct msync *msync;
++    struct msync *msync, *next;
+ 
++    /* Reclaim objects retained by msync_close_handle() that were abandoned on an
++     * EARLIER thread exit and are now unowned (shm tid == ~0). Deferring the free
++     * to a later abandon pass -- rather than freeing in the same pass that
++     * abandons them -- guarantees the waiter woken by signal_all() below has
++     * already run and either re-acquired the mutex (tid != ~0, kept here) or none
++     * was blocked. A tid == ~0 msync mutex has no thread blocked in __ulock_wait2
++     * on it (a waiter would immediately CAS-acquire it, making tid != ~0), so
++     * destroying its shm now cannot strand anyone. */
++    LIST_FOR_EACH_ENTRY_SAFE( msync, next, &mutex_list, struct msync, mutex_entry )
++    {
++        struct mutex *mutex = get_shm( msync->shm_idx );
++
++        if (msync->owned_retained && mutex->tid == ~0)
++        {
++            msync->owned_retained = 0;
++            release_object( &msync->obj );  /* drops the retain ref; may destroy */
++        }
++    }
++
+     LIST_FOR_EACH_ENTRY( msync, &mutex_list, struct msync, mutex_entry )
+     {
+         struct mutex *mutex = get_shm( msync->shm_idx );
+@@ -1031,6 +1093,8 @@
+             mutex->tid = ~0;
+             mutex->count = 0;
+             signal_all ( msync->shm_idx, (int *)mutex );
++            /* A retained object stays alive here; the reclaim sweep above frees
++             * it on a subsequent thread exit, once its woken waiter has resolved. */
+         }
+     }
+ }
+diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -1789,6 +1789,8 @@
+ 
+     __thread static int current_tid = 0;
+     __thread static struct msync *objs[MAXIMUM_WAIT_OBJECTS + 1];
++    /* Per-wait private snapshots of each waited object (see the copy below). */
++    __thread static struct msync objs_snapshot[MAXIMUM_WAIT_OBJECTS + 1];
+     struct msync apc_obj;
+     int has_msync = 0, has_server = 0;
+     BOOL msgwait = FALSE;
+@@ -1850,6 +1852,28 @@
+             has_server = 1;
+         else
+             return ret;
++    }
++
++    /* Bind the wait to a private snapshot of each object, taken now, instead of
++     * the shared per-handle cache slot get_object() returns a pointer into.
++     * Another thread closing this handle mid-wait runs msync_close(), which
++     * zeroes that slot's ->type; the in-flight wait would then read type 0 and
++     * bail with STATUS_INVALID_HANDLE (WAIT_FAILED). Windows (and the wineserver
++     * oracle) instead keep an in-flight wait valid across a concurrent handle
++     * close -- e.g. kernel32:sync closes an owned mutex's last handle while a
++     * thread waits on it and still expects WAIT_ABANDONED once the owner dies.
++     * The snapshot copies ->type/->shm_idx/->shm (a stable mapped address) and
++     * ->access; live shm CONTENTS (signaled/tid/count/alive flags) are still read
++     * through the shared ->shm pointer, so signals and destroy detection keep
++     * working. It also correctly pins the wait to the original object if the
++     * handle is closed and its number reused for a different object mid-wait. */
++    for (i = 0; i < count; i++)
++    {
++        if (objs[i])
++        {
++            objs_snapshot[i] = *objs[i];
++            objs[i] = &objs_snapshot[i];
++        }
+     }
+ 
+     if (count && objs[count - 1] && objs[count - 1]->type == MSYNC_QUEUE)
