@@ -79,6 +79,18 @@ public enum Steam {
                 bottle: bottle, key: ifeoDebuggerKey, name: "Debugger",
                 data: ifeoDebuggerValue, type: .string
             )
+            // Force Wine's builtin winevulkan for vulkan-1.dll. Steam's CEF host
+            // ships its own vulkan-1.dll in bin/cef/cef.win64; loaded natively it's
+            // a Windows Vulkan loader that exposes no VK_KHR_surface/win32_surface,
+            // so ANGLE's Vulkan+SwiftShader backends abort and CEF spins in a
+            // gl_factory_win loop with no window. A `WINEDLLOVERRIDES` env entry does
+            // NOT catch that app-directory, full-path load — only the registry
+            // DllOverride does — so it must live here, not just in the launch env.
+            // The on-disk file is untouched, so Steam's file verification still passes.
+            try? await Wine.addRegistryKey(
+                bottle: bottle, key: dllOverridesKey, name: "vulkan-1",
+                data: "builtin", type: .string
+            )
         }
 
         let provision = installDXVKForGames(in: bottle)
