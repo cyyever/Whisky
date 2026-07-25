@@ -42,6 +42,10 @@ public struct GamingPlatform: Identifiable, Hashable, Sendable {
     /// Filename to save the download as. The extension matters: Wine's `start`
     /// dispatches `.msi` to msiexec and `.exe` directly, so it must be correct.
     public let installerFilename: String
+    // `var` (not `let`): a `let` with a default value isn't overridable via the
+    // memberwise initializer, so Steam couldn't set installerArgs. Instances are
+    // still effectively immutable — all are `static let` constants.
+    //
     /// Extra arguments passed to the installer, e.g. a silent-install flag so the
     /// one-click flow doesn't strand the user on an interactive wizard. Only set
     /// where the flag is known-good for that vendor's installer (else interactive).
@@ -92,8 +96,10 @@ public enum GamingPlatformInstaller {
     /// we also run `Steam.configure` afterwards so the webhelper wrapper / DXVK
     /// wiring is in place for the first launch.
     ///
-    /// Runs the installer interactively — vendors' silent-install flags differ per
-    /// installer and per exe/msi, and a visible wizard is the robust common path.
+    /// Runs the installer with the platform's `installerArgs`: a silent-install
+    /// flag where one is known-good for that vendor (Steam passes `/S`), otherwise
+    /// no args so the installer's own wizard drives it. `waitForExit` so we only
+    /// configure / report completion once the installer has actually finished.
     public static func install(_ platform: GamingPlatform, in bottle: Bottle) async throws {
         let installer = try await download(platform, in: bottle)
         // waitForExit so we only configure / report done once the installer has
