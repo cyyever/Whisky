@@ -30,6 +30,7 @@ struct BottleListEntry: View {
     var body: some View {
         Text(name)
             .opacity(bottle.isAvailable ? 1.0 : 0.5)
+            .accessibilityIdentifier("bottle." + bottle.settings.name)
             .onChange(of: refresh, initial: true) {
                 name = bottle.settings.name
             }

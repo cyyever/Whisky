@@ -77,6 +77,19 @@ struct PinView: View {
         .onTapGesture(count: 2) {
             runProgram()
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(name)
+        .accessibilityIdentifier("pin." + (pin.url?.lastPathComponent ?? pin.name))
+        .accessibilityAction {
+            runProgram()
+        }
+        .accessibilityAction(named: Text("button.rename")) {
+            showRenameSheet.toggle()
+        }
+        .accessibilityAction(named: Text("button.showInFinder")) {
+            NSWorkspace.shared.activateFileViewerSelecting([program.url])
+        }
         .sheet(isPresented: $showRenameSheet) {
             RenameView("rename.pin.title", name: name) { newName in
                 name = newName

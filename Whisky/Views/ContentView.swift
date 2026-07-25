@@ -56,6 +56,8 @@ struct ContentView: View {
                     Image(systemName: "plus")
                         .help("button.createBottle")
                 }
+                .accessibilityLabel("button.createBottle")
+                .accessibilityIdentifier("toolbar.createBottle")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -74,6 +76,8 @@ struct ContentView: View {
                         .help("button.refresh")
                         .rotationEffect(refreshAnimation)
                 }
+                .accessibilityLabel("button.refresh")
+                .accessibilityIdentifier("toolbar.refresh")
             }
         }
         .sheet(isPresented: $showBottleCreation) {

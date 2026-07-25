@@ -69,9 +69,11 @@ struct BottleView: View {
                     Button("button.cDrive") {
                         bottle.openCDrive()
                     }
+                    .accessibilityIdentifier("bottle.cDrive")
                     Button("button.terminal") {
                         bottle.openTerminal()
                     }
+                    .accessibilityIdentifier("bottle.terminal")
                     // One entry point for getting a program into the bottle: fetch
                     // a known gaming platform's installer, or pick a local file.
                     Menu {
@@ -86,6 +88,7 @@ struct BottleView: View {
                                         Image(systemName: platform.symbol)
                                     }
                                 }
+                                .accessibilityIdentifier("install." + platform.name)
                             }
                         }
                         Divider()
@@ -94,9 +97,12 @@ struct BottleView: View {
                         } label: {
                             Label("menu.chooseFile", systemImage: "folder")
                         }
+                        .accessibilityIdentifier("bottle.chooseFile")
                     } label: {
                         Text("button.installOrRun")
                     }
+                    .accessibilityLabel("button.installOrRun")
+                    .accessibilityIdentifier("bottle.installRun")
                     .fixedSize()
                     .disabled(programLoading)
                     if programLoading {
