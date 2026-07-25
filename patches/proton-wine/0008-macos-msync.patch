@@ -122,10 +122,10 @@ index 4deeac7..a21833a 100644
  
 diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
 new file mode 100644
-index 0000000..bd5d48a
+index 0000000..1586ca6
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync.c
-@@ -0,0 +1,2367 @@
+@@ -0,0 +1,2371 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -1428,7 +1428,11 @@ index 0000000..bd5d48a
 +
 +    if (mutex->tid != GetCurrentThreadId()) return STATUS_MUTANT_NOT_OWNED;
 +
-+    if (prev) *prev = mutex->count;
++    /* Return the Windows signal-state (1 - recursion), matching query_mutex's
++     * CurrentCount and the server path (NtReleaseMutant does 1 - reply->prev_count
++     * for server mutexes). Returning the raw recursion count here made
++     * NtReleaseMutant report the wrong previous count (ntdll/kernel32 sync tests). */
++    if (prev) *prev = 1 - mutex->count;
 +
 +    if (!--mutex->count)
 +    {
@@ -2573,7 +2577,7 @@ index 5d8a59b..2dd93cb 100644
      {
          req->handle = wine_server_obj_handle( handle );
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index 74a0c93..88034e6 100644
+index 74a0c93..7ee0c29 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
 @@ -61,7 +61,9 @@
@@ -2896,7 +2900,7 @@ index 74a0c93..88034e6 100644
      if (!signal) return STATUS_INVALID_HANDLE;
  
      if ((ret = inproc_signal_and_wait( signal, wait, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
-@@ -2455,6 +2611,12 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+@@ -2455,11 +2611,26 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
      /* if alertable, we need to query the server */
      if (alertable)
      {
@@ -2904,11 +2908,25 @@ index 74a0c93..88034e6 100644
 +        {
 +            NTSTATUS ret = msync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
 +            if (ret != STATUS_NOT_IMPLEMENTED)
++            {
++                /* An expired zero-object wait yields STATUS_TIMEOUT, but a completed
++                 * alertable NtDelayExecution returns STATUS_SUCCESS -- the server branch
++                 * below maps it likewise; the msync/fsync branches must too. */
++                if (ret == STATUS_TIMEOUT) ret = STATUS_SUCCESS;
 +                return ret;
++            }
 +        }
          if (do_fsync())
          {
              NTSTATUS ret = fsync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
+             if (ret != STATUS_NOT_IMPLEMENTED)
++            {
++                if (ret == STATUS_TIMEOUT) ret = STATUS_SUCCESS;
+                 return ret;
++            }
+         }
+         /* Since server_wait will result in an unconditional implicit yield,
+            we never return STATUS_NO_YIELD_PERFORMED */
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 index 2f649ca..78f1323 100644
 --- a/dlls/ntdll/unix/unix_private.h
