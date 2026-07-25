@@ -1,0 +1,15 @@
+--- a/dlls/ntdll/unix/msync.c
++++ b/dlls/ntdll/unix/msync.c
+@@ -1300,7 +1300,11 @@
+ 
+     if (mutex->tid != GetCurrentThreadId()) return STATUS_MUTANT_NOT_OWNED;
+ 
+-    if (prev) *prev = mutex->count;
++    /* Return the Windows signal-state (1 - recursion), matching query_mutex's
++     * CurrentCount and the server path (NtReleaseMutant does 1 - reply->prev_count
++     * for server mutexes). Returning the raw recursion count here made
++     * NtReleaseMutant report the wrong previous count (ntdll/kernel32 sync tests). */
++    if (prev) *prev = 1 - mutex->count;
+ 
+     if (!--mutex->count)
+     {
