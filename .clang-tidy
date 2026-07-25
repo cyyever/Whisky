@@ -15,10 +15,15 @@
 #   portability-*     — non-portable constructs (matters across Rosetta/mingw).
 #   cert-*            — CERT secure-coding rules not already covered above.
 #   misc-*            — grab-bag correctness (unused values, redundant expr, etc).
+#   concurrency-*     — thread-safety / MT-unsafe API misuse.
+#   optin analyzer    — three opt-in analyzer checks pulled in explicitly (they
+#                       are off by default even under clang-analyzer-*):
+#                       cplusplus.UninitializedObject (uninitialized members),
+#                       cplusplus.VirtualCall (virtual call in ctor/dtor),
+#                       core.EnumCastOutOfRange. Verified low-noise on DXMT/DXVK.
 #
 # Explicit opt-outs (noise or irrelevant to this codebase):
-#   optin.* analyzer checks       — opt-in extras (cplusplus.*, portability
-#                                   unix APIs) that fire heavily on Wine/Mesa.
+#   optin.performance.Padding     — struct field-packing advice, pure style.
 #   security.insecureAPI.DeprecatedOrUnsafeBufferHandling — nags to swap every
 #                                   strncpy/snprintf for C11 _s variants that
 #                                   mingw/glibc do not even provide. Pure noise.
@@ -36,9 +41,11 @@ Checks: >
   portability-*,
   cert-*,
   misc-*,
+  concurrency-*,
+  clang-analyzer-optin.cplusplus.UninitializedObject,
+  clang-analyzer-optin.cplusplus.VirtualCall,
+  clang-analyzer-optin.core.EnumCastOutOfRange,
   -clang-analyzer-optin.performance.Padding,
-  -clang-analyzer-optin.cplusplus.VirtualCall,
-  -clang-analyzer-optin.core.EnumCastOutOfRange,
   -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
   -bugprone-easily-swappable-parameters,
   -bugprone-narrowing-conversions,
