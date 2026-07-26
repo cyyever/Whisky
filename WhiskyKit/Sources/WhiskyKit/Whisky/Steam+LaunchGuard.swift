@@ -55,6 +55,7 @@ extension Steam {
     /// with `kill(2)` — not `wineserver -k`, which can't reach a detached session.
     public static func reapSteamProcesses(in bottle: Bottle) async {
         await SteamLaunchGuard.shared.serialize {
+            let prefix = bottle.url.path(percentEncoded: false)
             for pid in matchingPIDs(patterns: steamProcessPatterns) {
                 kill(pid, SIGKILL)
             }
@@ -64,7 +65,22 @@ extension Steam {
                 if matchingPIDs(patterns: steamProcessPatterns).isEmpty { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
-            for pid in wineserverPIDs(forPrefix: bottle.url.path(percentEncoded: false)) {
+            // Kill the bottle's whole Wine tree by working directory, not by name:
+            // the wineserver plus its detached service processes (services.exe,
+            // svchost.exe, plugplay.exe, rpcss.exe, tabtip.exe, winedevice.exe,
+            // explorer.exe). Once these reparent to launchd their argv/env go
+            // unreadable via KERN_PROCARGS2, so the pattern and WINEPREFIX-env
+            // matchers above never see them, and killing the server does not
+            // cascade to PPID-1 children — so they leak and pile up across every
+            // server death (crash, `wineserver -k`, Wine rebuild). Their cwd stays
+            // inside this bottle's prefix, readable via proc_pidinfo, and scoped to
+            // this bottle so another bottle's Wine is never touched.
+            for pid in pidsWithWorkingDirectory(under: prefix) {
+                kill(pid, SIGKILL)
+            }
+            // Belt and suspenders: a wineserver whose cwd is not under the prefix
+            // is still caught by its WINEPREFIX environment.
+            for pid in wineserverPIDs(forPrefix: prefix) {
                 kill(pid, SIGKILL)
             }
         }
@@ -89,6 +105,33 @@ extension Steam {
             guard let info = processArgvEnv(pid) else { return false }
             return info.argv.lowercased().contains("wineserver")
                 && info.env.lowercased().contains(prefixNeedle)
+        }
+    }
+
+    /// PIDs whose current working directory is `prefix` or lives inside it, via
+    /// `proc_pidinfo(PROC_PIDVNODEPATHINFO)` — readable even for detached processes
+    /// whose argv/env `sysctl(KERN_PROCARGS2)` no longer returns. This is how the
+    /// bottle's Wine service tree is reached; scoped to `prefix` so it cannot touch
+    /// another bottle.
+    private static func pidsWithWorkingDirectory(under prefix: String) -> [pid_t] {
+        let root = prefix.hasSuffix("/") ? prefix : prefix + "/"
+        return allPIDs().filter { pid in
+            guard let cwd = processWorkingDirectory(pid) else { return false }
+            return cwd == prefix || cwd.hasPrefix(root)
+        }
+    }
+
+    /// The current working directory of `pid`, or nil if unreadable/gone.
+    private static func processWorkingDirectory(_ pid: pid_t) -> String? {
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        let written = withUnsafeMutablePointer(to: &info) {
+            proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, $0, size)
+        }
+        guard written == size else { return nil }
+        return withUnsafeBytes(of: &info.pvi_cdir.vip_path) { raw -> String? in
+            guard let base = raw.baseAddress else { return nil }
+            return String(cString: base.assumingMemoryBound(to: CChar.self))
         }
     }
 
