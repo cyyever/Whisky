@@ -11,12 +11,17 @@
  *
  * We launch the genuine binary (kept untouched on disk as steamwebhelper.exe and
  * copied alongside as steamwebhelper_real.exe) and append the flags Steam's CEF
- * needs to render under Wine on macOS:
+ * needs to run under Wine on macOS:
  *
- *     --no-sandbox          CEF's sandbox hooks into the NT kernel and breaks under Wine
- *     --in-process-gpu      avoids the out-of-process GPU sandbox "cannot reset D3D device" failure
- *     --disable-gpu         force the software render path
- *     --disable-gpu-compositing
+ *     --no-sandbox           CEF's sandbox hooks into the NT kernel and breaks under Wine
+ *     --in-process-gpu       avoids the out-of-process GPU sandbox "cannot reset D3D device" failure
+ *     --disable-async-dns    use the OS resolver (Wine ws2_32 getaddrinfo -> patch 0018's
+ *                            prefix hosts file, then macOS) instead of Chromium's built-in
+ *                            DNS client, which does its own UDP:53 + DoH to Google (8.8.8.8)
+ *                            that bypass the SOCKS proxy and get poisoned on a filtering network. This routes
+ *                            CEF's DNS through the same path as steamclient, so one hosts pin
+ *                            (or a system TUN) covers both. See docs/steam-networking.md.
+ *     --dns-over-https-mode=off  disable Chromium "Secure DNS" so it never talks DoH to Google.
  *
  * We launch steamwebhelper_real.exe (a copy under a different name) rather than
  * steamwebhelper.exe so the IFEO Debugger redirect does not recurse, and so the
@@ -77,7 +82,8 @@ int main(int argc, char *argv[]) {
     // Append our Wine-compatibility flags only if not already present
     if (!already_patched) {
         int needed = snprintf(cmdline + offset, sizeof(cmdline) - offset,
-                              " --no-sandbox --in-process-gpu");
+                              " --no-sandbox --in-process-gpu"
+                              " --disable-async-dns --dns-over-https-mode=off");
         if (needed < 0 || (size_t)(offset + needed) >= sizeof(cmdline)) return 1;
     }
 

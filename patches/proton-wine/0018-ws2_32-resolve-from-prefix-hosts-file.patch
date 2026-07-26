@@ -1,0 +1,142 @@
+From: cyy <cyyever@gmail.com>
+Date: Sun, 26 Jul 2026 00:00:00 +0000
+Subject: [PATCH] ws2_32: resolve names from the prefix hosts file first
+
+Standard Windows getaddrinfo() consults %SystemRoot%\system32\driverstc\
+hosts before querying DNS. Wine skips the file and hands the name straight to
+the host resolver, so a prefix cannot pin a name to an IP locally.
+
+Restore the hosts-file lookup in getaddrinfo(). This lets the app pin Steam's
+login/CM hosts (api./login.steampowered.com, *.steamserver.net) to known-good
+IPs inside the prefix, giving a stable address on networks where UDP DNS is
+unreliable (poisoned or filtered) — with no change to the host's /etc/hosts. A
+pinned name is turned into an AI_NUMERICHOST lookup (no DNS); on miss or parse
+failure it falls through to the normal resolver, so behaviour is unchanged when
+the hosts file has no matching entry (the default).
+
+---
+diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
+index 7348d37..774fcab 100644
+--- a/dlls/ws2_32/protocol.c
++++ b/dlls/ws2_32/protocol.c
+@@ -167,6 +167,91 @@ static BOOL eac_download_hack(void)
+     return eac_download_hack_enabled;
+ }
+ 
++/* Case-insensitive ASCII comparison of two host names. */
++static BOOL host_name_equal( const char *a, const char *b )
++{
++    for (; *a && *b; a++, b++)
++    {
++        char ca = *a, cb = *b;
++        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
++        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
++        if (ca != cb) return FALSE;
++    }
++    return !*a && !*b;
++}
++
++/* Standard Windows getaddrinfo consults %SystemRoot%\system32\drivers\etc\hosts
++ * before querying DNS; Wine hands the name straight to the host resolver and skips
++ * that file. Restore the lookup so a prefix can pin a name to an IP locally — used
++ * to give Steam a stable, non-DNS address for its login/CM hosts on networks where
++ * UDP DNS is unreliable (poisoned or filtered), entirely inside the prefix with no change
++ * to the host's /etc/hosts. Matches names case-insensitively and honours an explicit
++ * AF_INET/AF_INET6 hint; the matched IP literal is copied into @out. */
++static BOOL hosts_file_lookup( const char *node, const struct addrinfo *hints, char *out, int outlen )
++{
++    int want = hints ? hints->ai_family : AF_UNSPEC;
++    char path[MAX_PATH], *buf, *p;
++    DWORD size, read_len;
++    HANDLE file;
++    BOOL found = FALSE;
++
++    if (!node || !node[0]) return FALSE;
++    if (!GetWindowsDirectoryA( path, sizeof(path) - 32 )) return FALSE;
++    lstrcatA( path, "\\system32\\drivers\\etc\\hosts" );
++    file = CreateFileA( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL );
++    if (file == INVALID_HANDLE_VALUE) return FALSE;
++    size = GetFileSize( file, NULL );
++    if (size == INVALID_FILE_SIZE || size > 0x100000 || !(buf = malloc( size + 1 )))
++    {
++        CloseHandle( file );
++        return FALSE;
++    }
++    if (!ReadFile( file, buf, size, &read_len, NULL )) read_len = 0;
++    buf[read_len] = 0;
++    CloseHandle( file );
++
++    p = buf;
++    while (*p && !found)
++    {
++        char *ip, *ip_end, *name, saved;
++
++        while (*p == ' ' || *p == '\t') p++;
++        if (!*p || *p == '#' || *p == '\n' || *p == '\r') goto next_line;
++        ip = p;
++        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
++        ip_end = p;
++        while (*p && *p != '\n' && *p != '\r')
++        {
++            while (*p == ' ' || *p == '\t') p++;
++            if (!*p || *p == '#' || *p == '\n' || *p == '\r') break;
++            name = p;
++            while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
++            saved = *p;
++            *p = 0;
++            if (host_name_equal( name, node ))
++            {
++                char saved_ip = *ip_end;
++                BOOL is_v6;
++                *ip_end = 0;
++                is_v6 = strchr( ip, ':' ) != NULL;
++                if (!((want == AF_INET && is_v6) || (want == AF_INET6 && !is_v6)))
++                {
++                    lstrcpynA( out, ip, outlen );
++                    found = TRUE;
++                }
++                *ip_end = saved_ip;
++            }
++            *p = saved;
++            if (found) break;
++        }
++    next_line:
++        while (*p && *p != '\n') p++;
++        if (*p) p++;
++    }
++    free( buf );
++    return found;
++}
++
+ /***********************************************************************
+  *      getaddrinfo   (ws2_32.@)
+  */
+@@ -219,6 +304,28 @@ int WINAPI getaddrinfo( const char *node, const char *service,
+         }
+     }
+ 
++    if (node && node[0] && (!hints || !(hints->ai_flags & AI_NUMERICHOST)))
++    {
++        char hostip[64];
++
++        if (hosts_file_lookup( node, hints, hostip, sizeof(hostip) ))
++        {
++            struct addrinfo numeric;
++
++            if (hints) numeric = *hints;
++            else memset( &numeric, 0, sizeof(numeric) );
++            numeric.ai_flags |= AI_NUMERICHOST;
++            TRACE( "resolved %s from hosts file to %s\n", debugstr_a(node), debugstr_a(hostip) );
++            ret = do_getaddrinfo( hostip, service, &numeric, info );
++            if (!ret)
++            {
++                free( fqdn );
++                free( nodev6 );
++                goto done;
++            }
++        }
++    }
++
+     ret = do_getaddrinfo( node, service, hints, info );
+ 
+     if (ret && (!hints || !(hints->ai_flags & AI_NUMERICHOST)) && node)

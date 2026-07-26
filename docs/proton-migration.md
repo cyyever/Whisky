@@ -54,13 +54,13 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 14-patch series
-Disjoint file ownership; all 14 apply cleanly (`git apply --check`) and reproduce the live
-tree byte-for-byte (base `81d78e4`). Exported as `git format-patch` style `.patch` files.
-Groups: `0001`–`0006` build/portability (`0007` **dropped** → gap), `0008` the single
-consolidated msync patch, `0009`–`0013` macOS capability ports, `0014`–`0015`
-Steam-runtime deadlock fixes. There is **no `0016`/`0017`** — the old standalone
-msync-refinement patches were folded into `0008`.
+## patches/proton-wine/ — 17-patch series
+Disjoint file ownership; all apply cleanly (`git apply --check`). Exported as
+`git format-patch` style `.patch` files. Groups: `0001`–`0006` build/portability
+(`0007` **dropped** → gap), `0008` the single consolidated msync patch, `0009`–`0013`
+macOS capability ports, `0014`–`0015` Steam-runtime deadlock fixes, `0016` msync
+abandoned-mutex on last-handle-close, `0017` D3D/Vulkan builtin load-order default,
+`0018` ws2_32 prefix hosts-file lookup.
 
 ### 0001–0006 — build / portability (make Proton compile + boot on macOS; 0007 dropped)
 - `0001-macos-de-linux-ntdll` — guard Linux-only futex/CPU paths in
@@ -301,5 +301,5 @@ unixlib) is unchanged.
 Proton hardcodes `wine-mono-10.4.1` (`MONO_VERSION` in
 `dlls/appwiz.cpl/addons.c`). Decision: **do not build wine-mono from source** — let
 Wine install it at runtime. The `.msi` is fetched to Wine's own cache (`~/.cache/wine/`)
-through the system proxy (`dl.winehq.org` is GFW-blocked directly, reachable via
+through the system proxy (`dl.winehq.org` is blocked directly on some networks, reachable via
 `127.0.0.1:9910`) so `wineboot` installs it silently.

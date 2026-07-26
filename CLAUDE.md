@@ -29,10 +29,11 @@ Fresh-machine order: ARM brew deps → `make setup-x86-brew` → `scripts/build-
 ## Detailed docs
 - Proton migration + per-patch notes → `docs/proton-migration.md`
 - Steam webhelper / IFEO / CEF GPU → `docs/steam-webhelper-ifeo.md`
+- Steam networking / proxy / TUN → `docs/steam-networking.md`
 - C++ cross-platform plan → `docs/cxx-migration-plan.md`
 
 ## Operational gotchas
-- **Steam login**: turn Follow System Proxy OFF (the geph HTTP proxy breaks Steam's CM); SOCKS is tunneled via proxychains automatically. Launch games from the **Steam Play button**, not a bare CLI.
+- **Steam login**: turn Follow System Proxy OFF (an HTTP proxy breaks Steam's CM); SOCKS is tunneled via proxychains automatically. On a filtering network the complete fix is a system TUN — see `docs/steam-networking.md`. Launch games from the **Steam Play button**, not a bare CLI.
 - Native ARM64 Wine doesn't work on macOS — x86_64 + Rosetta only; WoW64 (`i386,x86_64`) because Steam is 32-bit.
 - Xbox Bluetooth controllers need `SDL_JOYSTICK_MFI=0`.
 - Rebuild Wine → restart Whisky/Steam (wineserver version mismatch).
