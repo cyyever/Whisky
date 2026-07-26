@@ -42,7 +42,7 @@ extension Program {
                 await showSteamAlreadyRunningAlert()
                 return
             }
-            await Steam.reapSteamProcesses()
+            await Steam.reapSteamProcesses(in: bottle)
         }
         await Wine.prepareForLaunch(bottle: bottle)
         let arguments = settings.arguments.split { $0.isWhitespace }.map(String.init)

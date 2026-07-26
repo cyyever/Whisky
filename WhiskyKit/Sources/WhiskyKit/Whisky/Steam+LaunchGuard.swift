@@ -41,26 +41,31 @@ extension Steam {
         url.lastPathComponent.caseInsensitiveCompare("Steam.exe") == .orderedSame
     }
 
-    /// Kill every leftover Steam process — the client, its CEF login trees, and the
-    /// background service — then wait until they're gone, so a fresh launch starts
-    /// clean. Call only when no live client is running (`isSteamRunning` is false).
+    /// Clear everything Steam left behind so a fresh launch starts clean — kill the
+    /// client, its CEF login trees, and the background service, then the bottle's
+    /// wineserver. Call only when no live client is running (`isSteamRunning` is false).
     ///
-    /// Steam's own mutex does not survive Wine's wineserver lifecycle: when the
-    /// server is killed or restarts (frequent here — Wine rebuilds, `wineserver -k`,
-    /// crashes), running `steamwebhelper` trees reparent to launchd (PPID 1) and
-    /// detach from the new server, and a `steamservice` can linger. A new Steam then
-    /// fights them over the one `-steampid` and the login window never renders, so
-    /// they must be reaped.
-    public static func reapSteamProcesses() async {
+    /// Two things must be cleared. (1) Steam's mutex does not survive Wine's wineserver
+    /// lifecycle: when the server is killed or restarts (Wine rebuilds, `wineserver -k`,
+    /// crashes), running `steamwebhelper` trees reparent to launchd (PPID 1) and detach
+    /// from the new server — `wineserver -k` can no longer reach them, so they are
+    /// killed directly. (2) The old wineserver itself: an orphaned/detached one keeps a
+    /// Steam bound to a dead session whose windows macOS no longer maps (the
+    /// invisible-Steam trap). It is found by its `WINEPREFIX` environment and killed
+    /// with `kill(2)` — not `wineserver -k`, which can't reach a detached session.
+    public static func reapSteamProcesses(in bottle: Bottle) async {
         await SteamLaunchGuard.shared.serialize {
             for pid in matchingPIDs(patterns: steamProcessPatterns) {
                 kill(pid, SIGKILL)
             }
             // SIGKILL is prompt, but reparented children can take a moment to
-            // disappear; wait (bounded ~5s) so the launch starts from a clean slate.
+            // disappear; wait (bounded ~5s) before clearing the server.
             for _ in 0..<25 {
-                if matchingPIDs(patterns: steamProcessPatterns).isEmpty { return }
+                if matchingPIDs(patterns: steamProcessPatterns).isEmpty { break }
                 try? await Task.sleep(for: .milliseconds(200))
+            }
+            for pid in wineserverPIDs(forPrefix: bottle.url.path(percentEncoded: false)) {
+                kill(pid, SIGKILL)
             }
         }
     }
@@ -70,8 +75,20 @@ extension Steam {
     private static func matchingPIDs(patterns: [String]) -> [pid_t] {
         let needles = patterns.map { $0.lowercased() }
         return allPIDs().filter { pid in
-            guard let argv = processArgv(pid)?.lowercased() else { return false }
+            guard let argv = processArgvEnv(pid)?.argv.lowercased() else { return false }
             return needles.contains { argv.contains($0) }
+        }
+    }
+
+    /// PIDs of the wineserver(s) whose `WINEPREFIX` environment is `prefix` — matched on
+    /// argv (the wineserver binary) plus env (the prefix), so this bottle's server is
+    /// killed without touching another bottle's, entirely via `sysctl` + `kill(2)`.
+    private static func wineserverPIDs(forPrefix prefix: String) -> [pid_t] {
+        let prefixNeedle = "wineprefix=\(prefix)".lowercased()
+        return allPIDs().filter { pid in
+            guard let info = processArgvEnv(pid) else { return false }
+            return info.argv.lowercased().contains("wineserver")
+                && info.env.lowercased().contains(prefixNeedle)
         }
     }
 
@@ -87,9 +104,9 @@ extension Steam {
         return pids.prefix(Int(written) / MemoryLayout<pid_t>.size).filter { $0 != 0 }
     }
 
-    /// The exec path + argv of `pid` as one string (environment excluded), via
+    /// The exec path + argv and the environment of `pid`, each as one string, via
     /// `sysctl(KERN_PROCARGS2)`. Returns nil when the process is gone or unreadable.
-    private static func processArgv(_ pid: pid_t) -> String? {
+    private static func processArgvEnv(_ pid: pid_t) -> (argv: String, env: String)? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0,
@@ -107,15 +124,20 @@ extension Steam {
             defer { index += 1 }
             return String(bytes: buffer[start..<index], encoding: .utf8)
         }
-        var parts: [String] = []
-        if let execPath = nextString() { parts.append(execPath) }
-        while index < buffer.count, buffer[index] == 0 { index += 1 }  // skip padding
+        var argvParts: [String] = []
+        if let execPath = nextString() { argvParts.append(execPath) }
+        while index < buffer.count, buffer[index] == 0 { index += 1 }  // padding before argv
         var read: Int32 = 0
         while read < argc, index < buffer.count, let arg = nextString() {
-            parts.append(arg)
+            argvParts.append(arg)
             read += 1
         }
-        return parts.joined(separator: " ")
+        var envParts: [String] = []
+        while index < buffer.count, buffer[index] == 0 { index += 1 }  // padding before env
+        while index < buffer.count, let env = nextString(), !env.isEmpty {
+            envParts.append(env)
+        }
+        return (argvParts.joined(separator: " "), envParts.joined(separator: " "))
     }
 }
 
