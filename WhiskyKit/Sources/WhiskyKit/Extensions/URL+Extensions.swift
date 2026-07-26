@@ -19,7 +19,7 @@
 import Foundation
 
 extension String {
-    public var esc: String {
+    var esc: String {
         let esc = ["\\", "\"", "'", " ", "(", ")", "[", "]", "{", "}", "&", "|",
                    ";", "<", ">", "`", "$", "!", "*", "?", "#", "~", "="]
         var str = self
