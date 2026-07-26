@@ -275,16 +275,20 @@ public class Wine {
             // DllMain access-violates on a garbage allocator vtable and Steam shows
             // "reinstall Steam". Ignored by Whisky-Wine 11.13 (no such code).
             "PROTON_DISABLE_LSTEAMCLIENT": "1",
-            // Proton msync: route anonymous auto-reset events to server-sync
-            // (everything else -- semaphore, mutex, manual event, msg-queue,
-            // named auto-events -- stays on fast msync). This targets a
-            // full-msync CPU spin, but it is an UNPROVEN workaround, not a fix:
-            // re-verification saw steam.exe still pin a core with this set, and
-            // the busy-poll was observed on a MANUAL event (which no auto-event
-            // lever touches), so the root cause is not localized. Kept as the
-            // current best-effort default. Coarser levers if it regresses:
-            // WINEMSYNC_NO_AUTOEVENT=1 (all auto-events) or WINEMSYNC_NO_EVENT=1
+            // Proton msync: route MANUAL-reset events (and anonymous auto-reset
+            // events) to server-sync; everything else -- semaphore, mutex, named
+            // auto-events, msg-queue -- stays on the fast msync path. This kills a
+            // full-msync 100%-CPU spin: steam.exe pins a core inside
+            // msync_wait_multiple on a rapidly set/reset MANUAL event, and once the
+            // update thread is spinning the login window never gets drawn.
+            // NO_ANON_AUTOEVENT alone did NOT fix it (busy-poll was on a manual
+            // event, which that lever doesn't touch). Reproduced and bisected with
+            // scripts/msync-manualevent-spin-test.c: under plain msync the flapping
+            // manual event burns ~13.6 CPU-s / 12.6M wakeups; NO_MANUALEVENT drops
+            // it to the wineserver baseline (~6.2 CPU-s / 0.6M wakeups), matching
+            // WINEMSYNC=0. Coarser lever if it ever regresses: WINEMSYNC_NO_EVENT=1
             // (all events -> server). Ignored when msync is off / lever absent.
+            "WINEMSYNC_NO_MANUALEVENT": "1",
             "WINEMSYNC_NO_ANON_AUTOEVENT": "1"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
