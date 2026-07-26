@@ -385,22 +385,6 @@
         }
       }
     },
-    "check.updates": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Check for Updates..."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "检查更新..."
-          }
-        }
-      }
-    },
     "config.avx": {
       "localizations": {
         "en": {
@@ -445,22 +429,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "构建版本"
-          }
-        }
-      }
-    },
-    "config.controlPanel": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open Control Panel"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "打开控制面板"
           }
         }
       }
@@ -543,70 +511,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "在DirectX 12 游戏中启用光线追踪 "
-          }
-        }
-      }
-    },
-    "config.enhacnedSync.esync": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ESync"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ESync"
-          }
-        }
-      }
-    },
-    "config.enhacnedSync.msync": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "MSync"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "MSync"
-          }
-        }
-      }
-    },
-    "config.enhancedSync": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enhanced Sync"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "增强同步"
-          }
-        }
-      }
-    },
-    "config.enhancedSync.none": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "None"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "无"
           }
         }
       }
@@ -723,22 +627,6 @@
         }
       }
     },
-    "config.regedit": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open Registry Editor"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "打开注册表编辑器"
-          }
-        }
-      }
-    },
     "config.retinaMode": {
       "localizations": {
         "en": {
@@ -816,22 +704,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Windows 版本"
-          }
-        }
-      }
-    },
-    "config.winecfg": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open Wine Configuration"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "打开 Wine 配置"
           }
         }
       }
@@ -1670,54 +1542,6 @@
         }
       }
     },
-    "settings.toggle.whisky.updates": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Automatically check for Whisky updates"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "自动检查Whisky更新"
-          }
-        }
-      }
-    },
-    "settings.toggle.whiskywine.updates": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Automatically check for WhiskyWine updates"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "自动检查 WhiskyWine 更新"
-          }
-        }
-      }
-    },
-    "settings.updates": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Updates"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更新"
-          }
-        }
-      }
-    },
     "setup.done": {
       "localizations": {
         "en": {
@@ -1910,22 +1734,6 @@
         }
       }
     },
-    "setup.uninstall": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Uninstall"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "卸载"
-          }
-        }
-      }
-    },
     "setup.welcome": {
       "localizations": {
         "en": {
@@ -1954,102 +1762,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "让我们帮您安装好，这不会用很长时间。"
-          }
-        }
-      }
-    },
-    "setup.whiskywine.download": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Downloading WhiskyWine"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在下载 WhiskyWine"
-          }
-        }
-      }
-    },
-    "setup.whiskywine.download.subtitle": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Speeds will vary on your internet connection."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "下载速度受您的网络质量影响。"
-          }
-        }
-      }
-    },
-    "setup.whiskywine.eta": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "- %@ remaining"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "- 剩余 %@"
-          }
-        }
-      }
-    },
-    "setup.whiskywine.install": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Installing WhiskyWine"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "正在安装 WhiskyWine"
-          }
-        }
-      }
-    },
-    "setup.whiskywine.install.subtitle": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Almost there. Don't tune out yet."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "就快完成了，请不要退出。"
-          }
-        }
-      }
-    },
-    "setup.whiskywine.progress": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ of %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%2$@ 中的 %1$@"
           }
         }
       }
@@ -2163,54 +1875,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "已安装的程序"
-          }
-        }
-      }
-    },
-    "update.whiskywine.description": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "You are running WhiskyWine %@, but %@ is available. Would you like to update?"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "您正在运行 WhiskyWine %@，但 %@ 可用。您想要更新吗？"
-          }
-        }
-      }
-    },
-    "update.whiskywine.title": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "New Version of WhiskyWine Available"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "有更新的 WhiskyWine 版本可用"
-          }
-        }
-      }
-    },
-    "update.whiskywine.update": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Update"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "更新"
           }
         }
       }

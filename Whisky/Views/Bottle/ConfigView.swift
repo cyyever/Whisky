@@ -154,39 +154,6 @@ struct ConfigView: View {
         .animation(.whiskyDefault, value: wineSectionExpanded)
         .animation(.whiskyDefault, value: metalSectionExpanded)
         .animation(.whiskyDefault, value: advancedSectionExpanded)
-        .bottomBar {
-            HStack {
-                Spacer()
-                Button("config.controlPanel") {
-                    Task(priority: .userInitiated) {
-                        do {
-                            try await Wine.control(bottle: bottle)
-                        } catch {
-                            print("Failed to launch control")
-                        }
-                    }
-                }
-                Button("config.regedit") {
-                    Task(priority: .userInitiated) {
-                        do {
-                            try await Wine.regedit(bottle: bottle)
-                        } catch {
-                            print("Failed to launch regedit")
-                        }
-                    }
-                }
-                Button("config.winecfg") {
-                    Task(priority: .userInitiated) {
-                        do {
-                            try await Wine.cfg(bottle: bottle)
-                        } catch {
-                            print("Failed to launch winecfg")
-                        }
-                    }
-                }
-            }
-            .padding()
-        }
         .navigationTitle("tab.config")
         .onAppear {
             winVersionLoadingState = .success

@@ -393,21 +393,6 @@ extension Wine {
     }
 
     @discardableResult
-    public static func control(bottle: Bottle) async throws -> String {
-        return try await Self.runWine(["control"], bottle: bottle)
-    }
-
-    @discardableResult
-    public static func regedit(bottle: Bottle) async throws -> String {
-        return try await Self.runWine(["regedit"], bottle: bottle)
-    }
-
-    @discardableResult
-    public static func cfg(bottle: Bottle) async throws -> String {
-        return try await Self.runWine(["winecfg"], bottle: bottle)
-    }
-
-    @discardableResult
     public static func changeWinVersion(
         bottle: Bottle, win: WinVersion, environment: [String: String] = [:]
     ) async throws -> String {
