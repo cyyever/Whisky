@@ -153,30 +153,6 @@ public class Wine {
         return wineCmd
     }
 
-    public static func generateTerminalEnvironmentCommand(bottle: Bottle) -> String {
-        var cmd = """
-        export PATH=\"\(binFolder(for: bottle).path):$PATH\"
-        export WINE=\"wine64\"
-        alias wine=\"wine64\"
-        alias winecfg=\"wine64 winecfg\"
-        alias msiexec=\"wine64 msiexec\"
-        alias regedit=\"wine64 regedit\"
-        alias regsvr32=\"wine64 regsvr32\"
-        alias wineboot=\"wine64 wineboot\"
-        alias wineconsole=\"wine64 wineconsole\"
-        alias winedbg=\"wine64 winedbg\"
-        alias winefile=\"wine64 winefile\"
-        alias winepath=\"wine64 winepath\"
-        """
-
-        let env = constructWineEnvironment(for: bottle)
-        for environment in env {
-            cmd += "\nexport \(environment.key)=\"\(environment.value)\""
-        }
-
-        return cmd
-    }
-
     /// Run a `wineserver` command with the given arguments and return the output result
     private static func runWineserver(_ args: [String], bottle: Bottle) async throws -> String {
         var result: [ProcessOutput] = []

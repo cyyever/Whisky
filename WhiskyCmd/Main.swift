@@ -26,8 +26,7 @@ struct Whisky: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "A CLI interface for Whisky.",
         subcommands: [List.self,
-                      Run.self,
-                      Shellenv.self])
+                      Run.self])
 }
 
 extension Whisky {
@@ -73,25 +72,6 @@ extension Whisky {
             let url = URL(fileURLWithPath: path)
             let program = Program(url: url, bottle: bottle)
             await program.launch()
-        }
-    }
-
-    struct Shellenv: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Prints export statements for a Bottle for eval.")
-
-        @Argument var bottleName: String
-
-        mutating func run() throws {
-            var bottlesList = BottleData()
-            let bottles = bottlesList.loadBottles()
-
-            guard let bottle = bottles.first(where: { $0.settings.name == bottleName }) else {
-                throw ValidationError("A bottle with that name doesn't exist.")
-            }
-
-            let envCmd = Wine.generateTerminalEnvironmentCommand(bottle: bottle)
-            print(envCmd)
-
         }
     }
 
