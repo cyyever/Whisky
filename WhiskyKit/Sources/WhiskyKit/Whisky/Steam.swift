@@ -164,9 +164,16 @@ public enum Steam {
 // extension so the main `Steam` enum stays within SwiftLint's type_body_length;
 // same-file `private` access makes the split seamless.
 extension Steam {
-    /// Copy `source` to `dest` (replacing) unless they are already the same size.
+    /// Copy `source` to `dest` (replacing) unless they are already byte-identical.
     private static func installFile(_ source: URL, to dest: URL, fileManager: FileManager) {
-        if fileSize(of: dest) == fileSize(of: source) { return }
+        // Compare by content, not just size: a rebuilt wrapper can be a different
+        // binary of identical size (mingw section padding absorbs a small change,
+        // e.g. adding a CEF flag), and a size-only check would leave the bottle
+        // running the stale copy. Read contents only when the sizes already match.
+        if fileSize(of: dest) == fileSize(of: source),
+           let src = try? Data(contentsOf: source), let dst = try? Data(contentsOf: dest), src == dst {
+            return
+        }
         try? fileManager.createDirectory(
             at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         if replace(at: dest, with: source, fileManager: fileManager) {
