@@ -20,21 +20,6 @@ import Foundation
 import os.log
 
 extension FileHandle {
-    func extract<T>(_: T.Type, offset: UInt64 = 0) -> T? {
-        do {
-            try self.seek(toOffset: offset)
-            // A short read near EOF returns a non-nil, under-length Data; loading
-            // T from it would over-read and trap. Require the full size.
-            guard let data = try self.read(upToCount: MemoryLayout<T>.size),
-                  data.count == MemoryLayout<T>.size else {
-                return nil
-            }
-            return data.withUnsafeBytes { $0.loadUnaligned(as: T.self) }
-        } catch {
-            return nil
-        }
-    }
-
     func write(line: String) {
         do {
             guard let data = line.data(using: .utf8) else { return }
