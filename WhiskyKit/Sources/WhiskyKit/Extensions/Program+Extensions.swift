@@ -33,12 +33,18 @@ extension Program {
     /// bottle preparation (Steam's CEF wrapper, DXVK auto-drop) happens exactly
     /// once, and there is only one way to run a program.
     public func launch() async {
-        await Wine.prepareForLaunch(bottle: bottle)
-        // Launching Steam: reap orphaned CEF webhelper trees first so exactly one
-        // login tree comes up (Steam's own mutex can't reap Wine-orphaned ones).
+        // Steam is single-instance: if a client is already running, warn and do not
+        // start a second (their CEF trees would fight over the one -steampid). If
+        // none is running, reap any orphaned Steam processes — crash / wineserver-kill
+        // leftovers, including the background service — so the new one starts clean.
         if Steam.isSteamClient(url) {
-            await Steam.reapCEFProcesses()
+            if Steam.isSteamRunning() {
+                await showSteamAlreadyRunningAlert()
+                return
+            }
+            await Steam.reapSteamProcesses()
         }
+        await Wine.prepareForLaunch(bottle: bottle)
         let arguments = settings.arguments.split { $0.isWhitespace }.map(String.init)
         do {
             try await Wine.runProgram(
@@ -65,6 +71,18 @@ extension Program {
         + " \(self.url.lastPathComponent): "
         + message
         alert.alertStyle = .critical
+        alert.addButton(withTitle: String(localized: "button.ok"))
+        alert.runModal()
+    }
+
+    @MainActor private func showSteamAlreadyRunningAlert() {
+        let alert = NSAlert()
+        alert.messageText = String(
+            localized: "alert.steamRunning.message", defaultValue: "Steam is already running")
+        alert.informativeText = String(
+            localized: "alert.steamRunning.info",
+            defaultValue: "Quit the running Steam before launching it again.")
+        alert.alertStyle = .warning
         alert.addButton(withTitle: String(localized: "button.ok"))
         alert.runModal()
     }
