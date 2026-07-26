@@ -320,14 +320,17 @@ public struct BottleSettings: Codable, Equatable {
 
         switch enhancedSync {
         case .none:
-            break
+            // msync (mach/__ulock fast-sync) is proton-wine's default on macOS —
+            // `do_msync()` treats an unset WINEMSYNC as enabled. So *disabling* it is
+            // the only thing an env can do here: WINEMSYNC=0 forces the (slower)
+            // wineserver fallback.
+            wineEnv.updateValue("0", forKey: "WINEMSYNC")
         case .esync, .msync:
-            // WINEMSYNC=1 selects the mach/__ulock fast-sync backend. `.esync` is
-            // decode-migrated to `.msync` (no eventfd on macOS), so it only reaches
-            // here defensively. We deliberately don't touch WINEESYNC — it's dead on
-            // this stack (no esync.c in the wine tree, DXMT doesn't read it — verified
-            // by binary scan).
-            wineEnv.updateValue("1", forKey: "WINEMSYNC")
+            // Nothing to set: msync is already the default. WINEMSYNC=1 would be
+            // redundant, so we leave the env untouched and let the default stand.
+            // (`.esync` is decode-migrated to `.msync` — no eventfd on macOS; and
+            // WINEESYNC is dead on this stack, so we never touch it either.)
+            break
         }
 
         if metalHud {
