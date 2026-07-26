@@ -18,7 +18,6 @@
 
 import Foundation
 import os.log
-import SemanticVersion
 
 extension FileHandle {
     func extract<T>(_: T.Type, offset: UInt64 = 0) -> T? {

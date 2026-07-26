@@ -286,10 +286,6 @@ public class Wine {
     }
 }
 
-enum WineInterfaceError: Error {
-    case invalidResponce
-}
-
 enum RegistryType: String {
     case binary = "REG_BINARY"
     case dword = "REG_DWORD"

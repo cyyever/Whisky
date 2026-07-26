@@ -16,7 +16,6 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
-import AppKit
 import Foundation
 
 public struct ShellLinkHeader {
