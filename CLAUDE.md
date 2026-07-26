@@ -5,7 +5,7 @@ Fork of [Whisky-App/Whisky](https://github.com/Whisky-App/Whisky) (archived): a 
 Keep this file high-level. Details live in `docs/`, the build scripts, `patches/`, and the code — link to them, don't restate them here.
 
 ## Architecture
-- **Whisky** — SwiftUI app (Xcode project). **WhiskyKit** — Swift package (Wine/bottle/process logic); `PlatformMacOS/` holds the macOS-specific files, `PlatformServices.swift` the cross-platform seam.
+- **Whisky** — SwiftUI app (Xcode project). **WhiskyKit** — Swift package (Wine/bottle/process logic); `PlatformMacOS/` holds the macOS-specific files.
 - **Wine** — x86_64 Proton-wine 11.0, built from source, runs under Rosetta 2. Source `vendor/proton-wine` (gitignored) + `patches/proton-wine/`.
 - **DXMT** — Metal D3D11/10/DXGI (`vendor/dxmt`). **DXVK** — D3D9 only (`vendor/dxvk`). **KosmicKrisp** — Vulkan-on-Metal (`vendor/mesa`).
 - **SteamHelper** — webhelper wrapper attached via IFEO to fix Steam's black CEF window.

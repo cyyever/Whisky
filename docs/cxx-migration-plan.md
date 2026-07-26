@@ -11,9 +11,10 @@ The core is kept **as small as possible** by two rules, applied everywhere:
 2. **Don't put in core what belongs to the OS or the UI.** OS differences hide
    behind a tiny protocol seam; UI concerns live in the frontend.
 
-This doc is the *target architecture* and the staged path to it. Stage 0 (the
-`PlatformServices.swift` protocol skeleton + this doc) is done, and the hard-macOS
-files are gathered under `PlatformMacOS/`; the rest of the reorg is pending.
+This doc is the *target architecture* and the staged path to it. Nothing is
+implemented yet — an earlier `PlatformServices.swift` protocol skeleton was removed
+as premature (zero conformers); the seam below is the design to add when the reorg
+actually starts. The hard-macOS files are already gathered under `PlatformMacOS/`.
 
 ## Three layers
 
@@ -119,8 +120,9 @@ read a shortcut's target, so this parse stays in core.
 
 ## Staged path
 
-- **Stage 0 — skeleton (done):** `PlatformServices.swift` (`ProxyResolver`,
-  `ArchInfo`, `WineHostConfig`) + this doc, and the hard-macOS files gathered under
+- **Stage 0 — the seam (design only):** introduce `ProxyResolver` / `ArchInfo`
+  protocols + a `WineHostConfig` value as the platform seam (an earlier skeleton was
+  removed as premature). The hard-macOS files are already gathered under
   `PlatformMacOS/`. No behavior change; single SPM target; build green.
 - **Stage 1 — directory reorg, single SPM target:** group files into `Core/` and
   `PlatformMacOS/`; make `SystemProxy`/`Rosetta2` conform to the seam; build stays
