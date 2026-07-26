@@ -115,6 +115,8 @@ public class Wine {
     public static func prepareForLaunch(bottle: Bottle) async {
         // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
         await Steam.configure(in: bottle)
+        // Install DXVK's d3d9/d3d8 into the Wine layer (wined3d D3D9 is broken on macOS).
+        await DXVK.installSystemDLLs(in: bottle)
     }
 
     /// Execute a `wine start /unix {url}` command returning the output result.
@@ -133,12 +135,51 @@ public class Wine {
         at url: URL, args: [String] = [], bottle: Bottle,
         environment: [String: String] = [:], waitForExit: Bool = false
     ) async throws {
-        let startArgs = waitForExit ? ["start", "/wait", "/unix"] : ["start", "/unix"]
-        for await _ in try Self.runWineProcess(
-            name: url.lastPathComponent,
-            args: startArgs + [url.path(percentEncoded: false)] + args,
-            bottle: bottle, environment: environment
-        ) { }
+        let allArgs = (waitForExit ? ["start", "/wait", "/unix"] : ["start", "/unix"])
+            + [url.path(percentEncoded: false)] + args
+
+        // Installer path: stream + log the output. `start /wait` keeps the `wine`
+        // process alive until the installer exits, so the stream completes cleanly
+        // (no surviving child holds the pipe open).
+        if waitForExit {
+            for await _ in try Self.runWineProcess(
+                name: url.lastPathComponent, args: allArgs, bottle: bottle, environment: environment
+            ) { }
+            return
+        }
+
+        // Fire-and-forget launch (a game, Steam): `start` (no `/wait`) returns as soon
+        // as it has launched the program, but the launched program inherits our
+        // stdout/stderr — so streaming would keep the pipe's write end open (and, for
+        // a busy program, flood us with output at 100% CPU) until that program exits,
+        // never returning. Discard output to /dev/null and return once the `wine`
+        // launcher itself exits, which is near-immediate.
+        let process = Process()
+        process.executableURL = wineBinary(for: bottle)
+        process.arguments = allArgs
+        process.currentDirectoryURL = wineBinary(for: bottle).deletingLastPathComponent()
+        process.environment = constructWineEnvironment(for: bottle, environment: environment)
+        process.qualityOfService = .userInitiated
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        Logger.wineKit.info("Launching: \(allArgs.joined(separator: " "))")
+        try process.run()
+
+        // Bounded wait for the launcher to exit. `wine start` normally exits in well
+        // under a second once it has handed the program to wineserver — but assume any
+        // wine bug could hang it, and never let that hang the caller (the CLI process,
+        // or the GUI's launch task). Poll so we return promptly on the normal exit; if
+        // it is still running past the deadline, abandon it: terminate the stuck
+        // launcher (the program itself is owned by wineserver, not this process) and
+        // return anyway.
+        for _ in 0..<300 {   // ~30s at 100ms
+            if !process.isRunning { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        if process.isRunning {
+            Logger.wineKit.warning("`wine start` did not exit within ~30s; abandoning the launcher")
+            process.terminate()
+        }
     }
 
     public static func generateRunCommand(
