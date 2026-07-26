@@ -129,10 +129,6 @@ struct ConfigView: View {
                 }
             }
             Section("config.title.metal", isExpanded: $metalSectionExpanded) {
-                Toggle(isOn: $bottle.settings.dxmt) {
-                    Text("config.dxmt")
-                    Text("config.dxmt.info")
-                }
                 Toggle(isOn: $bottle.settings.metalHud) {
                     Text("config.metalHud")
                 }

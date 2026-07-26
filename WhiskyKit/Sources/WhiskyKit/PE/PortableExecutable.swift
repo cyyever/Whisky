@@ -25,23 +25,6 @@ public struct PEError: Error {
     static let invalidPEFile = Self(message: "Invalid PE file")
 }
 
-public enum Architecture: Hashable {
-    case x32
-    case x64
-    case unknown
-
-    public func toString() -> String? {
-        switch self {
-        case .x32:
-            return "32-bit"
-        case .x64:
-            return "64-bit"
-        default:
-            return nil
-        }
-    }
-}
-
 /// Microsoft Portable Executable
 ///
 /// https://learn.microsoft.com/en-us/windows/win32/debug/pe-format
@@ -99,18 +82,6 @@ public struct PEFile: Hashable, Equatable, Sendable {
             offset += 40 // Size of Section
         }
         self.sections = sections
-    }
-
-    /// The ``Architecture`` of the executable
-    public var architecture: Architecture {
-        switch optionalHeader?.magic {
-        case .pe32:
-            return .x32
-        case .pe32Plus:
-            return .x64
-        default:
-            return .unknown
-        }
     }
 
     /// Read the resource section

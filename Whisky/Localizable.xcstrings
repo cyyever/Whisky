@@ -449,38 +449,6 @@
         }
       }
     },
-    "config.dxmt": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DXMT (Metal D3D11)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DXMT(Metal D3D11)"
-          }
-        }
-      }
-    },
-    "config.dxmt.info": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Metal-native Direct3D 11 for modern games"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "为现代游戏提供 Metal 原生 Direct3D 11"
-          }
-        }
-      }
-    },
     "config.dxr": {
       "extractionState": "manual",
       "localizations": {

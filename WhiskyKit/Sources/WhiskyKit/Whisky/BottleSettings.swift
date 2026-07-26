@@ -152,9 +152,6 @@ public struct BottleWineConfig: Codable, Equatable {
 public struct BottleMetalConfig: Codable, Equatable {
     var metalHud: Bool = false
     var dxrEnabled: Bool = false
-    /// DXMT: Metal-native D3D11 (builtin via `make dxmt`). On by default — it is
-    /// the working D3D11 path for modern games on Apple Silicon.
-    var dxmt: Bool = true
     /// Hide virtual audio devices (Steam Streaming, Teams, loopback) from games.
     /// On by default — some games hang while enumerating them.
     var hideVirtualAudioDevices: Bool = true
@@ -165,7 +162,6 @@ public struct BottleMetalConfig: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.metalHud = container.decodeResilient(Bool.self, forKey: .metalHud, default: false)
         self.dxrEnabled = container.decodeResilient(Bool.self, forKey: .dxrEnabled, default: false)
-        self.dxmt = container.decodeResilient(Bool.self, forKey: .dxmt, default: true)
         self.hideVirtualAudioDevices = container.decodeResilient(
             Bool.self, forKey: .hideVirtualAudioDevices, default: true)
     }
@@ -251,12 +247,6 @@ public struct BottleSettings: Codable, Equatable {
     public var dxrEnabled: Bool {
         get { return metalConfig.dxrEnabled }
         set { metalConfig.dxrEnabled = newValue }
-    }
-
-    /// DXMT: Metal-native D3D11. On by default.
-    public var dxmt: Bool {
-        get { return metalConfig.dxmt }
-        set { metalConfig.dxmt = newValue }
     }
 
     /// Hide virtual audio devices from games. On by default.

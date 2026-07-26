@@ -25,65 +25,6 @@ extension Bottle {
         NSWorkspace.shared.open(url.appending(path: "drive_c"))
     }
 
-    @discardableResult
-    func getStartMenuPrograms() -> [Program] {
-        let globalStartMenu = url
-            .appending(path: "drive_c")
-            .appending(path: "ProgramData")
-            .appending(path: "Microsoft")
-            .appending(path: "Windows")
-            .appending(path: "Start Menu")
-
-        let userStartMenu = url
-            .appending(path: "drive_c")
-            .appending(path: "users")
-            .appending(path: "crossover")
-            .appending(path: "AppData")
-            .appending(path: "Roaming")
-            .appending(path: "Microsoft")
-            .appending(path: "Windows")
-            .appending(path: "Start Menu")
-
-        var startMenuPrograms: [Program] = []
-        var linkURLs: [URL] = []
-        let globalEnumerator = FileManager.default.enumerator(at: globalStartMenu,
-                                                              includingPropertiesForKeys: [.isRegularFileKey],
-                                                              options: [.skipsHiddenFiles])
-        while let url = globalEnumerator?.nextObject() as? URL {
-            if url.pathExtension == "lnk" {
-                linkURLs.append(url)
-            }
-        }
-
-        let userEnumerator = FileManager.default.enumerator(at: userStartMenu,
-                                                            includingPropertiesForKeys: [.isRegularFileKey],
-                                                            options: [.skipsHiddenFiles])
-        while let url = userEnumerator?.nextObject() as? URL {
-            if url.pathExtension == "lnk" {
-                linkURLs.append(url)
-            }
-        }
-
-        linkURLs.sort(by: { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() })
-
-        for link in linkURLs {
-            do {
-                if let program = ShellLinkHeader.getProgram(url: link,
-                                                            handle: try FileHandle(forReadingFrom: link),
-                                                            bottle: self) {
-                    if !startMenuPrograms.contains(where: { $0.url == program.url }) {
-                        startMenuPrograms.append(program)
-                        try FileManager.default.removeItem(at: link)
-                    }
-                }
-            } catch {
-                print(error)
-            }
-        }
-
-        return startMenuPrograms
-    }
-
     func updateInstalledPrograms() {
         let driveC = url.appending(path: "drive_c")
         var programs: [Program] = []

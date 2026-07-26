@@ -164,17 +164,6 @@ struct ProgramItemView: View {
             Text(program.name)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if showButtons {
-                if let peFile = program.peFile,
-                   let archString = peFile.architecture.toString() {
-                    Text(archString)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .stroke(.secondary)
-                        )
-                }
-
                 Button("program.config", systemImage: "gearshape") {
                     path.append(program)
                 }

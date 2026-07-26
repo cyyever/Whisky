@@ -120,7 +120,7 @@ struct BottleView: View {
                 if let installError { Text(installError) }
             }
             .onAppear {
-                updateStartMenu()
+                bottle.updateInstalledPrograms()
             }
             .disabled(!bottle.isAvailable)
             .navigationTitle(bottle.settings.name)
@@ -159,7 +159,7 @@ struct BottleView: View {
             }
             programLoading = false
             loadingStatus = nil
-            updateStartMenu()
+            bottle.updateInstalledPrograms()
         }
     }
 
@@ -181,26 +181,9 @@ struct BottleView: View {
                 // and bottle preparation, and surfaces its own errors.
                 await Program(url: url, bottle: bottle).launch()
                 programLoading = false
-                updateStartMenu()
+                bottle.updateInstalledPrograms()
             }
         }
     }
 
-    private func updateStartMenu() {
-        bottle.updateInstalledPrograms()
-
-        let startMenuPrograms = bottle.getStartMenuPrograms()
-        for startMenuProgram in startMenuPrograms {
-            for program in bottle.programs where
-            // For some godforsaken reason "foo/bar" != "foo/Bar" so...
-            program.url.path().caseInsensitiveCompare(startMenuProgram.url.path()) == .orderedSame {
-                program.pinned = true
-                guard !bottle.settings.pins.contains(where: { $0.url == program.url }) else { return }
-                bottle.settings.pins.append(PinnedProgram(
-                    name: program.url.deletingPathExtension().lastPathComponent,
-                    url: program.url
-                ))
-            }
-        }
-    }
 }
