@@ -58,9 +58,6 @@ public enum Steam {
         "Program Files/Steam"
     ]
 
-    /// Registry key holding per-DLL load-order overrides.
-    private static let dllOverridesKey = #"HKCU\Software\Wine\DllOverrides"#
-
     /// Make a bottle ready to run Steam's CEF host under Wine: install the
     /// webhelper wrapper and, when Steam is present, attach it via the image's
     /// IFEO `Debugger` value (keeping `steamwebhelper.exe` genuine so Steam's
@@ -72,18 +69,10 @@ public enum Steam {
                 bottle: bottle, key: ifeoDebuggerKey, name: "Debugger",
                 data: ifeoDebuggerValue, type: .string
             )
-            // Force Wine's builtin winevulkan for vulkan-1.dll. Steam's CEF host
-            // ships its own vulkan-1.dll in bin/cef/cef.win64; loaded natively it's
-            // a Windows Vulkan loader that exposes no VK_KHR_surface/win32_surface,
-            // so ANGLE's Vulkan+SwiftShader backends abort and CEF spins in a
-            // gl_factory_win loop with no window. A `WINEDLLOVERRIDES` env entry does
-            // NOT catch that app-directory, full-path load — only the registry
-            // DllOverride does — so it must live here, not just in the launch env.
-            // The on-disk file is untouched, so Steam's file verification still passes.
-            try? await Wine.addRegistryKey(
-                bottle: bottle, key: dllOverridesKey, name: "vulkan-1",
-                data: "builtin", type: .string
-            )
+            // vulkan-1 no longer needs a DllOverride here: proton-wine's load order
+            // (patches/proton-wine 0017) defaults it (and the D3D stack) to builtin
+            // by basename, which also catches CEF's own bin/cef/cef.win64/vulkan-1.dll
+            // app-directory load — the case a registry/env override was needed for.
         }
     }
 

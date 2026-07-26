@@ -2,14 +2,16 @@
 set -e
 
 # Build DXVK's d3d9.dll + d3d8.dll (32- and 64-bit PE, cross-compiled with
-# mingw-w64) and install the payload into the Whisky Libraries folder. Whisky
-# auto-copies the matching dll(s) into Steam game dirs whose executables import
-# d3d9.dll / d3d8.dll (see WhiskyKit's Steam.installDXVKForGames).
+# mingw-w64) and install them as the Wine *builtin* d3d9/d3d8, overwriting
+# wined3d's (broken for D3D9 on macOS) — the same layer DXMT uses for d3d11.
+# proton-wine patch 0017 then defaults d3d9/d3d8 to builtin in the load order, so
+# no bottle needs a WINEDLLOVERRIDES.
 #
-# d3d8 is a thin wrapper over DXVK's d3d9 (it calls Direct3DCreate9 from
-# d3d9.dll), so it ships alongside d3d9 and the auto-drop provides both to a
-# D3D8 game. D3D11/D3D10/DXGI are still NOT built: DXMT owns them, and upstream
-# DXVK's d3d11 path cannot initialize on Apple GPUs (needs Vulkan geometryShader).
+# d3d8 is a thin wrapper over DXVK's d3d9 (it calls Direct3DCreate9 from d3d9.dll),
+# so it ships alongside d3d9. D3D11/D3D10/DXGI are NOT built here: DXMT owns them on
+# macOS (upstream DXVK's d3d11 needs Vulkan geometryShader, absent on Apple GPUs).
+# Must run AFTER `make proton`, which rebuilds Wine/lib and would otherwise clobber
+# these builtins — same lifecycle as `make dxmt`.
 #
 # Requires: ARM brew mingw-w64 + meson + ninja. The ~/.local/bin meson has a
 # broken interpreter — keep it off PATH.
@@ -56,14 +58,21 @@ setup_arch() {  # <cross-file> <build-dir> <install-subdir>
     fi
 }
 
-build_arch() {  # <build-dir> <install-subdir>
-    local build_dir="$1" subdir="$2"
-    echo "=== Building DXVK ($subdir) ==="
+# Install DXVK as the Wine *builtin* d3d9/d3d8 (overwriting wined3d's, which is
+# broken for D3D9 on macOS) — the same layer DXMT uses for d3d11. `patches/proton-wine`
+# 0017 then defaults d3d9/d3d8 to builtin in the load order, so no bottle needs a
+# WINEDLLOVERRIDES. win64 -> x86_64-windows, win32 -> i386-windows.
+WINE_LIB="$INSTALL_DIR/Wine/lib/wine"
+[ -d "$WINE_LIB/x86_64-windows" ] || {
+    echo "ERROR: Wine not installed at $WINE_LIB. Run 'make proton' first." >&2; exit 1; }
+
+build_arch() {  # <build-dir> <wine-arch-dir>
+    local build_dir="$1" wine_arch="$2"
+    echo "=== Building DXVK ($wine_arch) ==="
     ninja -C "$DXVK_SRC/$build_dir" src/d3d9/d3d9.dll src/d3d8/d3d8.dll
-    echo "=== Installing d3d9.dll + d3d8.dll ($subdir) ==="
-    mkdir -p "$INSTALL_DIR/DXVK/$subdir"
-    cp "$DXVK_SRC/$build_dir/src/d3d9/d3d9.dll" "$INSTALL_DIR/DXVK/$subdir/d3d9.dll"
-    cp "$DXVK_SRC/$build_dir/src/d3d8/d3d8.dll" "$INSTALL_DIR/DXVK/$subdir/d3d8.dll"
+    echo "=== Installing DXVK d3d9/d3d8 as Wine builtins ($wine_arch) ==="
+    cp "$DXVK_SRC/$build_dir/src/d3d9/d3d9.dll" "$WINE_LIB/$wine_arch/d3d9.dll"
+    cp "$DXVK_SRC/$build_dir/src/d3d8/d3d8.dll" "$WINE_LIB/$wine_arch/d3d8.dll"
 }
 
 setup_arch build-win32.txt build.w32 win32
@@ -71,9 +80,9 @@ setup_arch build-win64.txt build.w64 win64
 
 # The two ninja builds use independent build dirs and only read the shared
 # subprojects, so run them in parallel (wall-clock ~= the slower single arch).
-build_arch build.w32 win32 &
+build_arch build.w32 i386-windows &
 pid_w32=$!
-build_arch build.w64 win64 &
+build_arch build.w64 x86_64-windows &
 pid_w64=$!
 build_failed=0
 wait "$pid_w32" || build_failed=1
@@ -86,5 +95,5 @@ wait "$pid_w64" || build_failed=1
 # driver to (re-)assert it.
 
 echo "=== Done! ==="
-file "$INSTALL_DIR/DXVK/win32/d3d9.dll" "$INSTALL_DIR/DXVK/win64/d3d9.dll" \
-     "$INSTALL_DIR/DXVK/win32/d3d8.dll" "$INSTALL_DIR/DXVK/win64/d3d8.dll"
+file "$WINE_LIB/i386-windows/d3d9.dll" "$WINE_LIB/x86_64-windows/d3d9.dll" \
+     "$WINE_LIB/i386-windows/d3d8.dll" "$WINE_LIB/x86_64-windows/d3d8.dll"

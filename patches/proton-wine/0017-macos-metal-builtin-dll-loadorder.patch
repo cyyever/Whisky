@@ -1,0 +1,77 @@
+From: cyy <cyyever@gmail.com>
+Date: Sun, 26 Jul 2026 00:00:00 +0000
+Subject: [PATCH] ntdll: default the D3D/Vulkan builtins in the load order
+
+This tree ships its D3D/Vulkan stack as Wine builtins: DXVK provides d3d9/d3d8
+(and d3d11/d3d10core/dxgi on FreeBSD), DXMT provides d3d11/d3d10core/dxgi on
+macOS, and winevulkan provides vulkan-1 (backed by KosmicKrisp on macOS).
+wined3d's D3D9/D3D8 is broken here, and an app-bundled native loader (e.g. Steam
+CEF's own vulkan-1.dll) exposes no WSI, so each of these must resolve to builtin.
+
+Rather than have the host set a per-bottle WINEDLLOVERRIDES (which cannot catch a
+full-path app-directory load), extend get_load_order() — the same place Proton
+already hard-codes the EasyAntiCheat bridge — to default these basenames to
+builtin. An explicit env/registry override still wins, and matching on the
+basename catches app-directory loads too.
+
+The D3D/DXGI/vulkan-1 modules apply on every host this tree targets (macOS and
+FreeBSD) — the provider differs but "builtin" is always right — so they are
+unguarded. Only winemetal (DXMT's Metal interface) stays behind __APPLE__.
+diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
+index 30d17e4..691f203 100644
+--- a/dlls/ntdll/unix/loadorder.c
++++ b/dlls/ntdll/unix/loadorder.c
+@@ -404,6 +404,24 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+     static const WCHAR easyanticheat_x64W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','6','4',0};
+     static const WCHAR easyanticheatW[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t',0};
+     static const WCHAR soW[] = {'.','s','o',0};
++    /* D3D and Vulkan are shipped as Wine builtins on every host this tree targets:
++     * macOS uses DXMT (d3d11/d3d10core/dxgi) + DXVK (d3d9/d3d8), FreeBSD uses DXVK
++     * for all of them; vulkan-1 is winevulkan. wined3d's D3D9 is broken and an
++     * app-bundled native loader (e.g. Steam CEF's vulkan-1.dll) exposes no WSI, so
++     * default all of these to builtin — the provider differs by platform, but
++     * "builtin" is always right. Not Metal-specific, so unguarded. */
++    static const WCHAR d3d9W[]      = {'d','3','d','9',0};
++    static const WCHAR d3d8W[]      = {'d','3','d','8',0};
++    static const WCHAR d3d11W[]     = {'d','3','d','1','1',0};
++    static const WCHAR d3d10coreW[] = {'d','3','d','1','0','c','o','r','e',0};
++    static const WCHAR dxgiW[]      = {'d','x','g','i',0};
++    static const WCHAR vulkan1W[]   = {'v','u','l','k','a','n','-','1',0};
++    static const WCHAR * const builtin_defaultsW[] =
++        { d3d9W, d3d8W, d3d11W, d3d10coreW, dxgiW, vulkan1W };
++#ifdef __APPLE__
++    /* winemetal is DXMT's Metal interface DLL — macOS only. */
++    static const WCHAR winemetalW[] = {'w','i','n','e','m','e','t','a','l',0};
++#endif
+ 
+     static const WCHAR prefixW[] = {'\\','?','?','\\'};
+     enum loadorder ret = LO_INVALID;
+@@ -508,6 +526,28 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+         goto done;
+     }
+ 
++    /* Default the fork's D3D/Vulkan builtins to builtin, so no bottle needs a
++     * WINEDLLOVERRIDES. An explicit env/registry override above still wins, and
++     * matching on the basename catches app-directory loads too (e.g. Steam CEF's
++     * bundled vulkan-1.dll). */
++    for (i = 0; i < ARRAY_SIZE(builtin_defaultsW); i++)
++    {
++        if (!wcsicmp( basename, builtin_defaultsW[i] ))
++        {
++            ret = LO_BUILTIN;
++            TRACE( "got fork builtin %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
++            goto done;
++        }
++    }
++#ifdef __APPLE__
++    if (!wcsicmp( basename, winemetalW ))
++    {
++        ret = LO_BUILTIN;
++        TRACE( "got Metal builtin %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
++        goto done;
++    }
++#endif
++
+     /* and last the hard-coded default */
+     ret = LO_DEFAULT;
+     TRACE( "got hardcoded %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );

@@ -109,14 +109,12 @@ public class Wine {
     }
 
     /// Bottle preparation shared by every launch path (GUI `runProgram` and the
-    /// CLI, which launches via Terminal and so bypasses `runProgram`). Wires up
-    /// Steam's CEF wrapper; the DXMT D3D11 path is a builtin selected via
-    /// WINEDLLOVERRIDES (see BottleSettings), so it needs nothing installed here.
+    /// CLI). Wires up Steam's CEF wrapper; the DXMT (D3D11) and DXVK (D3D9/D3D8)
+    /// paths are Wine builtins defaulted by the load order (patches/proton-wine
+    /// 0017), so they need nothing installed per-bottle here.
     public static func prepareForLaunch(bottle: Bottle) async {
         // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
         await Steam.configure(in: bottle)
-        // Install DXVK's d3d9/d3d8 into the Wine layer (wined3d D3D9 is broken on macOS).
-        await DXVK.installSystemDLLs(in: bottle)
     }
 
     /// Execute a `wine start /unix {url}` command returning the output result.

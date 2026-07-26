@@ -55,9 +55,14 @@ supported`), Chromium's `gl_factory_win` NOTREACHEs, and CEF retries GL-init for
 lacks.) The earlier "`make proton` regression broke Wine's WSI" theory was **refuted** —
 a standalone probe confirmed **builtin winevulkan** exposes `VK_KHR_surface` +
 `VK_KHR_win32_surface` (14 instance extensions) and reaches KosmicKrisp fine; the WSI
-was always healthy, the wrong loader was just shadowing it. Fix: add **`vulkan-1=b`** to
-the bottle's `WINEDLLOVERRIDES` (`BottleSettings.swift`) so Wine substitutes builtin
-winevulkan even for that app-directory load. The on-disk `vulkan-1.dll` stays
+was always healthy, the wrong loader was just shadowing it. Fix: default **`vulkan-1`**
+to builtin so Wine substitutes builtin winevulkan even for that app-directory load. This
+now lives in **proton-wine patch `0017`** (the macOS builtin-DLL load-order default),
+which matches `vulkan-1` (plus d3d9/d3d8/d3d11/d3d10core/dxgi/winemetal) **by basename** —
+so it catches CEF's `bin/cef/cef.win64/vulkan-1.dll` full-path load, which no env-level
+`WINEDLLOVERRIDES` could. (The earlier Swift wiring — a `BottleSettings.swift`
+`WINEDLLOVERRIDES=vulkan-1=b` env plus a `Steam.configure` registry override — has been
+removed; the load-order default replaces both.) The on-disk `vulkan-1.dll` stays
 byte-identical, so Steam's `BVerifyInstalledFiles` (see below) still passes. Verified:
 with the override a real launch cleared **all** `VK_KHR_surface`/`gl_factory_win` errors,
 CPU dropped from ~160% to ~0.5%, and the log flood stopped. (The login window then still
@@ -65,8 +70,9 @@ needs network connectivity — a separate proxy/GFW matter, see §2.)
 
 Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXMT_LOG_PATH` stays empty
 in the webhelper (it's wined3d). Always launch Steam with the **full bottle env**
-(`WhiskyCmd shellenv <bottle>`) — a minimal env missing `winemetal=b` /
-`DYLD_FALLBACK_LIBRARY_PATH` makes steam.exe spin at ~100% with no window. If a bottle
+(the app builds it in `Wine.runProgram`; the `shellenv` env-dump CLI command was removed)
+— a minimal env missing `winemetal=b` / `DYLD_FALLBACK_LIBRARY_PATH` makes steam.exe spin
+at ~100% with no window. If a bottle
 sharing the wrapper black-windows, restore `--disable-gpu --disable-gpu-compositing`.
 
 ### Why not just overwrite steamwebhelper.exe
@@ -103,12 +109,12 @@ by a kernelbase patch — `patches/proton-wine/0010-macos-kernelbase-ifeo-debugg
 line and runs that instead. Patches live as files and are applied at build time from
 the patch series (`patches/proton-wine/*`) so the vendored source stays clean.
 
-Driven by `Steam.swift` (via `Wine.configureSteam`, called from
-`Wine.runProgram`): installs the wrapper at `C:\windows\steamwebhelper_wrapper.exe`,
+Driven by `Steam.swift` `Steam.configure` (called from `Wine.prepareForLaunch`):
+installs the wrapper at `C:\windows\steamwebhelper_wrapper.exe`,
 restores a genuine `steamwebhelper.exe` (migrates old bottles), refreshes the
 `steamwebhelper_real.exe` copy, and writes the IFEO registry value. Applied
-automatically on every launch — from the GUI (`Steam.configureSteam`) or via
-`whisky run` (`Wine.prepareForLaunch`); there is no separate CLI command.
+automatically on every launch — from the GUI or via
+`whisky run` (both go through `Wine.prepareForLaunch`); there is no separate CLI command.
 
 ## 2. "Steam is updating" stuck
 

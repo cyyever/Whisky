@@ -16,10 +16,12 @@ tree that plain WineHQ 11.13 lacks.
 - **Steam logs in fully.** With the minimal-msync config Steam boots → CEF webhelper →
   full CM logon: `RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, login window
   interactive, zero `OBJECT_TYPE_MISMATCH`. The launch config is:
-  `WINEMSYNC=1` + `WINEMSYNC_NO_ANON_AUTOEVENT=1` (anon auto-reset events → server-sync,
+  `WINEMSYNC_NO_ANON_AUTOEVENT=1` (anon auto-reset events → server-sync,
   everything else on msync — a workaround lever; the residual full-msync spin is not
   reliably root-caused, see "Steam on Proton"), `PROTON_DISABLE_LSTEAMCLIENT=1`,
   Follow-System-Proxy OFF, and msync-only (no eventfd on macOS, so WINEESYNC is unset).
+  (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
+  redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
   in main: `patches/proton-wine/` (**14-patch series**) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
@@ -202,9 +204,9 @@ Both are **PE** dlls built for BOTH arches (`dlls/{combase,ntdll}/{i386,x86_64}-
    drains system APCs on the SIGUSR1/EINTR interrupt. **This is the fix that made Steam
    log in.**
 
-After all of the above, under `WINEMSYNC=1` Steam completes a full CM logon
-(`RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, interactive login window, zero
-`OBJECT_TYPE_MISMATCH`).
+After all of the above, with msync enabled (the default; no `WINEMSYNC=1` needed) Steam
+completes a full CM logon (`RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID,
+interactive login window, zero `OBJECT_TYPE_MISMATCH`).
 
 **Remaining rough edge:** a full-msync (all-events-on-msync) CPU spin. `WINEMSYNC_NO_ANON_AUTOEVENT=1`
 (anon auto-reset events → server-sync, everything else on msync) is the currently wired
@@ -250,12 +252,13 @@ source of truth):
   (The bottle's internal `ProxyEnable` registry is separate; keep both off.)
 - **msync-only (no eventfd on macOS → esync can't exist).** Resolved: nothing on the
   stack reads WINEESYNC (no `esync.c` in the wine tree; DXMT doesn't read it — verified
-  by binary scan), so `BottleSettings` sets only `WINEMSYNC=1` and leaves WINEESYNC unset
-  (the env dict fully replaces the parent, so unset ≡ 0). (There is no "DXMT esync-detection
+  by binary scan). msync defaults ON in `do_msync()`, so `BottleSettings` sets **no**
+  `WINEMSYNC` at all for the default `.msync` mode (only `.none` sets `WINEMSYNC=0`), and
+  leaves WINEESYNC unset (the env dict fully replaces the parent, so unset ≡ 0). (There is no "DXMT esync-detection
   lie" — that was a myth; no such `lid3dshared.dylib` exists.)
 - **`PROTON_DISABLE_LSTEAMCLIENT=1`** (wired into `Wine.swift`).
-- The Steam webhelper wrapper is applied automatically on launch — from the GUI
-  (`Steam.configureSteam`) or via `whisky run` (`Wine.prepareForLaunch`).
+- The Steam webhelper wrapper is applied automatically on launch — from the GUI or via
+  `whisky run`, both through `Wine.prepareForLaunch` → `Steam.configure`.
 
 ## scripts/build-proton-x86.sh (was install-proton.sh + build-wine-x86.sh)
 `make proton` runs `scripts/build-proton-x86.sh`, the single Proton build: it resets
