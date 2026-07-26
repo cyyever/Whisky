@@ -53,7 +53,6 @@ extension URL {
         return prettyPath
     }
 
-    // There is probably a better way to do this
     public func updateParentBottle(old: URL, new: URL) -> URL {
         let originalPath = path(percentEncoded: false)
 

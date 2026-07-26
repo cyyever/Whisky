@@ -28,7 +28,6 @@ class ProgramShortcut {
         do {
             try FileManager.default.createDirectory(at: macos, withIntermediateDirectories: true)
 
-            // First create shell script
             let script = """
             #!/bin/bash
             \(program.generateTerminalCommand())
@@ -38,7 +37,6 @@ class ProgramShortcut {
                              atomically: false,
                              encoding: .utf8)
 
-            // Make shell script runable
             try FileManager.default.setAttributes([.posixPermissions: 0o777],
                                                   ofItemAtPath: scriptUrl.path(percentEncoded: false))
 
@@ -66,7 +64,6 @@ class ProgramShortcut {
                            atomically: false,
                            encoding: .utf8)
 
-            // Set bundle icon
             let request = QLThumbnailGenerator.Request(fileAt: program.url,
                                                        size: CGSize(width: 512, height: 512),
                                                        scale: 2.0,
