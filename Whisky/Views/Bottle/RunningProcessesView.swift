@@ -1,5 +1,5 @@
 //
-//  RunningProcessView.swift
+//  RunningProcessesView.swift
 //  Whisky
 //
 //  This file is part of Whisky.

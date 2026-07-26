@@ -1,5 +1,5 @@
 //
-//  PortableExecutable+OptionalHeader.swift
+//  OptionalHeader.swift
 //  WhiskyKit
 //
 //  This file is part of Whisky.

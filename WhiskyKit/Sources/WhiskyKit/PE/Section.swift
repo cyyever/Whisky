@@ -1,5 +1,5 @@
 //
-//  PortableExecutable+Section.swift
+//  Section.swift
 //  WhiskyKit
 //
 //  This file is part of Whisky.

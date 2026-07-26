@@ -1,5 +1,5 @@
 //
-//  PortableExecutable+COFFFileHeader.swift
+//  COFFFileHeader.swift
 //  WhiskyKit
 //
 //  This file is part of Whisky.

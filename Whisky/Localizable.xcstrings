@@ -81,22 +81,6 @@
         }
       }
     },
-    "button.exportBottle": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Export as Archive..."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "导出为存档..."
-          }
-        }
-      }
-    },
     "button.moveBottle": {
       "localizations": {
         "en": {
@@ -397,22 +381,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "取消置顶"
-          }
-        }
-      }
-    },
-    "button.winetricks": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Winetricks..."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Winetrick..."
           }
         }
       }
@@ -848,70 +816,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Windows 版本"
-          }
-        }
-      }
-    },
-    "config.wineBackend": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wine Backend"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wine 后端"
-          }
-        }
-      }
-    },
-    "config.wineBackend.info": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Run this bottle on the experimental side-by-side Proton build instead of the default Whisky Wine. Restart running programs after changing."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "让此瓶使用实验性的并存 Proton 构建，而非默认的 Whisky Wine。更改后需重启正在运行的程序。"
-          }
-        }
-      }
-    },
-    "config.wineBackend.proton": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Proton (experimental)"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Proton（实验性）"
-          }
-        }
-      }
-    },
-    "config.wineBackend.whiskyWine": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Whisky Wine"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Whisky Wine"
           }
         }
       }
@@ -2323,156 +2227,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "清空 Shader 缓存"
-          }
-        }
-      }
-    },
-    "winetricks.category.apps": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apps"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "应用程序"
-          }
-        }
-      }
-    },
-    "winetricks.category.benchmarks": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Benchmarks"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Benchmarks"
-          }
-        }
-      }
-    },
-    "winetricks.category.dlls": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DLLs"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DLLs"
-          }
-        }
-      }
-    },
-    "winetricks.category.fonts": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Fonts"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "字体"
-          }
-        }
-      }
-    },
-    "winetricks.category.games": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Games"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "游戏"
-          }
-        }
-      }
-    },
-    "winetricks.category.settings": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Settings"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "设置"
-          }
-        }
-      }
-    },
-    "winetricks.table.description": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Description"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "说明"
-          }
-        }
-      }
-    },
-    "winetricks.table.name": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Command"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "指令"
-          }
-        }
-      }
-    },
-    "winetricks.title": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Run Winetricks Command"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "运行 Winetricks 命令"
           }
         }
       }

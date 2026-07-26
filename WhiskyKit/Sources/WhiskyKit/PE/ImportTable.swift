@@ -1,5 +1,5 @@
 //
-//  PortableExecutable+ImportTable.swift
+//  ImportTable.swift
 //  WhiskyKit
 //
 //  This file is part of Whisky.

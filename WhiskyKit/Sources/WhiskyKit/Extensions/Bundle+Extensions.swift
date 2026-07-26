@@ -1,5 +1,5 @@
 //
-//  Bundle+Extension.swift
+//  Bundle+Extensions.swift
 //  WhiskyKit
 //
 //  This file is part of Whisky.

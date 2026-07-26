@@ -1,5 +1,5 @@
 //
-//  PortableExecutable+Magic.swift
+//  Magic.swift
 //  WhiskyKit
 //
 //  This file is part of Whisky.
