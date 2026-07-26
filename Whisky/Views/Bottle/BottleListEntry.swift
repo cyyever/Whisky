@@ -31,6 +31,10 @@ struct BottleListEntry: View {
         Text(name)
             .opacity(bottle.isAvailable ? 1.0 : 0.5)
             .accessibilityIdentifier("bottle." + bottle.settings.name)
+            // Label from the model, not the `name` @State display buffer (which
+            // starts empty until the onChange below fires) so VoiceOver / UI tests
+            // always get the bottle name, never a blank row.
+            .accessibilityLabel(bottle.settings.name)
             .onChange(of: refresh, initial: true) {
                 name = bottle.settings.name
             }

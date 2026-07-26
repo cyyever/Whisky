@@ -149,6 +149,12 @@ struct ContentView: View {
                                     ProgressView().controlSize(.small)
                                 }
                                 .opacity(0.5)
+                                // Match BottleListEntry so an in-flight bottle is a
+                                // single, identically-identified row instead of an
+                                // unlabeled multi-element group.
+                                .accessibilityElement(children: .combine)
+                                .accessibilityIdentifier("bottle." + bottle.settings.name)
+                                .accessibilityLabel(bottle.settings.name)
                             } else {
                                 BottleListEntry(bottle: bottle, selected: $selected, refresh: $triggerRefresh)
                                     .selectionDisabled(!bottle.isAvailable)
