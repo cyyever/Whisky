@@ -7,7 +7,7 @@ set -e
 # SystemProxy.socksProxyEnvironment — to route Wine's raw sockets through the
 # system SOCKS proxy. This is the only way to carry Steam's CM/connectivity,
 # which use raw SteamNetworkingSockets that bypass every HTTP proxy (env AND
-# Windows registry) and go direct -> GFW-reset. proxychains hooks connect() at
+# Windows registry) and go direct -> reset on a filtering network. proxychains hooks connect() at
 # the socket layer, so the SOCKS tunnel catches them; short of a full TUN VPN
 # it's the only per-app option. The generated proxychains.conf leaves proxy_dns
 # OFF (its fake-IP remap breaks Steam's manifest HTTPS): DNS resolves directly,

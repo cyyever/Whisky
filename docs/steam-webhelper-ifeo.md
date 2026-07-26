@@ -66,7 +66,7 @@ removed; the load-order default replaces both.) The on-disk `vulkan-1.dll` stays
 byte-identical, so Steam's `BVerifyInstalledFiles` (see below) still passes. Verified:
 with the override a real launch cleared **all** `VK_KHR_surface`/`gl_factory_win` errors,
 CPU dropped from ~160% to ~0.5%, and the log flood stopped. (The login window then still
-needs network connectivity — a separate proxy/GFW matter, see §2.)
+needs network connectivity — a separate proxy/network matter, see §2.)
 
 Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXMT_LOG_PATH` stays empty
 in the webhelper (it's wined3d). Always launch Steam with the **full bottle env**
@@ -129,7 +129,7 @@ Download failed: http error 0 (media.st.dl.eccdnx.com/client/steam_client_win64)
 Cause: Steam's bootstrapper connects **directly** to its CDN. Wine processes are
 launched with an explicit `Process.environment` that does **not** inherit the
 host's proxy, so a system proxy / VPN-proxy is bypassed and the direct
-connections stall (e.g. behind the GFW). The §1 overwrite bug made it worse by
+connections stall (e.g. on a filtering network). The §1 overwrite bug made it worse by
 forcing an update download every launch.
 
 ### Solution: Follow System Proxy

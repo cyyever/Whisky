@@ -47,7 +47,7 @@ public enum SystemProxy {
         // Prefer a SOCKS proxy tunneled via the bundled proxychains-ng: it hooks
         // connect() at the socket layer, so it carries EVERY TCP connection —
         // including Steam's raw-socket CM/connectivity, which no http_proxy env can
-        // reach (those go straight out and get GFW-reset). http_proxy only helps
+        // reach (those go straight out and get reset on a filtering network). http_proxy only helps
         // HTTP-aware clients, so it is the fallback when no SOCKS proxy is set.
         if let socks = socksProxyEnvironment(from: proxies) {
             return socks
