@@ -15,13 +15,12 @@
  *
  *     --no-sandbox           CEF's sandbox hooks into the NT kernel and breaks under Wine
  *     --in-process-gpu       avoids the out-of-process GPU sandbox "cannot reset D3D device" failure
- *     --disable-async-dns    use the OS resolver (Wine ws2_32 getaddrinfo -> patch 0018's
- *                            prefix hosts file, then macOS) instead of Chromium's built-in
- *                            DNS client, which does its own UDP:53 + DoH to Google (8.8.8.8)
- *                            that bypass the SOCKS proxy and get poisoned on a filtering network. This routes
- *                            CEF's DNS through the same path as steamclient, so one hosts pin
- *                            (or a system TUN) covers both. See docs/steam-networking.md.
- *     --dns-over-https-mode=off  disable Chromium "Secure DNS" so it never talks DoH to Google.
+ *
+ * NOTE: do NOT add --disable-async-dns here. It routes Chromium onto Wine's system
+ * resolver path, which returns WSAEOPNOTSUPP (net::ERR_FAILED) under Wine and stops
+ * the login page from loading — the login window never paints. Chromium's built-in
+ * DNS client (the default) resolves fine and the window appears. See
+ * docs/steam-networking.md.
  *
  * We launch steamwebhelper_real.exe (a copy under a different name) rather than
  * steamwebhelper.exe so the IFEO Debugger redirect does not recurse, and so the
@@ -82,8 +81,7 @@ int main(int argc, char *argv[]) {
     // Append our Wine-compatibility flags only if not already present
     if (!already_patched) {
         int needed = snprintf(cmdline + offset, sizeof(cmdline) - offset,
-                              " --no-sandbox --in-process-gpu"
-                              " --disable-async-dns --dns-over-https-mode=off");
+                              " --no-sandbox --in-process-gpu");
         if (needed < 0 || (size_t)(offset + needed) >= sizeof(cmdline)) return 1;
     }
 

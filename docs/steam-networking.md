@@ -22,9 +22,11 @@ lookups/connections are what break.
 ## What Whisky does
 
 - **All TCP through SOCKS** — CDN and the CM WebSocket (both TCP/443).
-- **CEF uses the OS resolver** — the webhelper wrapper appends
-  `--disable-async-dns --dns-over-https-mode=off`, so Chromium resolves through Wine's
-  `ws2_32` (same path as steamclient) instead of its own DNS/DoH.
+- **CEF keeps its built-in resolver** — Chromium's own async DNS resolves the login
+  page fine, so the login window paints. Do **not** add `--disable-async-dns` to route
+  it through Wine's `ws2_32`: under Wine that system-resolver path returns
+  WSAEOPNOTSUPP (`net::ERR_FAILED`) and the login window never loads (verified). See
+  `SteamHelper/webhelper_wrapper.c`.
 - **Prefix hosts file honored** — `patches/proton-wine/0018` makes `getaddrinfo` read
   `C:\windows\system32\drivers\etc\hosts` first (standard Windows behavior Wine
   omitted). An escape hatch to pin a host inside the bottle; not auto-populated.
