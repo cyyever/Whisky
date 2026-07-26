@@ -16,9 +16,9 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
+import Combine
 import Foundation
 import os.log
-import Combine
 
 // swiftlint:disable:next todo
 // TODO: Should not be unchecked!
