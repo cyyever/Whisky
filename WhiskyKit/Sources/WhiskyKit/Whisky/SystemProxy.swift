@@ -42,10 +42,20 @@ public enum SystemProxy {
         guard let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() else {
             return [:]
         }
+        let proxies = resolvedProxies(for: representativeURL, settings: settings)
+
+        // Prefer a SOCKS proxy tunneled via the bundled proxychains-ng: it hooks
+        // connect() at the socket layer, so it carries EVERY TCP connection —
+        // including Steam's raw-socket CM/connectivity, which no http_proxy env can
+        // reach (those go straight out and get GFW-reset). http_proxy only helps
+        // HTTP-aware clients, so it is the fallback when no SOCKS proxy is set.
+        if let socks = socksProxyEnvironment(from: proxies) {
+            return socks
+        }
 
         var result: [String: String] = [:]
 
-        for proxy in resolvedProxies(for: representativeURL, settings: settings) {
+        for proxy in proxies {
             guard let type = proxy[kCFProxyTypeKey as String] as? String,
                   type == (kCFProxyTypeHTTP as String) || type == (kCFProxyTypeHTTPS as String),
                   let host = proxy[kCFProxyHostNameKey as String] as? String, !host.isEmpty else {
@@ -74,6 +84,47 @@ public enum SystemProxy {
             result[key.uppercased()] = value
         }
         return result
+    }
+
+    /// If the system has a SOCKS proxy configured **and** the bundled
+    /// proxychains-ng dylib is installed, returns the env that DYLD-injects
+    /// proxychains into the (Rosetta) wine process and points it at that SOCKS
+    /// proxy — so every raw `connect()`, Steam's CM/connectivity included, is
+    /// tunneled. `nil` when there is no SOCKS proxy or the dylib isn't built, so
+    /// the caller falls back to the http_proxy path.
+    private static func socksProxyEnvironment(from proxies: [[String: Any]]) -> [String: String]? {
+        guard let socks = proxies.first(where: {
+            ($0[kCFProxyTypeKey as String] as? String) == (kCFProxyTypeSOCKS as String)
+        }), let host = socks[kCFProxyHostNameKey as String] as? String, !host.isEmpty else {
+            return nil
+        }
+        let resolvedHost = host == "0.0.0.0" ? "127.0.0.1" : host
+        let port = (socks[kCFProxyPortNumberKey as String] as? Int) ?? 1080
+
+        let dir = WhiskyWineInstaller.libraryFolder.appending(path: "ProxyChains")
+        let dylib = dir.appending(path: "libproxychains4.dylib")
+        guard FileManager.default.fileExists(atPath: dylib.path(percentEncoded: false)) else {
+            return nil  // proxychains-ng not built (`make proxychains`) — fall back to http_proxy
+        }
+
+        // proxy_dns is deliberately OFF: proxychains' fake-IP DNS remap breaks
+        // Steam's manifest HTTPS. DNS resolves directly; only TCP connect() is
+        // tunneled through SOCKS (verified: Steam reaches "Connected" this way).
+        let conf = dir.appending(path: "proxychains.conf")
+        let body = """
+        strict_chain
+        tcp_read_time_out 15000
+        tcp_connect_time_out 8000
+        [ProxyList]
+        socks5 \(resolvedHost) \(port)
+
+        """
+        try? body.write(to: conf, atomically: true, encoding: .utf8)
+
+        return [
+            "DYLD_INSERT_LIBRARIES": dylib.path(percentEncoded: false),
+            "PROXYCHAINS_CONF_FILE": conf.path(percentEncoded: false)
+        ]
     }
 
     /// The concrete proxies the system would use for `url`, executing any

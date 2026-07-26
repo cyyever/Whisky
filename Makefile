@@ -9,7 +9,7 @@ XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
 CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
 .PHONY: all help setup-x86-brew proton proton-debug clean-proton steam-helper \
-        dxmt dxvk app app-release run submodule clean check-proton-src
+        dxmt dxvk proxychains app app-release run submodule clean check-proton-src
 
 all: app proton steam-helper  ## Build everything (app + Proton + Steam helper)
 
@@ -64,6 +64,9 @@ dxmt: proton  ## Build DXMT from source and install into Wine (needs full Xcode 
 
 dxvk:  ## Build DXVK d3d9.dll (win32 + win64) and install into Libraries/DXVK
 	$(SCRIPTS_DIR)/build-dxvk.sh
+
+proxychains:  ## Build x86_64 proxychains-ng into Libraries/ProxyChains (routes Steam through the system SOCKS proxy)
+	$(SCRIPTS_DIR)/build-proxychains.sh
 
 # === Whisky App ===
 

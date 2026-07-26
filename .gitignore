@@ -106,3 +106,4 @@ vkd3d-proton.cache.write
 scripts/msync-close-during-wait-test.exe
 vendor/proton-wine/
 vendor/.proton-installed
+vendor/proxychains-ng/
