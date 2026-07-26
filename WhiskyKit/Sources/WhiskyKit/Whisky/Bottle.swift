@@ -28,17 +28,16 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
     @Published public var settings: BottleSettings {
         didSet { saveSettings() }
     }
-    @Published public var programs: [Program] = []
     @Published public var inFlight: Bool = false
     public var isAvailable: Bool = false
 
-    /// All pins with their associated programs
+    /// All pins, each with a `Program` built for its pinned executable.
     public var pinnedPrograms: [(pin: PinnedProgram, program: Program, // swiftlint:disable:this large_tuple
                                  id: String)] {
         return settings.pins.compactMap { pin in
-            let exists = FileManager.default.fileExists(atPath: pin.url?.path(percentEncoded: false) ?? "")
-            guard let program = programs.first(where: { $0.url == pin.url && exists }) else { return nil }
-            return (pin, program, "\(pin.name)//\(program.url)")
+            guard let url = pin.url,
+                  FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else { return nil }
+            return (pin, Program(url: url, bottle: self), "\(pin.name)//\(url)")
         }
     }
 

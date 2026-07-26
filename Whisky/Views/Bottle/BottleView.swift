@@ -22,7 +22,6 @@ import WhiskyKit
 
 enum BottleStage {
     case config
-    case programs
 }
 
 struct BottleView: View {
@@ -49,9 +48,6 @@ struct BottleView: View {
                 }
                 .padding()
                 Form {
-                    NavigationLink(value: BottleStage.programs) {
-                        Label("tab.programs", systemImage: "list.bullet")
-                    }
                     NavigationLink(value: BottleStage.config) {
                         Label("tab.config", systemImage: "gearshape")
                     }
@@ -119,9 +115,6 @@ struct BottleView: View {
             } message: {
                 if let installError { Text(installError) }
             }
-            .onAppear {
-                bottle.updateInstalledPrograms()
-            }
             .disabled(!bottle.isAvailable)
             .navigationTitle(bottle.settings.name)
             .onChange(of: bottle.settings) { oldValue, newValue in
@@ -129,15 +122,8 @@ struct BottleView: View {
                 // Trigger a reload
                 BottleVM.shared.bottles = BottleVM.shared.bottles
             }
-            .navigationDestination(for: BottleStage.self) { stage in
-                switch stage {
-                case .config:
-                    ConfigView(bottle: bottle)
-                case .programs:
-                    ProgramsView(
-                        bottle: bottle, path: $path
-                    )
-                }
+            .navigationDestination(for: BottleStage.self) { _ in
+                ConfigView(bottle: bottle)
             }
             .navigationDestination(for: Program.self) { program in
                 ProgramView(program: program)
@@ -159,7 +145,6 @@ struct BottleView: View {
             }
             programLoading = false
             loadingStatus = nil
-            bottle.updateInstalledPrograms()
         }
     }
 
@@ -181,7 +166,6 @@ struct BottleView: View {
                 // and bottle preparation, and surfaces its own errors.
                 await Program(url: url, bottle: bottle).launch()
                 programLoading = false
-                bottle.updateInstalledPrograms()
             }
         }
     }

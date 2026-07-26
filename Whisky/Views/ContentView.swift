@@ -55,9 +55,6 @@ struct ContentView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     bottleVM.loadBottles()
-                    if let bottle = bottleVM.bottles.first(where: { $0.url == selected }) {
-                        bottle.updateInstalledPrograms()
-                    }
                     triggerRefresh.toggle()
                     withAnimation(.default) {
                         refreshAnimation = .degrees(360)
