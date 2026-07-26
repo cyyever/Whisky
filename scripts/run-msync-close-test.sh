@@ -4,12 +4,22 @@
 # oracle), and print both so the STATUS and timing can be diffed. See the C
 # file's header for what it probes (patch 0016 non-mutex close-during-wait).
 #
-# Usage: scripts/run-msync-close-test.sh [bottle] [iters]   (default: SteamProton 1)
+# Usage: scripts/run-msync-close-test.sh <bottle-dir> [iters]   (default iters: 1)
+#   <bottle-dir> is a bottle's WINEPREFIX directory, e.g.
+#   ~/Library/Containers/com.isaacmarovitz.Whisky/Bottles/<UUID>
 #   env MSYNC_CHURN=1  also runs the shm-reuse churn thread.
 set -euo pipefail
 
-BOTTLE="${1:-SteamProton}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+
+BOTTLE="${1:-}"
 ITERS="${2:-1}"
+if [ -z "$BOTTLE" ] || [ ! -d "$BOTTLE" ]; then
+    echo "ERROR: bottle directory not found: '$BOTTLE'" >&2
+    echo "       Pass a bottle's WINEPREFIX dir, e.g." >&2
+    echo "       ~/Library/Containers/com.isaacmarovitz.Whisky/Bottles/<UUID>" >&2
+    exit 1
+fi
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/msync-close-during-wait-test.c"
 OUT="$(dirname "$SRC")/msync-close-during-wait-test.exe"
 
@@ -20,13 +30,10 @@ echo "=== compiling $SRC ==="
 "$CC" -O2 -o "$OUT" "$SRC"
 echo "  built: $OUT"
 
-WHISKYCMD=$(ls -t "$HOME"/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products/Debug/WhiskyCmd 2>/dev/null | head -1 || true)
-[ -x "$WHISKYCMD" ] || { echo "ERROR: WhiskyCmd not found (make app)"; exit 1; }
-
 run_mode() {
     local mode="$1"
     (
-        eval "$("$WHISKYCMD" shellenv "$BOTTLE")"
+        eval "$(bottle_shellenv "$BOTTLE")"
         export WINEDEBUG="-all"
         unset WINEMSYNC_NO_ANON_AUTOEVENT
         export WINEMSYNC="$mode"

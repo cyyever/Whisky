@@ -115,5 +115,5 @@ install_dll winemetal/winemetal.dll winemetal.dll
 cp "$B64/winemetal/unix/winemetal.so" "$WINE_LIB/x86_64-unix/winemetal.so"
 
 echo "=== DXMT installed ==="
-echo "Enable per bottle with: WINEDLLOVERRIDES=d3d11,d3d10core,dxgi,winemetal=n,b"
-echo "(and copy the DXMT dlls into the bottle's system32/syswow64, or use WhiskyCmd)"
+echo "Active as Wine builtins with no per-bottle override — patches/proton-wine 0017"
+echo "defaults d3d11/d3d10core/dxgi/winemetal to builtin in the load order."

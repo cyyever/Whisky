@@ -11,7 +11,9 @@ set -euo pipefail
 #
 # Requires the test PEs built by scripts/build-msync-tests.sh.
 #
-# Usage: scripts/test-msync.sh [--guard-malloc] [bottle-name]   (default: SteamProton)
+# Usage: scripts/test-msync.sh [--guard-malloc] <bottle-dir>
+#   <bottle-dir> is a bottle's WINEPREFIX directory, e.g.
+#   ~/Library/Containers/com.isaacmarovitz.Whisky/Bottles/<UUID>
 #
 # --guard-malloc runs the test PEs under macOS Guard Malloc (libgmalloc) to
 # catch heap use-after-free / overflow in msync's unix-side (libc) allocations
@@ -27,7 +29,7 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
-# Args: [--guard-malloc] [bottle-name], order-independent.
+# Args: [--guard-malloc] <bottle-dir>, order-independent.
 GUARD_MALLOC=0
 BOTTLE=""
 for arg in "$@"; do
@@ -37,17 +39,9 @@ for arg in "$@"; do
         *) BOTTLE="$arg" ;;
     esac
 done
-BOTTLE="${BOTTLE:-SteamProton}"
 
 WINE_SRC="$PROJECT_DIR/vendor/proton-wine"
 BUILD_DIR="$WINE_SRC/build"
-
-# Locate WhiskyCmd (Xcode DerivedData path has a random suffix).
-WHISKYCMD=$(ls -t "$HOME"/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products/Debug/WhiskyCmd 2>/dev/null | head -1 || true)
-if [ -z "$WHISKYCMD" ] || [ ! -x "$WHISKYCMD" ]; then
-    echo "ERROR: WhiskyCmd not found. Build the app (make app) first." >&2
-    exit 1
-fi
 
 # Resolve the two test PEs. build-msync-tests.sh may place them directly in the
 # tests dir or under an <arch>-windows/ subdir (multi-arch build) — prefer the
@@ -70,10 +64,11 @@ if [ -z "$NTDLL_EXE" ] || [ -z "$KERNEL32_EXE" ]; then
     exit 1
 fi
 
-# Verify the bottle exists (shellenv errors otherwise).
-if ! "$WHISKYCMD" shellenv "$BOTTLE" >/dev/null 2>&1; then
-    echo "ERROR: bottle '$BOTTLE' not found. Available bottles:" >&2
-    "$WHISKYCMD" list >&2 || true
+# Verify the bottle exists (bottle_shellenv errors otherwise).
+if [ -z "$BOTTLE" ] || [ ! -d "$BOTTLE" ]; then
+    echo "ERROR: bottle directory not found: '$BOTTLE'" >&2
+    echo "       Pass a bottle's WINEPREFIX dir, e.g." >&2
+    echo "       ~/Library/Containers/com.isaacmarovitz.Whisky/Bottles/<UUID>" >&2
     exit 1
 fi
 
@@ -102,7 +97,7 @@ run_one() {
     # is FILE_TYPE_PIPE — written through and captured intact.
     set +e
     (
-        eval "$("$WHISKYCMD" shellenv "$BOTTLE")"
+        eval "$(bottle_shellenv "$BOTTLE")"
         export WINEDEBUG="-all"
         unset WINEMSYNC_NO_ANON_AUTOEVENT
         if [ "$GUARD_MALLOC" = "1" ]; then
