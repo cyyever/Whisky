@@ -102,18 +102,6 @@ public struct PEFile: Hashable, Equatable, Sendable {
         }
     }
 
-    /// The Resource Directory Table
-    public var rsrc: ResourceDirectoryTable? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return nil
-        }
-        defer {
-            try? handle.close()
-        }
-
-        return rsrc(handle: handle)
-    }
-
     /// The best icon for this executable
     /// - Returns: An `NSImage` if there is a renderable icon in the resource directory table
     public func bestIcon() -> NSImage? {

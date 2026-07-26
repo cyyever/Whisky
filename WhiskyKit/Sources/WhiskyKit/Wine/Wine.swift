@@ -239,17 +239,6 @@ public class Wine {
         return result.joined()
     }
 
-    public static func wineVersion() async throws -> String {
-        var output = try await runWine(["--version"], bottle: nil)
-        output.replace("wine-", with: "")
-
-        // Deal with WineCX version names
-        if let index = output.firstIndex(where: { $0.isWhitespace }) {
-            return String(output.prefix(upTo: index))
-        }
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     public static func killBottle(bottle: Bottle) throws {
         Task.detached(priority: .userInitiated) {
             try await runWineserver(["-k"], bottle: bottle)
@@ -326,9 +315,7 @@ public class Wine {
 }
 
 enum RegistryType: String {
-    case binary = "REG_BINARY"
     case dword = "REG_DWORD"
-    case qword = "REG_QWORD"
     case string = "REG_SZ"
 }
 
