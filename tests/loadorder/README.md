@@ -29,16 +29,16 @@ One process per DLL keeps each module in a fresh address space, so a large built
 that fails to *map* (or crashes in init) can't suppress another module's trace —
 which is what happened when all seven ~90 MB DXVK+DXMT builtins shared one process.
 
-`get_load_order()` only runs once the loader has *found* a file for the name.
-`d3d11`/`d3d10core`/`dxgi`/`vulkan-1`/`winemetal` are genuine Wine/DXMT builtins
-whose DOS stub carries the `Wine builtin DLL` signature, so wineboot mirrors them
-into the prefix's `system32` as fake DLLs and the loader finds them. DXVK's
-`d3d9`/`d3d8` are third-party PEs *without* that signature — wineboot makes no fake
-DLL, so `LoadLibraryA("d3d9.dll")` would fail with `STATUS_DLL_NOT_FOUND` *before*
-`get_load_order()` even runs. So the harness drops a tiny placeholder `<dll>` next
-to the probe exe before each probe: the loader finds it and reaches
-`get_load_order()`, which must still force **builtin** (the real module is pulled
-from Wine's lib dir; the placeholder is never loaded). That mirrors the app
-auto-dropping DXVK's `d3d9.dll` next to a game exe, and is a stronger check — an
-app-directory native copy present, yet builtin still wins (as it must for Steam
-CEF's own bundled `vulkan-1.dll`).
+`get_load_order()` only runs once the loader has *found* a file for the name. All
+seven modules are Wine builtins carrying the `Wine builtin DLL` DOS-stub signature —
+`d3d11`/`d3d10core`/`dxgi`/`vulkan-1`/`winemetal` from winebuild/DXMT, and DXVK's
+`d3d9`/`d3d8` stamped by `build-dxvk.sh`'s `mark_wine_builtin` — so wineboot mirrors
+each into the prefix's `system32` and the loader finds it. (An unsigned DXVK d3d9
+would fail `LoadLibraryA` with `STATUS_DLL_NOT_FOUND` *before* `get_load_order()`
+runs — that fresh-bottle regression is what the stamping fixes.)
+
+On top of that, the harness drops a tiny placeholder `<dll>` next to the probe exe
+before each probe, so the test also proves the stronger property: builtin still wins
+when a native copy sits in the application directory — as it must for Steam CEF's own
+bundled `vulkan-1.dll`. The placeholder is never loaded; builtin resolution pulls the
+real module from Wine's lib dir.

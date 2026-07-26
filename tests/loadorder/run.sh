@@ -15,19 +15,19 @@ set -e
 # seven ~90 MB DXVK+DXMT builtins in one process fragmented the WoW64+Rosetta
 # address space and aborted the run before the later modules traced.)
 #
-# get_load_order() only runs once the loader has *found* a file for the name.
-# d3d11/d3d10core/dxgi/vulkan-1/winemetal are genuine Wine/DXMT builtins whose DOS
-# stub carries the "Wine builtin DLL" signature, so wineboot mirrors them into the
-# prefix's system32 as fake DLLs and the loader finds them there. DXVK's d3d9/d3d8
-# are third-party PEs *without* that signature, so wineboot creates no fake DLL and
-# LoadLibraryA("d3d9.dll") fails with STATUS_DLL_NOT_FOUND *before* get_load_order
-# runs — no trace at all. To make every module reach get_load_order regardless of
-# the prefix's ambient fake-DLL set, we drop a tiny placeholder <dll> next to the
-# probe exe (first on the search path). That mirrors reality — the app auto-drops
-# DXVK's d3d9.dll next to a game exe — and is a *stronger* check: an app-directory
-# native copy present, yet the load order must still force builtin (exactly what
-# keeps Steam CEF's own bundled vulkan-1.dll from winning). The placeholder is
-# never loaded: builtin resolution pulls the real module from Wine's lib dir.
+# get_load_order() only runs once the loader has *found* a file for the name. All
+# seven modules are Wine builtins carrying the "Wine builtin DLL" DOS-stub signature
+# — d3d11/d3d10core/dxgi/vulkan-1/winemetal from winebuild/DXMT, and d3d9/d3d8
+# stamped by build-dxvk.sh's mark_wine_builtin — so wineboot mirrors each into the
+# prefix's system32 and the loader finds it there (STATUS_DLL_NOT_FOUND on a fresh
+# bottle, before any override, was the regression that stamping fixed).
+#
+# On top of that, we drop a tiny placeholder <dll> next to the probe exe (first on
+# the search path) so the test also proves the *stronger* property: builtin wins
+# even when a native copy sits in the application directory — exactly what keeps
+# Steam CEF's own bundled vulkan-1.dll from winning. It also makes the test robust
+# if DXVK happens to be unsigned. The placeholder is never loaded: builtin
+# resolution pulls the real module from Wine's lib dir.
 #
 # Uses a throwaway prefix (.build/prefix) so a bottle's own — or stale, pre-0017 —
 # DllOverrides can't mask the load-order DEFAULT this is testing.
