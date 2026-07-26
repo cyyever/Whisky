@@ -54,53 +54,22 @@ X86_PREFIX=$(arch -x86_64 "$X86_BREW" --prefix)
 # brew — they are arch-independent / target PE, so no x86_64 copies are needed. Only
 # the libraries linked into x86_64 Wine (freetype, gnutls, sdl2, gettext/libintl,
 # MoltenVK) must be x86_64, and those are picked up via PKG_CONFIG_PATH below.
+ARM_BREW_PREFIX="$(brew --prefix)"
 
 # The reset above KEEPS the gitignored build/ tree, so configure+make below are
 # incremental (ccache further speeds recompiles). `make clean-proton` (rm -rf build/)
 # for a true from-scratch build tree.
 mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
 
-ARM_BREW_PREFIX="$(brew --prefix)"
-# bison is keg-only (macOS ships an old one), so its keg bin must be on PATH explicitly.
-CLEAN_PATH="$ARM_BREW_PREFIX/opt/bison/bin:$ARM_BREW_PREFIX/bin:$X86_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# CLEAN_PATH is also needed for the make step below (env -i wipes PATH).
+CLEAN_PATH="$(wine_clean_path)"
 
-# ccache on by default; WHISKY_CCACHE=0 disables it (release/reproducible builds
+# The env/toolchain + shared configure flags live in wine_configure (lib/common.sh),
+# byte-for-byte identical to build-msync-tests.sh; --disable-tests is the only extra.
+# ccache is on by default; WHISKY_CCACHE=0 disables it (release/reproducible builds
 # or to rule out a stale-object bug) — see whisky_ccache_on in lib/common.sh.
-CC_CMD="gcc"
-CXX_CMD="g++"
-if whisky_ccache_on; then
-    echo "=== Using ccache (WHISKY_CCACHE=0 to disable) ==="
-    CC_CMD="ccache gcc"
-    CXX_CMD="ccache g++"
-fi
-
 echo "=== Configuring Wine (x86_64) ==="
-arch -x86_64 env -i \
-    HOME="$HOME" \
-    PATH="$CLEAN_PATH" \
-    CC="$CC_CMD" \
-    CXX="$CXX_CMD" \
-    PKG_CONFIG="$ARM_BREW_PREFIX/bin/pkg-config" \
-    PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
-    PKG_CONFIG_LIBDIR="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
-    SDL2_CFLAGS="-I$X86_PREFIX/include/SDL2 -D_THREAD_SAFE" \
-    SDL2_LIBS="-L$X86_PREFIX/lib -lSDL2" \
-    LDFLAGS="-L$X86_PREFIX/lib -L$X86_PREFIX/opt/molten-vk/lib" \
-    CFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
-    CPPFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
-    ../configure \
-        --enable-archs=i386,x86_64 \
-        --with-vulkan \
-        --without-gstreamer \
-        --disable-tests \
-        --disable-win16 \
-        --without-x \
-        --without-cups \
-        --without-krb5 \
-        --without-gssapi \
-        --without-pcap \
-        --without-pcsclite
+wine_configure "$BUILD_DIR" --disable-tests
 
 NCPU=$(whisky_ncpu)
 echo "=== Building Wine (x86_64) with $NCPU cores ==="

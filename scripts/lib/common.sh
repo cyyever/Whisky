@@ -132,3 +132,80 @@ whisky_ccache_guard() {
         echo "=== ccache disabled (WHISKY_CCACHE=0) ==="
     fi
 }
+
+# --- x86_64 Wine configure/toolchain (shared by the two Wine builds) ----------
+# build-proton-x86.sh (the shipping Proton build) and build-msync-tests.sh (the
+# msync test-PE build) reconfigure the SAME vendor/proton-wine/build tree with an
+# identical env/toolchain clean room and an identical configure flag list — the
+# ONLY difference is that proton passes --disable-tests and the test build does
+# not. These helpers own that shared block so the two can never drift; each is
+# pure (echoes a value, no side effects) except wine_configure, which cds + runs
+# configure. Callers still keep their own X86_PREFIX/ARM_BREW_PREFIX/CLEAN_PATH
+# where they need them for OTHER steps (dylib bundling, the make PATH, strip).
+
+# wine_clean_path — echo the PATH for the x86_64 Wine configure+make. bison is
+# keg-only (macOS ships an old one) so its keg bin leads; build tools otherwise
+# come from the ARM64 brew, the x86 brew bin trails (only its linked libraries
+# matter, reached via PKG_CONFIG_PATH in wine_configure), then the system dirs.
+wine_clean_path() {
+    local x86_prefix arm_prefix
+    x86_prefix=$(arch -x86_64 "$X86_BREW" --prefix)
+    arm_prefix="$(brew --prefix)"
+    echo "$arm_prefix/opt/bison/bin:$arm_prefix/bin:$x86_prefix/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+}
+
+# wine_cc_cmd / wine_cxx_cmd — echo the C/C++ compiler command for the x86_64
+# Wine build, wrapped in ccache when whisky_ccache_on (the default). Pure: no
+# banner on stdout so they are safe in $(...) — wine_configure prints the ccache
+# status line itself.
+wine_cc_cmd()  { if whisky_ccache_on; then echo "ccache gcc"; else echo "gcc"; fi; }
+wine_cxx_cmd() { if whisky_ccache_on; then echo "ccache g++"; else echo "g++"; fi; }
+
+# wine_configure <build_dir> [extra_configure_flags...] — cd into build_dir and
+# run Wine's ../configure for the x86_64/Rosetta build inside an `env -i` clean
+# room. The env/toolchain block and the flag list are IDENTICAL for both callers;
+# the extra flags are the only divergence (proton passes --disable-tests, the
+# msync test build passes none). Extra flags are emitted right after
+# --without-gstreamer — exactly where --disable-tests sat in the original proton
+# command — so the generated configure line stays byte-for-byte identical to the
+# pre-refactor invocation in BOTH callers. (An empty "$@" expands to zero words,
+# so the test build gets the list with nothing inserted there.)
+# NOTE: cds into build_dir; the cwd persists to the caller's subsequent `make`.
+wine_configure() {
+    local build_dir="$1"; shift
+    local x86_prefix arm_prefix clean_path cc_cmd cxx_cmd
+    x86_prefix=$(arch -x86_64 "$X86_BREW" --prefix)
+    arm_prefix="$(brew --prefix)"
+    clean_path="$(wine_clean_path)"
+    cc_cmd="$(wine_cc_cmd)"
+    cxx_cmd="$(wine_cxx_cmd)"
+    if whisky_ccache_on; then
+        echo "=== Using ccache (WHISKY_CCACHE=0 to disable) ==="
+    fi
+    cd "$build_dir"
+    arch -x86_64 env -i \
+        HOME="$HOME" \
+        PATH="$clean_path" \
+        CC="$cc_cmd" \
+        CXX="$cxx_cmd" \
+        PKG_CONFIG="$arm_prefix/bin/pkg-config" \
+        PKG_CONFIG_PATH="$x86_prefix/lib/pkgconfig:$x86_prefix/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
+        PKG_CONFIG_LIBDIR="$x86_prefix/lib/pkgconfig:$x86_prefix/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
+        SDL2_CFLAGS="-I$x86_prefix/include/SDL2 -D_THREAD_SAFE" \
+        SDL2_LIBS="-L$x86_prefix/lib -lSDL2" \
+        LDFLAGS="-L$x86_prefix/lib -L$x86_prefix/opt/molten-vk/lib" \
+        CFLAGS="-I$x86_prefix/include -I$x86_prefix/opt/freetype/include/freetype2 -I$x86_prefix/opt/molten-vk/include" \
+        CPPFLAGS="-I$x86_prefix/include -I$x86_prefix/opt/freetype/include/freetype2 -I$x86_prefix/opt/molten-vk/include" \
+        ../configure \
+            --enable-archs=i386,x86_64 \
+            --with-vulkan \
+            --without-gstreamer \
+            "$@" \
+            --disable-win16 \
+            --without-x \
+            --without-cups \
+            --without-krb5 \
+            --without-gssapi \
+            --without-pcap \
+            --without-pcsclite
+}

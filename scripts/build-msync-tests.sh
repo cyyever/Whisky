@@ -25,9 +25,12 @@ set -e
 # either way — this script never runs `make install`).
 #
 # Env/toolchain (env -i clean room, CLEAN_PATH, X86_PREFIX, PKG_CONFIG_PATH,
-# SDL2/LDFLAGS/CFLAGS, arch -x86_64) mirrors build-proton-x86.sh's configure
-# block exactly, MINUS --disable-tests — kept as a duplicated block on purpose
-# so this diagnostic script can never destabilize the shipping build script.
+# SDL2/LDFLAGS/CFLAGS, arch -x86_64) is the SAME as the shipping
+# build-proton-x86.sh, MINUS --disable-tests. That shared block lives in
+# wine_configure (lib/common.sh) so the two can never drift; the ONLY divergence
+# is the extra flag (proton passes --disable-tests, this script passes none), and
+# it never mutates the shipping build's tree — this script reuses build/ read-only
+# apart from the reconfigure + linking the two test PEs, and never `make install`s.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 WINE_SRC="$PROJECT_DIR/vendor/proton-wine"
@@ -46,52 +49,18 @@ if [ ! -f "$X86_BREW" ]; then
     exit 1
 fi
 
-X86_PREFIX=$(arch -x86_64 "$X86_BREW" --prefix)
-ARM_BREW_PREFIX="$(brew --prefix)"
-# bison is keg-only (macOS ships an old one), so its keg bin must be on PATH.
-CLEAN_PATH="$ARM_BREW_PREFIX/opt/bison/bin:$ARM_BREW_PREFIX/bin:$X86_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# CLEAN_PATH is also needed for the make step below (env -i wipes PATH).
+CLEAN_PATH="$(wine_clean_path)"
 
-CC_CMD="gcc"
-CXX_CMD="g++"
-if whisky_ccache_on; then
-    echo "=== Using ccache (WHISKY_CCACHE=0 to disable) ==="
-    CC_CMD="ccache gcc"
-    CXX_CMD="ccache g++"
-fi
-
-cd "$BUILD_DIR"
-
-# Reconfigure the existing build tree with tests ENABLED. This is the SAME
-# configure invocation build-proton-x86.sh uses, MINUS --disable-tests, so it
-# only flips the test dirs from DISABLED_SUBDIRS into real subdirs (adding the
-# *_test.exe rules) — it does not change any main-build object. The first run
+# Reconfigure the existing build tree with tests ENABLED. wine_configure
+# (lib/common.sh) runs the SAME env/toolchain + configure flags as the shipping
+# build-proton-x86.sh, MINUS --disable-tests (that script's only extra flag), so
+# this only flips the test dirs from DISABLED_SUBDIRS into real subdirs (adding
+# the *_test.exe rules) — it does not change any main-build object. The first run
 # after a --disable-tests build re-runs configure once (a minute or two); the
 # actual Wine objects are all cached, so nothing heavy recompiles.
 echo "=== Reconfiguring build tree WITH tests (minus --disable-tests) ==="
-arch -x86_64 env -i \
-    HOME="$HOME" \
-    PATH="$CLEAN_PATH" \
-    CC="$CC_CMD" \
-    CXX="$CXX_CMD" \
-    PKG_CONFIG="$ARM_BREW_PREFIX/bin/pkg-config" \
-    PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
-    PKG_CONFIG_LIBDIR="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
-    SDL2_CFLAGS="-I$X86_PREFIX/include/SDL2 -D_THREAD_SAFE" \
-    SDL2_LIBS="-L$X86_PREFIX/lib -lSDL2" \
-    LDFLAGS="-L$X86_PREFIX/lib -L$X86_PREFIX/opt/molten-vk/lib" \
-    CFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
-    CPPFLAGS="-I$X86_PREFIX/include -I$X86_PREFIX/opt/freetype/include/freetype2 -I$X86_PREFIX/opt/molten-vk/include" \
-    ../configure \
-        --enable-archs=i386,x86_64 \
-        --with-vulkan \
-        --without-gstreamer \
-        --disable-win16 \
-        --without-x \
-        --without-cups \
-        --without-krb5 \
-        --without-gssapi \
-        --without-pcap \
-        --without-pcsclite
+wine_configure "$BUILD_DIR"
 
 NCPU=$(whisky_ncpu)
 echo "=== Building the two sync test PEs with $NCPU cores ==="
