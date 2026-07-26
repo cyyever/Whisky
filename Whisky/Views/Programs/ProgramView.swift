@@ -23,6 +23,7 @@ import WhiskyKit
 struct ProgramView: View {
     @ObservedObject var program: Program
     @State private var programLoading: Bool = false
+    @State private var cachedIconImage: Image?
     @AppStorage("configSectionExapnded") private var configSectionExpanded: Bool = true
     @AppStorage("envArgsSectionExpanded") private var envArgsSectionExpanded: Bool = true
 
@@ -89,16 +90,28 @@ struct ProgramView: View {
             .padding()
         }
         .toolbar {
-            ToolbarItem(id: "ProgramViewIcon", placement: .navigation) {
-                Image(systemName: "app.dashed")
-                    .resizable()
-                    .frame(width: 25, height: 25)
-                    .padding(.trailing, 5)
+            if let image = cachedIconImage {
+                ToolbarItem(id: "ProgramViewIcon", placement: .navigation) {
+                    image
+                        .resizable()
+                        .frame(width: 25, height: 25)
+                        .padding(.trailing, 5)
+                }
+            } else {
+                ToolbarItem(id: "ProgramViewIcon", placement: .navigation) {
+                    Image(systemName: "app.dashed")
+                        .resizable()
+                        .frame(width: 25, height: 25)
+                        .padding(.trailing, 5)
+                }
             }
         }
         .navigationTitle(program.name)
         .formStyle(.grouped)
         .animation(.whiskyDefault, value: configSectionExpanded)
         .animation(.whiskyDefault, value: envArgsSectionExpanded)
+        .task {
+            if let fetchedImage = program.peFile?.bestIcon() { self.cachedIconImage = Image(nsImage: fetchedImage) }
+        }
     }
 }

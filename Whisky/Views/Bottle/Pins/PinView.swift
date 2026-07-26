@@ -25,6 +25,7 @@ struct PinView: View {
     @State var pin: PinnedProgram // swiftlint:disable:this private_swiftui_state
     @Binding var path: NavigationPath
 
+    @State private var image: Image?
     @State private var showRenameSheet = false
     @State private var name: String = ""
     @State private var opening: Bool = false
@@ -32,8 +33,13 @@ struct PinView: View {
     var body: some View {
         VStack {
             Group {
-                Image(systemName: "app.dashed")
-                    .resizable()
+                if let image {
+                    image
+                        .resizable()
+                } else {
+                    Image(systemName: "app.dashed")
+                        .resizable()
+                }
             }
             .frame(width: 45, height: 45)
             .scaleEffect(opening ? 2 : 1)
@@ -91,6 +97,12 @@ struct PinView: View {
         }
         .task {
             name = pin.name
+            guard let peFile = program.peFile else { return }
+            let task = Task.detached {
+                guard let image = peFile.bestIcon() else { return nil as Image? }
+                return Image(nsImage: image)
+            }
+            self.image = await task.value
         }
         .onChange(of: name) {
             if let index = bottle.settings.pins.firstIndex(where: {

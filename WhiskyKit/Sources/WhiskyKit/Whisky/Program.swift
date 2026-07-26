@@ -48,6 +48,8 @@ public final class Program: ObservableObject, Equatable, Hashable, Identifiable,
         }
     }
 
+    public let peFile: PEFile?
+
     public init(url: URL, bottle: Bottle) {
         let name = url.lastPathComponent
         self.bottle = bottle
@@ -69,6 +71,12 @@ public final class Program: ObservableObject, Equatable, Hashable, Identifiable,
         } catch {
             Logger.wineKit.error("Failed to load settings for `\(name)`: \(error)")
             self.settings = ProgramSettings()
+        }
+
+        do {
+            self.peFile = try PEFile(url: url)
+        } catch {
+            self.peFile = nil
         }
     }
 
