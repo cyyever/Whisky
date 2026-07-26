@@ -22,17 +22,25 @@ require_tools git clang lipo make
 
 SRC="$PROJECT_DIR/vendor/proxychains-ng"
 REPO="https://github.com/rofl0r/proxychains-ng"
+# Pinned like every other vendored dependency — bump deliberately, not implicitly.
+PIN="v4.17"
 
 if [ ! -d "$SRC/.git" ]; then
-    echo "=== Cloning proxychains-ng ==="
-    git clone --depth 1 "$REPO" "$SRC"
+    echo "=== Cloning proxychains-ng $PIN ==="
+    git clone --branch "$PIN" --depth 1 "$REPO" "$SRC"
+else
+    git -C "$SRC" checkout -q "$PIN" 2>/dev/null \
+        || echo "note: $SRC is not at $PIN; 'rm -rf $SRC' then rebuild to re-pin"
 fi
 
 echo "=== Building proxychains-ng (x86_64) from $SRC ==="
 cd "$SRC"
 ./configure >/dev/null
 make -s clean >/dev/null 2>&1 || true
-make -s CC="clang -arch x86_64"
+# -Wno-error=incompatible-function-pointer-types: v4.17's freeaddrinfo hook has a
+# void-vs-int return-type mismatch that newer clang promotes to an error; the
+# return value is unused, so it's benign — keep it a warning so the pin builds.
+make -s CC="clang -arch x86_64 -Wno-error=incompatible-function-pointer-types"
 
 DYLIB="$SRC/libproxychains4.dylib"
 if ! lipo -archs "$DYLIB" 2>/dev/null | grep -qw x86_64; then

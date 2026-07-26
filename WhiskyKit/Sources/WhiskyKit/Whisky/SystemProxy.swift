@@ -110,16 +110,31 @@ public enum SystemProxy {
         // proxy_dns is deliberately OFF: proxychains' fake-IP DNS remap breaks
         // Steam's manifest HTTPS. DNS resolves directly; only TCP connect() is
         // tunneled through SOCKS (verified: Steam reaches "Connected" this way).
+        // localnet keeps loopback/LAN direct: Steam's steam.exe<->steamwebhelper
+        // IPC and the SOCKS proxy itself live on 127.0.0.1, and RFC1918/link-local
+        // shouldn't be tunneled — only external TCP goes through SOCKS.
         let conf = dir.appending(path: "proxychains.conf")
         let body = """
         strict_chain
         tcp_read_time_out 15000
         tcp_connect_time_out 8000
+        localnet 127.0.0.0/255.0.0.0
+        localnet 10.0.0.0/255.0.0.0
+        localnet 172.16.0.0/255.240.0.0
+        localnet 192.168.0.0/255.255.0.0
+        localnet 169.254.0.0/255.255.0.0
         [ProxyList]
         socks5 \(resolvedHost) \(port)
 
         """
-        try? body.write(to: conf, atomically: true, encoding: .utf8)
+        // Only inject proxychains once its config is actually on disk — otherwise
+        // the dylib loads with no readable config and aborts inside every (Rosetta)
+        // wine process, breaking all launches. Fall back to the http_proxy path.
+        do {
+            try body.write(to: conf, atomically: true, encoding: .utf8)
+        } catch {
+            return nil
+        }
 
         return [
             "DYLD_INSERT_LIBRARIES": dylib.path(percentEncoded: false),
