@@ -194,7 +194,7 @@ struct BlocklistItemView: View {
 
     var body: some View {
         HStack {
-            Text(blockedUrl.prettyPath(bottle))
+            Text(blockedUrl.lastPathComponent)
             Spacer()
             if showButtons {
                 Button("program.remove.blocklist", systemImage: "xmark") {

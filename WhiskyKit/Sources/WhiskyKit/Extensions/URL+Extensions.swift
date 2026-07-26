@@ -43,16 +43,6 @@ extension URL {
         return prettyPath
     }
 
-    // NOT to be used for logic only as UI decoration
-    public func prettyPath(_ bottle: Bottle) -> String {
-        var prettyPath = path(percentEncoded: false)
-        prettyPath = prettyPath
-            .replacingOccurrences(of: bottle.url.path(percentEncoded: false), with: "")
-            .replacingOccurrences(of: "/drive_c/", with: "C:\\")
-            .replacingOccurrences(of: "/", with: "\\")
-        return prettyPath
-    }
-
     public func updateParentBottle(old: URL, new: URL) -> URL {
         let originalPath = path(percentEncoded: false)
 
