@@ -68,12 +68,11 @@ extension Whisky {
                 throw ValidationError("A bottle with that name doesn't exist.")
             }
 
-            // Install DXVK (if enabled) and wire up Steam's CEF wrapper before launch.
-            await Wine.prepareForLaunch(bottle: bottle)
-
+            // Single launch entry: `launch` runs `prepareForLaunch` (DXVK + Steam
+            // CEF wrapper) itself, then runs the program in the bottle.
             let url = URL(fileURLWithPath: path)
             let program = Program(url: url, bottle: bottle)
-            program.runInTerminal()
+            await program.launch()
         }
     }
 

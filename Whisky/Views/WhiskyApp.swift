@@ -46,11 +46,6 @@ struct WhiskyApp: App {
                 Button("open.setup") {
                     showSetup = true
                 }
-                Button("install.cli") {
-                    Task {
-                        await WhiskyCmd.install()
-                    }
-                }
             }
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .newItem) {
@@ -86,18 +81,8 @@ struct WhiskyApp: App {
                 }
             }
             CommandGroup(replacing: .help) {
-                Button("help.website") {
-                    if let url = URL(string: "https://getwhisky.app/") {
-                        openURL(url)
-                    }
-                }
                 Button("help.github") {
                     if let url = URL(string: "https://github.com/cyyever/Whisky") {
-                        openURL(url)
-                    }
-                }
-                Button("help.discord") {
-                    if let url = URL(string: "https://discord.gg/CsqAfs9CnM") {
                         openURL(url)
                     }
                 }

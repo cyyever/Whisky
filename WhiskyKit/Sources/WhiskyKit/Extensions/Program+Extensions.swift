@@ -18,61 +18,44 @@
 
 import AppKit
 import Foundation
-import os.log
 
 extension Program {
+    /// GUI entry point: launch this program. Fire-and-forget — the launch (and
+    /// its preparation) runs detached; errors surface via an alert.
     public func run() {
-        if NSEvent.modifierFlags.contains(.shift) {
-            self.runInTerminal()
-        } else {
-            self.runInWine()
-        }
-    }
-
-    func runInWine() {
-        let arguments = settings.arguments.split { $0.isWhitespace }.map(String.init)
-        let environment = generateEnvironment()
-
         Task.detached(priority: .userInitiated) {
-            do {
-                try await Wine.runProgram(
-                    at: self.url, args: arguments, bottle: self.bottle, environment: environment
-                )
-            } catch {
-                await MainActor.run {
-                    self.showRunError(message: error.localizedDescription)
-                }
-            }
+            await self.launch()
         }
     }
 
+    /// The single entry point for launching a program in a bottle. Every caller —
+    /// GUI buttons, pins, the file-open sheet, and the CLI — goes through here, so
+    /// bottle preparation (Steam's CEF wrapper, DXVK auto-drop) happens exactly
+    /// once, and there is only one way to run a program.
+    public func launch() async {
+        await Wine.prepareForLaunch(bottle: bottle)
+        // Launching Steam: reap orphaned CEF webhelper trees first so exactly one
+        // login tree comes up (Steam's own mutex can't reap Wine-orphaned ones).
+        if Steam.isSteamClient(url) {
+            await Steam.reapCEFProcesses()
+        }
+        let arguments = settings.arguments.split { $0.isWhitespace }.map(String.init)
+        do {
+            try await Wine.runProgram(
+                at: url, args: arguments, bottle: bottle, environment: generateEnvironment()
+            )
+        } catch {
+            await showRunError(message: error.localizedDescription)
+        }
+    }
+
+    /// Renders the full `wine …` launch command (env + start line) as a shell
+    /// string. Used only to embed the launch in the standalone `.app` shortcut
+    /// (see `ProgramShortcut`), never to spawn a Terminal.
     public func generateTerminalCommand() -> String {
         return Wine.generateRunCommand(
             at: self.url, bottle: bottle, args: settings.arguments, environment: generateEnvironment()
         )
-    }
-
-    public func runInTerminal() {
-        let wineCmd = generateTerminalCommand().replacingOccurrences(of: "\\", with: "\\\\")
-
-        let script = """
-        tell application "Terminal"
-            activate
-            do script "\(wineCmd)"
-        end tell
-        """
-
-        Task.detached(priority: .userInitiated) {
-            var error: NSDictionary?
-            guard let appleScript = NSAppleScript(source: script) else { return }
-            appleScript.executeAndReturnError(&error)
-
-            if let error {
-                Logger.wineKit.error("Failed to run terminal script \(error)")
-                guard let description = error["NSAppleScriptErrorMessage"] as? String else { return }
-                await self.showRunError(message: String(describing: description))
-            }
-        }
     }
 
     @MainActor private func showRunError(message: String) {

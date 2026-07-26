@@ -124,12 +124,15 @@ public class Wine {
     /// (correct for games). Pass `waitForExit: true` to insert `/wait` so the
     /// call resolves only once the launched program exits — needed for
     /// installers, where callers act on the *result* of the install.
+    ///
+    /// Low-level exec: it does **not** run ``prepareForLaunch(bottle:)`` — that is
+    /// owned by the single launch entry point (``Program/launch()``),
+    /// so preparation happens exactly once there. The only other caller is the
+    /// platform installer, which does its own post-install `Steam.configure`.
     public static func runProgram(
         at url: URL, args: [String] = [], bottle: Bottle,
         environment: [String: String] = [:], waitForExit: Bool = false
     ) async throws {
-        await prepareForLaunch(bottle: bottle)
-
         let startArgs = waitForExit ? ["start", "/wait", "/unix"] : ["start", "/unix"]
         for await _ in try Self.runWineProcess(
             name: url.lastPathComponent,
@@ -230,11 +233,6 @@ public class Wine {
             return String(output.prefix(upTo: index))
         }
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    @discardableResult
-    public static func runBatchFile(url: URL, bottle: Bottle) async throws -> String {
-        return try await runWine(["cmd", "/c", url.path(percentEncoded: false)], bottle: bottle)
     }
 
     public static func killBottle(bottle: Bottle) throws {
@@ -373,21 +371,6 @@ extension Wine {
                                 name: "CurrentBuild", data: "\(version)", type: .string)
         try await addRegistryKey(bottle: bottle, key: RegistryKey.currentVersion.rawValue,
                                 name: "CurrentBuildNumber", data: "\(version)", type: .string)
-    }
-
-    public static func winVersion(bottle: Bottle) async throws -> WinVersion {
-        let output = try await Self.runWine(["winecfg", "-v"], bottle: bottle)
-        let lines = output.split(whereSeparator: \.isNewline)
-
-        if let lastLine = lines.last {
-            let winString = String(lastLine)
-
-            if let version = WinVersion(rawValue: winString) {
-                return version
-            }
-        }
-
-        throw WineInterfaceError.invalidResponce
     }
 
     public static func buildVersion(bottle: Bottle) async throws -> String? {

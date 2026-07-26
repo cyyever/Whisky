@@ -77,18 +77,9 @@ struct FileOpenView: View {
 
     func run() {
         if let bottle = bottles.first(where: { $0.url == selection }) {
-            Task.detached(priority: .userInitiated) {
-                do {
-                    if fileURL.pathExtension == "bat" {
-                        try await Wine.runBatchFile(url: fileURL,
-                                                    bottle: bottle)
-                    } else {
-                        try await Wine.runProgram(at: fileURL, bottle: bottle)
-                    }
-                } catch {
-                    print(error)
-                }
-            }
+            // Single launch entry: `Program.run` handles .bat vs .exe/.msi and
+            // bottle preparation. No separate direct-to-Wine path.
+            Program(url: fileURL, bottle: bottle).run()
             dismiss()
         }
     }

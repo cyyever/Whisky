@@ -70,10 +70,6 @@ struct BottleView: View {
                         bottle.openCDrive()
                     }
                     .accessibilityIdentifier("bottle.cDrive")
-                    Button("button.terminal") {
-                        bottle.openTerminal()
-                    }
-                    .accessibilityIdentifier("bottle.terminal")
                     // One entry point for getting a program into the bottle: fetch
                     // a known gaming platform's installer, or pick a local file.
                     Menu {
@@ -173,30 +169,23 @@ struct BottleView: View {
         }
     }
 
-    /// Pick a local `.exe`/`.msi`/`.bat` and run it in the bottle (the classic
-    /// "Run..." flow, folded into the unified install/run menu).
+    /// Pick a local `.exe`/`.msi` and run it in the bottle (the classic "Run..."
+    /// flow, folded into the unified install/run menu).
     private func runFileFromPanel() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowedContentTypes = [UTType.exe,
-                                     UTType(exportedAs: "com.microsoft.msi-installer"),
-                                     UTType(exportedAs: "com.microsoft.bat")]
+                                     UTType(exportedAs: "com.microsoft.msi-installer")]
         panel.directoryURL = bottle.url.appending(path: "drive_c")
         panel.begin { result in
             guard result == .OK, let url = panel.urls.first else { return }
             programLoading = true
             Task(priority: .userInitiated) {
-                do {
-                    if url.pathExtension == "bat" {
-                        try await Wine.runBatchFile(url: url, bottle: bottle)
-                    } else {
-                        try await Wine.runProgram(at: url, bottle: bottle)
-                    }
-                } catch {
-                    installError = error.localizedDescription
-                }
+                // Single launch entry: `Program.launch` handles .bat vs .exe/.msi
+                // and bottle preparation, and surfaces its own errors.
+                await Program(url: url, bottle: bottle).launch()
                 programLoading = false
                 updateStartMenu()
             }

@@ -385,23 +385,6 @@
         }
       }
     },
-    "button.terminal": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Terminal..."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "终端..."
-          }
-        }
-      }
-    },
     "button.unpin": {
       "localizations": {
         "en": {
@@ -1157,22 +1140,6 @@
         }
       }
     },
-    "help.discord": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Discord"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Discord"
-          }
-        }
-      }
-    },
     "help.github": {
       "localizations": {
         "en": {
@@ -1185,38 +1152,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "GitHub"
-          }
-        }
-      }
-    },
-    "help.website": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Website"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "网站"
-          }
-        }
-      }
-    },
-    "install.cli": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Install Whisky CLI..."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "安装 Whisky CLI..."
           }
         }
       }
