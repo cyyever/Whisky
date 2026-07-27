@@ -25,8 +25,7 @@ import os.log
 /// macOS because its sandbox hooks into the NT kernel and its out-of-process GPU
 /// cannot reset the D3D device. We work around this by wrapping the CEF host with
 /// a small launcher (see `SteamHelper/webhelper_wrapper.c`) that re-launches the
-/// genuine binary with `--no-sandbox --in-process-gpu --disable-gpu
-/// --disable-gpu-compositing`.
+/// genuine binary with `--no-sandbox --in-process-gpu`.
 ///
 /// The wrapper is attached via the image's "Debugger" Image File Execution
 /// Options entry (see `ifeoDebuggerKey`) rather than by overwriting
