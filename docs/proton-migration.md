@@ -277,6 +277,13 @@ source of truth):
 - **KosmicKrisp loader swap**: install the Khronos Vulkan loader as BOTH
   `Wine/lib/libMoltenVK.dylib` and `Wine/lib/libvulkan.1.dylib`; drop the ICD manifest
   to `~/.local/share/vulkan/icd.d/`.
+- **DXMT restore over wined3d**: `make install` writes Wine's builtin `d3d11.dll`
+  (wined3d — FL 9_3 → GLES2 only), clobbering any prior DXMT install. The script
+  restores the DXMT Metal builds (d3d11/d3d10core/dxgi/winemetal, x86_64 + i386)
+  over them so `make proton` is order-independent — skipped when DXMT artifacts
+  are absent (run `make dxmt`). Mirrors the KosmicKrisp swap; see
+  `docs/steam-webhelper.md` for why the webhelper needs DXMT (GLES3 /
+  SharedImageStub).
 - `install_name_tool -add_rpath '@loader_path/../..'` on every `x86_64-unix/*.so`.
 - Append `[Drivers] Graphics=mac` to `share/wine/wine.inf`; symlink `wine64 → wine`;
   write `WhiskyWineVersion.plist`.

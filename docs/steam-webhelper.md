@@ -20,27 +20,43 @@ and the host exits. `--no-sandbox` is the universal Wine/Proton workaround
 (Valve's own Linux Steam passes `-no-cef-sandbox`); there is no realistic root
 fix, so the flag is permanent.
 
-**GPU rendering re-enabled (2026-07-24, KosmicKrisp + DXMT stack).** Whisky used
-to also force `--disable-gpu --disable-gpu-compositing` (software raster). That is
-no longer needed: on the current stack CEF's GPU process comes up via ANGLE →
-D3D11 (**wined3d**, not DXMT — see the ANGLE/wined3d analysis below) → GL → Metal
-without black-windowing, renders the UI correctly, and roughly **halves the
-webhelper CPU** (software-raster ~44% → ~24% on the main renderer). So only
-`--no-sandbox --in-process-gpu` are appended (in Proton itself via patch `0020`).
-Caveat: ANGLE's Renderer11 caps the context at **GLES 2.0** (`eglCreateContext:
-Requested GLES 3.0 > max supported 2.0`), so CEF falls back to SwiftShader for the
-GLES-3 raster path; rendering is still correct. An experimental **ANGLE-Vulkan**
-path reaches GLES 3.0 (bypassing wined3d) but has an open flicker bug — see the
-ANGLE-Vulkan subsection below.
+**GPU rendering and the GLES3 requirement (DXMT on the D3D11 path).** CEF's GPU
+process needs a shared **GLES3** context for its `SharedImageStub` (GPU
+virtualization); without it CEF hits `kFatalFailure` and retries forever — the
+**webhelper death-loop** (~160% CPU, multi-GB `cef_log`, no login window). On
+Wine+macOS that GLES3 context only exists when ANGLE's D3D11 backend is served by
+**DXMT** (the Metal `d3d11.dll` builtin, feature level **11_1** → GLES3). With
+DXMT active the webhelper renders correctly and roughly **halves the webhelper
+CPU** vs software raster (software-raster ~44% → ~24% on the main renderer). So
+patch `0020` appends only `--no-sandbox --in-process-gpu`; there is no
+`--disable-gpu`/SwiftShader path — it was the old approach and was briefly retried
+this investigation, but SwANGLE fails at `eglInitialize` (winevulkan rejects
+`VK_KHR_surface` on the host instance) and crashes inside ANGLE's closed
+`libGLESv2`. The real GLES3 fix is DXMT on the D3D11 path. (An experimental
+**ANGLE-Vulkan** path also reaches GLES 3.0 but has an open flicker bug — see the
+ANGLE-Vulkan subsection below.)
 
-**Why ES2, and why ES3 on this path is a dead end.** ANGLE's Renderer11 is served by
-**wined3d** (D3D11-on-macOS-GL), not DXMT (DXMT never loads in the webhelper). wined3d
-gets a core GL 4.1 context but caps at **FL_9_3 / SM3** because Apple's frozen GL 4.1
-lacks `GL_EXT_shader_integer_mix` (and `GL_ARB_polygon_offset_clamp`), which
-`shader_glsl_get_shader_model` requires for SM4. Forcing SM4/FL_10 anyway (patch 0016,
-reverted in `d0994f4b`) makes ANGLE's D3D11 init **hang** — the gate exists because
-Apple GL can't compile SM4's integer `mix()`. **ES3 can only come from Vulkan or DXMT,
-not wined3d-GL.**
+**Why DXMT is required (the wined3d failure mode).** The Wine builtin `d3d11.dll`
+is **wined3d** (D3D11-on-macOS-GL), not DXMT. wined3d gets a core GL 4.1 context
+but caps at **FL_9_3 / SM3** because Apple's frozen GL 4.1 lacks
+`GL_EXT_shader_integer_mix` (and `GL_ARB_polygon_offset_clamp`), which
+`shader_glsl_get_shader_model` requires for SM4. Forcing SM4/FL_10 anyway (patch
+0016, reverted in `d0994f4b`) makes ANGLE's D3D11 init **hang** — the gate exists
+because Apple GL can't compile SM4's integer `mix()`. Under wined3d ANGLE's
+Renderer11 therefore caps at **GLES 2.0** (`eglCreateContext: Requested GLES 3.0 >
+max supported 2.0`) → `SharedImageStub` "Failed to create shared context for
+virtualization" → death-loop. **ES3 can only come from DXMT (or Vulkan), not
+wined3d-GL.**
+
+**Death-loop root cause — `make proton` clobbering DXMT (fixed, commit e20c85ca).**
+Wine's `make install` rewrites the builtin `d3d11.dll` (wined3d) **over** the DXMT
+copy that `make dxmt` had installed, silently dropping the webhelper (and D3D11
+games) back to FL_9_3 → GLES2 → death-loop. The patch-0017 load order is correct
+(it routes `d3d11` to the builtin); the bug was the builtin being wined3d. Fix:
+`scripts/build-proton-x86.sh` now restores DXMT (d3d11/d3d10core/dxgi/winemetal)
+over wined3d after `make install`, mirroring the KosmicKrisp loader swap — so
+`make proton` is order-independent (no need to re-run `make dxmt` after every
+rebuild). Skipped when DXMT artifacts are absent (wined3d stays; run `make dxmt`).
 
 **Experimental ANGLE-Vulkan ES3 (shelved).** `--use-angle=vulkan --use-cmd-decoder=passthrough`
 routes ANGLE → `vulkan-1.dll` (winevulkan) → KosmicKrisp → Metal, giving real **GLES 3.0**
@@ -50,8 +66,8 @@ Metal-4 WSI: ruled out present-mode (force-FIFO no effect), `framebufferOnly=NO`
 correct Metal-4 (which is why single-swapchain DXVK games render fine). Likely cause:
 CEF's ~10 swapchains interleaving on KosmicKrisp's single Metal-4 queue — a WSI-maturity
 issue, not a Wine/flag fix. The flags are **not** in the tree and **not** shipped;
-the Steam UI stays on stable DXMT/wined3d-ES2 (renders fine, no flicker; ES3 isn't
-needed for a 2D UI). Do NOT set a bottle-global `d3d11=native` override for the UI.
+the Steam UI stays on stable DXMT-ES3 (renders fine, no flicker). Do NOT set a
+bottle-global `d3d11=native` override for the UI.
 
 **Bundled `cef.win64/vulkan-1.dll` shadows winevulkan — fixed with `vulkan-1=b`
 (2026-07-26).** In a freshly created bottle CEF would spin in a tight GL-init retry
@@ -79,8 +95,8 @@ with the override a real launch cleared **all** `VK_KHR_surface`/`gl_factory_win
 CPU dropped from ~160% to ~0.5%, and the log flood stopped. (The login window then still
 needs network connectivity — a separate proxy/network matter, see §2.)
 
-Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXMT_LOG_PATH` stays empty
-in the webhelper (it's wined3d). Always launch Steam with the **full bottle env**
+Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXMT_LOG_PATH` is honored
+in the webhelper (d3d11 is DXMT). Always launch Steam with the **full bottle env**
 (the app builds it in `Wine.runProgram`) — a minimal env missing `winemetal=b` /
 `DYLD_FALLBACK_LIBRARY_PATH` makes steam.exe spin at ~100% with no window.
 
