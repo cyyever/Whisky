@@ -15,7 +15,16 @@ Chromium flags:
     (eglCreateWindowSurface failed; SwapChain11.cpp), so the UI never paints.
     Running the GPU in-process sidesteps the cross-process surface.
 
-Whisky previously injected these via an IFEO "Debugger" wrapper around
+NOTE: the GPU process's SharedImageStub (GPU virtualization) requires a shared
+GLES3 context. ANGLE's D3D11 backend only reaches GLES3 when d3d11 is DXMT
+(Metal, feature level 11_1); the Wine builtin wined3d caps at feature level
+9_3 (macOS GL 2.1, no core context) -> GLES2 only -> "Failed to create shared
+context for virtualization" retry loop. So this flag assumes DXMT is installed
+as the d3d11 builtin (`make dxmt`); `make proton` alone reinstalls wined3d's
+d3d11 and must be followed by `make dxmt` (build-proton-x86.sh now restores
+DXMT over wined3d after install to make this order-independent).
+
+Whisky previously injected the flags via an IFEO "Debugger" wrapper around
 steamwebhelper.exe (steamwebhelper_wrapper.exe + a steamwebhelper_real.exe copy
 + a per-bottle registry value, on top of patch 0010's IFEO-debugger support).
 That is a lot of machinery for two flags. Wine already has a

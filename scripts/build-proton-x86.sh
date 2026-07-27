@@ -112,6 +112,27 @@ cp -R "$WINE_INSTALL_ROOT/bin" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/lib" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/share" "$INSTALL_DIR/Wine/"
 
+# --- DXMT (Metal D3D11) restore over wined3d --------------------------------
+# Wine's builtin d3d11/d3d10core/dxgi are wined3d-backed (GL 2.1 -> feature
+# level 9_3 -> GLES2 only). DXMT replaces them with Metal builds (FL 11_1 ->
+# GLES3), which ANGLE's D3D11 backend (Steam webhelper SharedImageStub) and
+# D3D11 games require. The cp -R of lib/ above just wrote wined3d's copies,
+# clobbering any prior DXMT install — restore DXMT over them so `make proton`
+# is order-independent (no need to re-run `make dxmt` after every proton
+# rebuild). Mirrors the KosmicKrisp loader swap below: skipped entirely when
+# the DXMT artifacts are absent (wined3d stays; run `make dxmt` to build them).
+DXMT_B64="$PROJECT_DIR/vendor/dxmt/build/src"
+DXMT_B32="$PROJECT_DIR/vendor/dxmt/build32/src"
+if [ -f "$DXMT_B64/d3d11/d3d11.dll" ]; then
+    echo "=== Restoring DXMT builtins over wined3d (proton install clobbered them) ==="
+    for p in d3d11/d3d11.dll d3d10/d3d10core.dll dxgi/dxgi.dll winemetal/winemetal.dll; do
+        cp "$DXMT_B64/$p" "$INSTALL_DIR/Wine/lib/wine/x86_64-windows/${p##*/}"
+        [ -f "$DXMT_B32/$p" ] && cp "$DXMT_B32/$p" "$INSTALL_DIR/Wine/lib/wine/i386-windows/${p##*/}"
+    done
+    cp "$DXMT_B64/winemetal/unix/winemetal.so" "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/winemetal.so"
+    echo "DXMT restored: d3d11/d3d10core/dxgi/winemetal (x86_64 + i386)"
+fi
+
 # Bundle x86 dylibs so Wine finds them at runtime. cp -R (implies -P on BSD)
 # preserves the libfoo.dylib -> libfoo.N.dylib -> libfoo.N.x.y.dylib symlink
 # chains — plain cp used to materialize each as a full copy (3x libavcodec
