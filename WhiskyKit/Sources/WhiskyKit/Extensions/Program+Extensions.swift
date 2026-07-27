@@ -44,7 +44,6 @@ extension Program {
             }
             await Steam.reapSteamProcesses(in: bottle)
         }
-        await Wine.prepareForLaunch(bottle: bottle)
         let arguments = settings.arguments.split { $0.isWhitespace }.map(String.init)
         do {
             try await Wine.runProgram(

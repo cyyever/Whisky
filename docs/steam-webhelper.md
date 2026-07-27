@@ -1,4 +1,4 @@
-# Steam webhelper: IFEO launcher + update-stuck proxy fix
+# Steam webhelper: CEF flags via Proton + update-stuck proxy fix
 
 Two Steam-under-Wine problems and how Whisky solves them.
 
@@ -9,18 +9,29 @@ sandbox hooks the NT kernel and the out-of-process GPU can't reset the D3D
 device (`problems[10]: Some drivers are unable to reset the D3D device in the GPU
 process sandbox`). It needs `--no-sandbox --in-process-gpu`.
 
-**GPU rendering re-enabled (2026-07-24, KosmicKrisp + DXMT stack).** The wrapper
-used to also force `--disable-gpu --disable-gpu-compositing` (software raster).
-That is no longer needed: on the current stack CEF's GPU process comes up via
-ANGLE → D3D11 (**wined3d**, not DXMT — see the ANGLE/wined3d analysis below) → GL →
-Metal without black-windowing, renders the UI correctly, and roughly **halves the
-webhelper CPU** (software-raster ~44% → ~24% on the main renderer). So the shipped
-wrapper appends only `--no-sandbox --in-process-gpu`
-(`SteamHelper/webhelper_wrapper.c`). Caveat: ANGLE's Renderer11 caps the context
-at **GLES 2.0** (`eglCreateContext: Requested GLES 3.0 > max supported 2.0`), so CEF
-falls back to SwiftShader for the GLES-3 raster path; rendering is still correct. An
-experimental **ANGLE-Vulkan** path reaches GLES 3.0 (bypassing wined3d) but has an open
-flicker bug — see the ANGLE-Vulkan subsection below.
+**Why the sandbox can't be fixed.** Wine's sandbox emulation is incomplete:
+`SetTokenInformation(TokenIntegrityLevel)`, `SetProcessMitigationPolicy`, and
+`NtCreateLowBoxToken` are silent stubs that report success without enforcing
+anything — only the window-station/desktop access fix from Wine 8.0 (WineHQ
+53981) landed upstream; no wine-devel / wine-staging / Proton patch implements the
+rest. So the CEF broker's sandbox handshake with its child processes deadlocks,
+Steam's outer watchdog trips `Stalled cross-thread pipe` (`src/common/pipes.cpp`),
+and the host exits. `--no-sandbox` is the universal Wine/Proton workaround
+(Valve's own Linux Steam passes `-no-cef-sandbox`); there is no realistic root
+fix, so the flag is permanent.
+
+**GPU rendering re-enabled (2026-07-24, KosmicKrisp + DXMT stack).** Whisky used
+to also force `--disable-gpu --disable-gpu-compositing` (software raster). That is
+no longer needed: on the current stack CEF's GPU process comes up via ANGLE →
+D3D11 (**wined3d**, not DXMT — see the ANGLE/wined3d analysis below) → GL → Metal
+without black-windowing, renders the UI correctly, and roughly **halves the
+webhelper CPU** (software-raster ~44% → ~24% on the main renderer). So only
+`--no-sandbox --in-process-gpu` are appended (in Proton itself via patch `0020`).
+Caveat: ANGLE's Renderer11 caps the context at **GLES 2.0** (`eglCreateContext:
+Requested GLES 3.0 > max supported 2.0`), so CEF falls back to SwiftShader for the
+GLES-3 raster path; rendering is still correct. An experimental **ANGLE-Vulkan**
+path reaches GLES 3.0 (bypassing wined3d) but has an open flicker bug — see the
+ANGLE-Vulkan subsection below.
 
 **Why ES2, and why ES3 on this path is a dead end.** ANGLE's Renderer11 is served by
 **wined3d** (D3D11-on-macOS-GL), not DXMT (DXMT never loads in the webhelper). wined3d
@@ -38,7 +49,7 @@ Metal-4 WSI: ruled out present-mode (force-FIFO no effect), `framebufferOnly=NO`
 (→ freeze), and `--disable-partial-swap`; the present path itself is structurally
 correct Metal-4 (which is why single-swapchain DXVK games render fine). Likely cause:
 CEF's ~10 swapchains interleaving on KosmicKrisp's single Metal-4 queue — a WSI-maturity
-issue, not a Wine/wrapper fix. The flags are **not** in the tree and **not** shipped;
+issue, not a Wine/flag fix. The flags are **not** in the tree and **not** shipped;
 the Steam UI stays on stable DXMT/wined3d-ES2 (renders fine, no flicker; ES3 isn't
 needed for a 2D UI). Do NOT set a bottle-global `d3d11=native` override for the UI.
 
@@ -70,51 +81,47 @@ needs network connectivity — a separate proxy/network matter, see §2.)
 
 Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXMT_LOG_PATH` stays empty
 in the webhelper (it's wined3d). Always launch Steam with the **full bottle env**
-(the app builds it in `Wine.runProgram`; the `shellenv` env-dump CLI command was removed)
-— a minimal env missing `winemetal=b` / `DYLD_FALLBACK_LIBRARY_PATH` makes steam.exe spin
-at ~100% with no window. If a bottle
-sharing the wrapper black-windows, restore `--disable-gpu --disable-gpu-compositing`.
+(the app builds it in `Wine.runProgram`) — a minimal env missing `winemetal=b` /
+`DYLD_FALLBACK_LIBRARY_PATH` makes steam.exe spin at ~100% with no window.
 
-### Why not just overwrite steamwebhelper.exe
+### Solution: append the flags in Proton (patch 0020)
 
-The original fix replaced `steamwebhelper.exe` with the wrapper. But Steam's
-startup `BVerifyInstalledFiles` checks each executable's size/checksum against
-the manifest:
+`steamwebhelper.exe` is left byte-identical to Valve's. The two flags are appended
+inside Wine itself: `hack_append_command_line()` (in `dlls/kernelbase/process.c`)
+gains a `steamwebhelper.exe` entry — `patches/proton-wine/0020` — so every
+`steamwebhelper.exe` launch (the browser host **and** its renderer/gpu/utility
+children) picks up `--no-sandbox --in-process-gpu`. CEF propagates flags to its own
+child processes anyway; the substring match just makes sure each child also matches.
 
-```
-BVerifyInstalledFiles: bin\cef\cef.win64\steamwebhelper.exe is 147972 bytes, expected 7723160
-Downloading update...
-```
+This replaces a heavier mechanism. Whisky formerly attached a small
+`steamwebhelper_wrapper.exe` launcher through the image's IFEO `Debugger` value
+(IFEO-`Debugger` support carried by a now-removed kernelbase patch); the wrapper
+re-launched a `steamwebhelper_real.exe` copy with the flags. Two flags weren't worth
+the wrapper binary, the `_real` copy, the per-bottle registry value, the Swift
+plumbing, and the Wine patch that made it all work, so the in-Wine table entry wins
+on every axis:
 
-So every launch Steam treated the wrapper as corruption and re-downloaded the
-client — slow at best, and a hang behind a blocked CDN (see §2). The on-disk
-binary must stay byte-identical to Valve's.
+- **No verification storm.** Steam's startup `BVerifyInstalledFiles` checksums each
+  executable against the manifest; the very first version of the fix *overwrote*
+  `steamwebhelper.exe` with the wrapper, so every launch Steam saw "corruption" and
+  re-downloaded the client (slow, and a hang behind a blocked CDN — see §2):
 
-### Solution: attach via IFEO `Debugger`
+  ```
+  BVerifyInstalledFiles: bin\cef\cef.win64\steamwebhelper.exe is 147972 bytes, expected 7723160
+  Downloading update...
+  ```
 
-`steamwebhelper.exe` is left untouched. The wrapper is attached through the
-image's **Image File Execution Options `Debugger`** value, so Wine launches:
+  Leaving the binary untouched — which both the IFEO approach and the patch approach
+  do — is what avoids that.
+- **Nothing per-bottle.** The flags ship in the Wine build; `steamwebhelper.exe` is
+  never overwritten and no registry value or shim is installed, so there is nothing
+  to migrate or clean up. (Old bottles may still carry a stale IFEO `Debugger` value
+  and orphan `steamwebhelper_wrapper.exe` / `_real` copies from the retired wrapper;
+  they are inert — Wine no longer honors IFEO-`Debugger`, and Steam ignores the
+  orphan files.)
 
-```
-steamwebhelper_wrapper.exe  <full path>\steamwebhelper.exe  <original args...>
-```
-
-The wrapper appends the flags and launches `steamwebhelper_real.exe` (a copy of
-the genuine binary under a different name, so the IFEO redirect doesn't recurse).
-CEF propagates the flags to its own child processes.
-
-Stock Wine ignores the IFEO `Debugger` value at `CreateProcess`; support is added
-by a kernelbase patch — `patches/proton-wine/0010-macos-kernelbase-ifeo-debugger.patch`
-— which, in `CreateProcessInternalW`, prepends the IFEO `Debugger` to the command
-line and runs that instead. Patches live as files and are applied at build time from
-the patch series (`patches/proton-wine/*`) so the vendored source stays clean.
-
-Driven by `Steam.swift` `Steam.configure` (called from `Wine.prepareForLaunch`):
-installs the wrapper at `C:\windows\steamwebhelper_wrapper.exe`,
-restores a genuine `steamwebhelper.exe` (migrates old bottles), refreshes the
-`steamwebhelper_real.exe` copy, and writes the IFEO registry value. Applied
-automatically on every launch — from the GUI or via
-`whisky run` (both go through `Wine.prepareForLaunch`); there is no separate CLI command.
+The kernelbase IFEO-`Debugger` support (former patch `0010`) is removed too: with no
+wrapper registering a `Debugger` value, the feature had no consumer.
 
 ## 2. "Steam is updating" stuck
 

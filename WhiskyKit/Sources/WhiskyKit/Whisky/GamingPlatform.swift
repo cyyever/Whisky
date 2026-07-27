@@ -23,7 +23,7 @@ import os.log
 /// a bottle, so the user does not have to hunt down the right `Setup.exe`.
 ///
 /// Only **Steam** is a validated path on this stack (the whole fork is built
-/// around it — webhelper IFEO wrapper, DXVK auto-drop, Proton lock). The others
+/// around it — Steam CEF flags via Proton, DXVK auto-drop, Proton lock). The others
 /// are provided as a convenience and run through the exact same "download the
 /// vendor installer, launch it in the bottle" path; their post-install runtime
 /// is not specifically tuned here.
@@ -92,24 +92,19 @@ public struct GamingPlatform: Identifiable, Hashable, Sendable {
 
 public enum GamingPlatformInstaller {
     /// Download `platform`'s official installer (cached per-bottle so a retry or a
-    /// second platform doesn't re-fetch) and launch it inside `bottle`. For Steam
-    /// we also run `Steam.configure` afterwards so the webhelper wrapper / DXVK
-    /// wiring is in place for the first launch.
+    /// second platform doesn't re-fetch) and launch it inside `bottle`.
     ///
     /// Runs the installer with the platform's `installerArgs`: a silent-install
     /// flag where one is known-good for that vendor (Steam passes `/S`), otherwise
     /// no args so the installer's own wizard drives it. `waitForExit` so we only
-    /// configure / report completion once the installer has actually finished.
+    /// report completion once the installer has actually finished.
     public static func install(_ platform: GamingPlatform, in bottle: Bottle) async throws {
         let installer = try await download(platform, in: bottle)
-        // waitForExit so we only configure / report done once the installer has
-        // actually finished — `start` alone is non-blocking.
+        // waitForExit so we only report done once the installer has actually
+        // finished — `start` alone is non-blocking.
         try await Wine.runProgram(
             at: installer, args: platform.installerArgs, bottle: bottle, waitForExit: true
         )
-        if platform.id == GamingPlatform.steam.id {
-            await Steam.configure(in: bottle)
-        }
     }
 
     /// Directory holding downloaded installers for a bottle. Kept next to the

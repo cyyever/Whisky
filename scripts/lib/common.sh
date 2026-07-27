@@ -14,7 +14,7 @@
 # Reliable regardless of the caller's cwd or how it was invoked.
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# Where the build payloads land (Wine, DXVK, DXMT, SteamHelper, version plist).
+# Where the build payloads land (Wine, DXVK, DXMT, ProxyChains, version plist).
 INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
 
 # x86_64 Homebrew (installed by setup-x86-brew.sh) — provides the libraries

@@ -2,7 +2,7 @@
 
 Goal: replace Whisky's x86_64 Wine 11.13 with **Valve's `proton-wine` 11.0** so Proton
 inherits all of Whisky's macOS capabilities — msync fast-sync, DXMT (D3D11/10/DXGI),
-KosmicKrisp Vulkan, DXVK (D3D9), the Steam webhelper IFEO wrapper, CoreAudio
+KosmicKrisp Vulkan, DXVK (D3D9), Steam webhelper CEF flags, CoreAudio
 virtual-device hiding, `WINE_NX_COMPAT` — while keeping D3D9/10/11 all working. Motivation:
 Proton ships Valve's game fixes, media-converter, `amd_ags`, fsync, and a maintained
 tree that plain WineHQ 11.13 lacks.
@@ -23,7 +23,7 @@ tree that plain WineHQ 11.13 lacks.
   (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
   redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
-  in main: `patches/proton-wine/` (**14-patch series**) + `scripts/build-proton-x86.sh`
+  in main: `patches/proton-wine/` (**19-patch series**) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
   `scripts/build-dxmt.sh` defaults `DXMT_WINE_BUILD` to `vendor/proton-wine/build`.
 - **App wiring**: single backend, no selector. `BottleSettings` has no `WineBackend`;
@@ -54,13 +54,15 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 17-patch series
+## patches/proton-wine/ — 19-patch series
 Disjoint file ownership; all apply cleanly (`git apply --check`). Exported as
 `git format-patch` style `.patch` files. Groups: `0001`–`0006` build/portability
-(`0007` **dropped** → gap), `0008` the single consolidated msync patch, `0009`–`0013`
-macOS capability ports, `0014`–`0015` Steam-runtime deadlock fixes, `0016` msync
+(`0007` **dropped** → gap), `0008` the single consolidated msync patch, `0009` + `0011`–`0013`
+macOS capability ports (`0010` removed), `0014`–`0015` Steam-runtime deadlock fixes, `0016` msync
 abandoned-mutex on last-handle-close, `0017` D3D/Vulkan builtin load-order default,
-`0018` ws2_32 prefix hosts-file lookup.
+`0018` ws2_32 prefix hosts-file lookup, `0019` ws2_32 IPv4-only `getaddrinfo`
+(`WINE_DISABLE_IPV6`), `0020` kernelbase appends `--no-sandbox --in-process-gpu` to
+`steamwebhelper.exe` (retires the IFEO wrapper — see `docs/steam-webhelper.md`).
 
 ### 0001–0006 — build / portability (make Proton compile + boot on macOS; 0007 dropped)
 - `0001-macos-de-linux-ntdll` — guard Linux-only futex/CPU paths in
@@ -130,8 +132,10 @@ conformance work above: msync-only failures went **6 → 2**.
 - `0009-macos-dxmt-winemac-support` — winemac.drv Metal-swapchain client view;
   `macdrv_functions` export + `winemetal.so` Wine-ABI unix driver; RTLD_GLOBAL driver
   dlopen — the winemac side DXMT needs.
-- `0010-macos-kernelbase-ifeo-debugger` — IFEO `Debugger` support in kernelbase (Steam
-  webhelper wrapper) + a kernel32 conformance test.
+- `0010` (macos-kernelbase-ifeo-debugger) — **removed.** IFEO `Debugger` support in
+  kernelbase + a kernel32 conformance test; its only consumer was the Steam webhelper
+  wrapper, retired by `0020`. With the wrapper gone the feature had no consumer, so the
+  patch (and `Steam.configure`'s per-bottle IFEO cleanup) were deleted.
 - `0011-macos-nx-compat-env` — `WINE_NX_COMPAT` env var to force DEP on legacy images
   (fixes DXMT Tahoe slowness).
 - `0012-macos-coreaudio-hide-virtual-devices` — hide virtual audio devices from games
@@ -141,7 +145,7 @@ conformance work above: msync-only failures went **6 → 2**.
 
 Provenance — these were ported from the now-removed Whisky-Wine `patches/wine/` set:
 `0009`≈old `0002`+`0005`+`0006` (macdrv export + Metal view position + borderless
-fullscreen-snap), `0010`≈`0003`, `0011`≈`0004`, `0012`≈`0007`. The old rundll32
+fullscreen-snap), `0010`≈`0003` (removed), `0011`≈`0004`, `0012`≈`0007`. The old rundll32
 WS_VISIBLE patch was obsolete (dropped above). `0008`/`0013` (msync + fsync) and
 `0001`–`0006` are Proton-specific (WineHQ 11.13 already had msync-free sync and none of
 Proton's extra unixlibs).
@@ -198,7 +202,7 @@ Both are **PE** dlls built for BOTH arches (`dlls/{combase,ntdll}/{i386,x86_64}-
 3. **combase/rpcss cold-start race** (`0014`) — steam.exe crashed ~seconds in with an
    uncaught `RPC_S_SERVER_UNAVAILABLE` during COM activation.
 4. **FLS-callback deadlock** (`0015`) — bootstrap→client handoff hung 60 s on
-   `fls_section`, then Steam self-terminated, orphaning `steamwebhelper_real.exe`.
+   `fls_section`, then Steam self-terminated, orphaning the webhelper child process.
 5. **msync socket-async / system-APC lost-wake** (now in `0008`) — the last blocker.
    Socket async completions were not delivering under msync; `msync_run_system_apcs()`
    drains system APCs on the SIGUSR1/EINTR interrupt. **This is the fix that made Steam

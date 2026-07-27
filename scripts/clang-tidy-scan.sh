@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# clang-tidy-scan.sh <dxvk|dxmt|mesa|steamhelper> [file-regex]
+# clang-tidy-scan.sh <dxvk|dxmt|mesa> [file-regex]
 #
 # Runs the repo's curated clang-tidy check set (see .clang-tidy at the root)
 # against one vendored backend, using the compile_commands.json that its meson
@@ -11,7 +11,6 @@
 #   dxvk        vendor/dxvk/build.w64   — D3D9, C++, mingw cross (UPSTREAM, low-pri)
 #   dxmt        vendor/dxmt/build       — D3D11/Metal, C++ (actively developed here)
 #   mesa        vendor/mesa/build-x86_64 — KosmicKrisp Vulkan driver, C (UPSTREAM)
-#   steamhelper SteamHelper/webhelper_wrapper.c — our tiny PE shim, no compile DB
 #
 # The optional second arg is a file regex passed to run-clang-tidy. It defaults
 # to that backend's OWN src/ subtree so pinned upstream deps and subprojects are
@@ -37,7 +36,7 @@ mkdir -p "$SCRATCH"
 report="$SCRATCH/clang-tidy-${backend}.txt"
 
 usage() {
-    echo "usage: clang-tidy-scan.sh <dxvk|dxmt|mesa|steamhelper> [file-regex]" >&2
+    echo "usage: clang-tidy-scan.sh <dxvk|dxmt|mesa> [file-regex]" >&2
     exit 2
 }
 
@@ -152,9 +151,6 @@ case "$backend" in
         builddir="vendor/mesa/build-x86_64"
         default_regex="vendor/mesa/src/kosmickrisp/"
         ;;
-    steamhelper)
-        builddir=""
-        ;;
     ""|-h|--help)
         usage
         ;;
@@ -165,21 +161,6 @@ case "$backend" in
 esac
 
 echo "=== clang-tidy scan: $backend -> $report ==="
-
-# SteamHelper has no compile DB — it's a single standalone Windows PE source.
-# Invoke clang-tidy directly with a mingw-ish target so the win32 headers and
-# wide-char (-municode) entry point parse.
-if [ "$backend" = "steamhelper" ]; then
-    src="SteamHelper/webhelper_wrapper.c"
-    [ -f "$src" ] || { echo "ERROR: $src not found" >&2; exit 1; }
-    # No compile DB: give clang-tidy the mingw target plus the mingw-w64 sysroot
-    # so <windows.h> and friends resolve. The opt/ prefix is a stable brew symlink.
-    mingw_sysroot="/opt/homebrew/opt/mingw-w64/toolchain-x86_64/x86_64-w64-mingw32"
-    clang-tidy "$src" -- -target x86_64-w64-mingw32 -municode \
-        --sysroot="$mingw_sysroot" -isystem "$mingw_sysroot/include" 2>&1 | tee "$report"
-    echo "=== done: $report ==="
-    exit 0
-fi
 
 [ -f "$builddir/compile_commands.json" ] || {
     echo "ERROR: $builddir/compile_commands.json missing — build $backend first" >&2

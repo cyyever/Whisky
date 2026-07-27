@@ -8,10 +8,10 @@ APP_PRODUCTS := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Produ
 XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
 CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
-.PHONY: all help setup-x86-brew proton proton-debug clean-proton steam-helper \
+.PHONY: all help setup-x86-brew proton proton-debug clean-proton \
         dxmt dxvk proxychains app app-release run submodule clean check-proton-src
 
-all: app proton steam-helper  ## Build everything (app + Proton + Steam helper)
+all: app proton  ## Build everything (app + Proton)
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -49,11 +49,6 @@ proton-debug:  ## Reinstall Proton keeping PE debug info (for winedbg sessions)
 clean-proton:  ## Remove Proton build artifacts (keeps installed Wine)
 	rm -rf $(WINE_SRC)/build
 	rm -f $(WINE_STAMP)
-
-# === Steam helper ===
-
-steam-helper:  ## Build the Steam webhelper wrapper (fixes the black Steam window)
-	$(SCRIPTS_DIR)/build-webhelper-wrapper.sh
 
 # === DXMT (Metal D3D11) ===
 

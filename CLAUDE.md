@@ -8,7 +8,7 @@ Keep this file high-level. Details live in `docs/`, the build scripts, `patches/
 - **Whisky** — SwiftUI app (Xcode project). **WhiskyKit** — Swift package (Wine/bottle/process logic); `PlatformMacOS/` holds the macOS-specific files.
 - **Wine** — x86_64 Proton-wine 11.0, built from source, runs under Rosetta 2. Source `vendor/proton-wine` (gitignored) + `patches/proton-wine/`.
 - **DXMT** — Metal D3D11/10/DXGI (`vendor/dxmt`). **DXVK** — D3D9 only (`vendor/dxvk`). **KosmicKrisp** — Vulkan-on-Metal (`vendor/mesa`).
-- **SteamHelper** — webhelper wrapper attached via IFEO to fix Steam's black CEF window.
+- Steam CEF (`steamwebhelper.exe`) gets `--no-sandbox --in-process-gpu` appended in Proton itself (`hack_append_command_line`, patches/proton-wine 0020) — no launcher shim.
 
 ## Build
 ```bash
@@ -16,7 +16,6 @@ make setup-x86-brew   # one-time: x86_64 Homebrew + deps
 make proton           # build + install Proton (applies patches/proton-wine/*)
 make dxmt             # DXMT builtin (needs full Xcode + llvm@15)
 make dxvk             # DXVK d3d9.dll
-make steam-helper     # webhelper wrapper
 make app / make run   # build / run the app
 ```
 Fresh-machine order: ARM brew deps → `make setup-x86-brew` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` → `make dxmt` / `make dxvk`. The scripts own the decisions.
@@ -28,7 +27,7 @@ Fresh-machine order: ARM brew deps → `make setup-x86-brew` → `scripts/build-
 
 ## Detailed docs
 - Proton migration + per-patch notes → `docs/proton-migration.md`
-- Steam webhelper / IFEO / CEF GPU → `docs/steam-webhelper-ifeo.md`
+- Steam webhelper / CEF flags → `docs/steam-webhelper.md`
 - Steam networking / proxy / TUN → `docs/steam-networking.md`
 - C++ cross-platform plan → `docs/cxx-migration-plan.md`
 

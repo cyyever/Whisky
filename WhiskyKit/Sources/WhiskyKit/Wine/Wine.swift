@@ -108,15 +108,6 @@ public class Wine {
         )
     }
 
-    /// Bottle preparation shared by every launch path (GUI `runProgram` and the
-    /// CLI). Wires up Steam's CEF wrapper; the DXMT (D3D11) and DXVK (D3D9/D3D8)
-    /// paths are Wine builtins defaulted by the load order (patches/proton-wine
-    /// 0017), so they need nothing installed per-bottle here.
-    public static func prepareForLaunch(bottle: Bottle) async {
-        // Ensure Steam's CEF host can render under Wine (no-op if Steam is absent).
-        await Steam.configure(in: bottle)
-    }
-
     /// Execute a `wine start /unix {url}` command returning the output result.
     ///
     /// `start` is non-blocking by default: it launches the program and returns
@@ -124,11 +115,6 @@ public class Wine {
     /// (correct for games). Pass `waitForExit: true` to insert `/wait` so the
     /// call resolves only once the launched program exits — needed for
     /// installers, where callers act on the *result* of the install.
-    ///
-    /// Low-level exec: it does **not** run ``prepareForLaunch(bottle:)`` — that is
-    /// owned by the single launch entry point (``Program/launch()``),
-    /// so preparation happens exactly once there. The only other caller is the
-    /// platform installer, which does its own post-install `Steam.configure`.
     public static func runProgram(
         at url: URL, args: [String] = [], bottle: Bottle,
         environment: [String: String] = [:], waitForExit: Bool = false
@@ -359,6 +345,14 @@ extension Wine {
             ["reg", "add", key, "-v", name, "-t", type.rawValue, "-d", data, "-f"],
             bottle: bottle
         )
+    }
+
+    /// Delete a single registry value. Used to clear the retired webhelper
+    /// wrapper's IFEO `Debugger` entry from existing bottles; `reg delete` errors
+    /// when the value is absent, so callers wrap it in `try?` for an idempotent
+    /// no-op on bottles that never had it.
+    static func deleteRegistryValue(bottle: Bottle, key: String, name: String) async throws {
+        try await runWine(["reg", "delete", key, "-v", name, "-f"], bottle: bottle)
     }
 
     private static func queryRegistryKey(
