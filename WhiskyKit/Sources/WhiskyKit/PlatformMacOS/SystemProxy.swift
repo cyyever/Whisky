@@ -18,6 +18,8 @@
 
 import CFNetwork
 import Foundation
+import Network
+import Synchronization
 
 /// Reads macOS's active proxy configuration and renders it as the
 /// `http_proxy` / `https_proxy` / `no_proxy` environment variables that
@@ -107,6 +109,18 @@ public enum SystemProxy {
             return nil  // proxychains-ng not built (`make proxychains`) — fall back to http_proxy
         }
 
+        // Stale-SOCKS fallback. A TUN-style VPN (Geph in TUN mode, or a VPN that
+        // was just quit) can leave a SOCKS entry in the system settings pointing at
+        // a port nothing is serving (here, 127.0.0.1:9909 with Geph in TUN mode).
+        // proxychains' strict_chain fails every connection closed, so injecting at a
+        // dead port would black-hole ALL of Wine's TCP — Steam would never reach its
+        // CM and login would hang forever, even though the network is fine (the TUN
+        // captures traffic at the IP layer regardless). Probe the port; if nothing's
+        // listening, fall back to http_proxy / direct instead of poisoning Wine.
+        guard isProxyPortReachable(resolvedHost, port) else {
+            return nil
+        }
+
         // proxy_dns is deliberately OFF: proxychains' fake-IP DNS remap breaks
         // Steam's manifest HTTPS. DNS resolves directly; only TCP connect() is
         // tunneled through SOCKS (verified: Steam reaches "Connected" this way).
@@ -140,6 +154,41 @@ public enum SystemProxy {
             "DYLD_INSERT_LIBRARIES": dylib.path(percentEncoded: false),
             "PROXYCHAINS_CONF_FILE": conf.path(percentEncoded: false)
         ]
+    }
+
+    /// Whether a TCP `connect()` to `host:port` completes within a short deadline.
+    /// Used to avoid injecting proxychains at a SOCKS port the system settings
+    /// advertise but nothing is actually serving (a stale entry left by a TUN-mode
+    /// or just-quit VPN). `[weak connection]` breaks the retain cycle between the
+    /// `NWConnection` and its state handler; the system holds the connection while
+    /// started, so cancelling it (on success, failure, or timeout) releases both.
+    /// A dead loopback port refuses in well under a millisecond; the 400ms cap only
+    /// bites a silently-dropped SYN against a remote proxy, and never hangs launch.
+    private static func isProxyPortReachable(_ host: String, _ port: Int) -> Bool {
+        guard let endpoint = NWEndpoint.Port(rawValue: UInt16(port)) else { return false }
+        let semaphore = DispatchSemaphore(value: 0)
+        // Mutex (not a plain `var`) because the state handler runs on a background
+        // queue — Swift 6 forbids mutating a captured local across that boundary.
+        let reachable = Mutex(false)
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: endpoint, using: .tcp)
+        connection.stateUpdateHandler = { [weak connection] state in
+            guard let connection else { return }
+            switch state {
+            case .ready:
+                reachable.withLock { $0 = true }
+                connection.cancel()
+                semaphore.signal()
+            case .failed:
+                connection.cancel()
+                semaphore.signal()
+            default:
+                break   // .setup / .preparing / .cancelled — keep waiting for a verdict
+            }
+        }
+        connection.start(queue: .global())
+        let timedOut = semaphore.wait(timeout: .now() + .milliseconds(400)) == .timedOut
+        if timedOut { connection.cancel() }
+        return reachable.withLock { $0 }
     }
 
     /// The concrete proxies the system would use for `url`, executing any
