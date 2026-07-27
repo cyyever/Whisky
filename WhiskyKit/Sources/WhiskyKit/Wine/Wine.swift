@@ -254,6 +254,11 @@ public class Wine {
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-all",
+            // Force IPv4-only name resolution. This Mac (and many behind a
+            // proxy/VPN) has no working IPv6, but Steam resolves its CM/directory
+            // hosts to IPv6 and hangs at login trying dead IPv6 addresses. Honoured
+            // by the WINE_DISABLE_IPV6 hook in dlls/ws2_32/unixlib.c getaddrinfo().
+            "WINE_DISABLE_IPV6": "1",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
             "GST_DEBUG": "1",
             // Keep DEP on for legacy 32-bit images so Wine doesn't force PROT_EXEC

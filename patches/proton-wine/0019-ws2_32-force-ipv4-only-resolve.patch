@@ -1,0 +1,53 @@
+From: cyy <cyyever@gmail.com>
+Date: Mon, 27 Jul 2026 00:00:00 +0000
+Subject: [PATCH] ws2_32: force IPv4-only getaddrinfo when WINE_DISABLE_IPV6=1
+
+On a network with no working IPv6 (common behind a proxy/VPN), Steam resolves
+its Connection Manager / directory hosts (api.steampowered.com, *.steamserver.net)
+to IPv6 addresses, connects to them, and hangs at login on
+STATUS_HOST_UNREACHABLE (0xc000023d) — the client never reaches a CM and the
+login window never appears.
+
+When WINE_DISABLE_IPV6=1 is set (Whisky sets it for the Steam bottle), pin
+getaddrinfo()'s ai_family to AF_INET so only A records are returned and
+steamclient uses the working IPv4 path. Unset (the default) leaves resolution
+unchanged. Confirmed with WINEDEBUG=+winsock: api.steampowered.com flips from
+AF_INET6 to AF_INET 184.31.138.105.
+
+---
+diff --git a/dlls/ws2_32/unixlib.c b/dlls/ws2_32/unixlib.c
+index e0e1263..957ccd1 100644
+--- a/dlls/ws2_32/unixlib.c
++++ b/dlls/ws2_32/unixlib.c
+@@ -704,7 +704,7 @@ static NTSTATUS unix_getaddrinfo( void *args )
+     struct addrinfo *unix_info, *src;
+     struct WS_addrinfo *dst, *prev = NULL;
+     unsigned int needed_size = 0;
+-    int ret;
++    int ret, force_v4 = 0;
+ 
+     /* servname tweak required by OSX and BSD kernels */
+     if (service && !service[0]) service = "0";
+@@ -751,7 +751,21 @@ static NTSTATUS unix_getaddrinfo( void *args )
+         }
+     }
+ 
+-    ret = getaddrinfo( params->node, service, hints ? &unix_hints : NULL, &unix_info );
++    /* Force IPv4-only resolution when WINE_DISABLE_IPV6=1. On a network with no
++     * working IPv6, Steam resolves its CM/directory hosts (api.steampowered.com,
++     * *.steamserver.net) to dead IPv6 addresses, connects, and hangs at login
++     * (STATUS_HOST_UNREACHABLE 0xc000023d). Pinning ai_family to AF_INET makes
++     * getaddrinfo return only A records, so steamclient uses the working IPv4 path. */
++    {
++        const char *no_v6 = getenv( "WINE_DISABLE_IPV6" );
++        if (no_v6 && no_v6[0] == '1')
++        {
++            unix_hints.ai_family = AF_INET;
++            force_v4 = 1;
++        }
++    }
++
++    ret = getaddrinfo( params->node, service, (hints || force_v4) ? &unix_hints : NULL, &unix_info );
+     if (ret)
+         return addrinfo_err_from_unix( ret );
+ 
