@@ -1,0 +1,45 @@
+From: cyy <cyyever@gmail.com>
+Date: Fri, 31 Jul 2026 00:00:00 +0000
+Subject: [PATCH] ws2_32: WSALookupServiceBegin semi-stub succeeds with an empty set
+
+WSALookupServiceBegin{A,W} are unimplemented stubs that hard-fail with
+WSA_NOT_ENOUGH_MEMORY (error 8). Steam's CEF webhelper (Chromium) drives its
+network_change_notifier through WSALookupServiceBeginW to enumerate networks;
+the perpetual failure spams "WSALookupServiceBegin failed with: 8" in cef_log
+and contributes to the network service stalling during init.
+
+Return success with an empty result set instead: Begin hands back a sentinel
+handle, Next reports WSA_E_NO_MORE (already correct), End succeeds. The
+notifier then sees "no networks / no changes" and finishes that step. Real
+NLA/service discovery remains unimplemented — callers simply see no services,
+which is strictly better than the hard failure they got before. (Upstream Wine
+gap, not Proton-specific; proper fix belongs in WineHQ.)
+
+---
+diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
+--- a/dlls/ws2_32/protocol.c
++++ b/dlls/ws2_32/protocol.c
+@@ -2217,9 +2217,9 @@
+  */
+ int WINAPI WSALookupServiceBeginA( WSAQUERYSETA *query, DWORD flags, HANDLE *lookup )
+ {
+-    FIXME( "(%p %#lx %p) Stub!\n", query, flags, lookup );
+-    SetLastError( WSA_NOT_ENOUGH_MEMORY );
+-    return -1;
++    FIXME( "(%p %#lx %p) semi-stub: returning empty result set\n", query, flags, lookup );
++    *lookup = (HANDLE)(ULONG_PTR)1;
++    return 0;
+ }
+
+
+@@ -2228,9 +2228,9 @@
+  */
+ int WINAPI WSALookupServiceBeginW( WSAQUERYSETW *query, DWORD flags, HANDLE *lookup )
+ {
+-    FIXME( "(%p %#lx %p) Stub!\n", query, flags, lookup );
+-    SetLastError( WSA_NOT_ENOUGH_MEMORY );
+-    return -1;
++    FIXME( "(%p %#lx %p) semi-stub: returning empty result set\n", query, flags, lookup );
++    *lookup = (HANDLE)(ULONG_PTR)1;
++    return 0;
+ }
