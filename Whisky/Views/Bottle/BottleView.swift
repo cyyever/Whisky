@@ -44,7 +44,10 @@ struct BottleView: View {
                             bottle: bottle, program: pinnedProgram.program, pin: pinnedProgram.pin, path: $path
                         )
                     }
-                    PinAddView(bottle: bottle)
+                    // Sits with the programs it adds: fetch a known gaming
+                    // platform's installer, or pick a local file. Whatever it
+                    // launches joins the grid, so there is no separate "pin" step.
+                    addProgramMenu
                 }
                 .padding()
                 Form {
@@ -62,37 +65,6 @@ struct BottleView: View {
                         bottle.openCDrive()
                     }
                     .accessibilityIdentifier("bottle.cDrive")
-                    // One entry point for getting a program into the bottle: fetch
-                    // a known gaming platform's installer, or pick a local file.
-                    Menu {
-                        Section("menu.installPlatform") {
-                            ForEach(GamingPlatform.all) { platform in
-                                Button {
-                                    install(platform)
-                                } label: {
-                                    Label {
-                                        Text(verbatim: platform.name)
-                                    } icon: {
-                                        Image(systemName: platform.symbol)
-                                    }
-                                }
-                                .accessibilityIdentifier("install." + platform.name)
-                            }
-                        }
-                        Divider()
-                        Button {
-                            runFileFromPanel()
-                        } label: {
-                            Label("menu.chooseFile", systemImage: "folder")
-                        }
-                        .accessibilityIdentifier("bottle.chooseFile")
-                    } label: {
-                        Text("button.installOrRun")
-                    }
-                    .accessibilityLabel("button.installOrRun")
-                    .accessibilityIdentifier("bottle.installRun")
-                    .fixedSize()
-                    .disabled(programLoading)
                     if programLoading {
                         Spacer()
                             .frame(width: 10)
@@ -131,6 +103,56 @@ struct BottleView: View {
         }
     }
 
+    /// The grid's trailing tile: a menu of gaming-platform installers plus a
+    /// "choose a local file" escape hatch. Sized to match `PinView` so it reads
+    /// as the last item in the program grid.
+    private var addProgramMenu: some View {
+        VStack {
+            Menu {
+                Section("menu.installPlatform") {
+                    ForEach(GamingPlatform.all) { platform in
+                        Button {
+                            install(platform)
+                        } label: {
+                            Label {
+                                Text(verbatim: platform.name)
+                            } icon: {
+                                Image(systemName: platform.symbol)
+                            }
+                        }
+                        .accessibilityIdentifier("install." + platform.name)
+                    }
+                }
+                Divider()
+                Button {
+                    runFileFromPanel()
+                } label: {
+                    Label("menu.chooseFile", systemImage: "folder")
+                }
+                .accessibilityIdentifier("bottle.chooseFile")
+            } label: {
+                Image(systemName: "plus.circle")
+                    .resizable()
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            // .fixedSize keeps the borderless menu from stretching the tile's
+            // width, which would pull the glyph off-centre from its caption.
+            .fixedSize()
+            .frame(width: 45, height: 45)
+            .accessibilityLabel("button.addProgram")
+            .accessibilityIdentifier("bottle.installRun")
+            .disabled(programLoading)
+            Spacer()
+            Text("button.addProgram")
+                .multilineTextAlignment(.center)
+                .lineLimit(2, reservesSpace: true)
+        }
+        .frame(width: 90, height: 90)
+        .padding(10)
+    }
+
     /// Download the platform's official installer into the bottle and launch it.
     private func install(_ platform: GamingPlatform) {
         programLoading = true
@@ -148,8 +170,9 @@ struct BottleView: View {
         }
     }
 
-    /// Pick a local `.exe`/`.msi` and run it in the bottle (the classic "Run..."
-    /// flow, folded into the unified install/run menu).
+    /// Pick a local `.exe`/`.msi` and run it in the bottle. Whatever the user
+    /// picks is also added to the grid, so the bottle's home is the list of
+    /// programs they have actually run — no separate "pin" step.
     private func runFileFromPanel() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
@@ -164,7 +187,9 @@ struct BottleView: View {
             Task(priority: .userInitiated) {
                 // Single launch entry: `Program.launch` handles .bat vs .exe/.msi
                 // and bottle preparation, and surfaces its own errors.
-                await Program(url: url, bottle: bottle).launch()
+                let program = Program(url: url, bottle: bottle)
+                if !program.pinned { program.pinned = true }
+                await program.launch()
                 programLoading = false
             }
         }
