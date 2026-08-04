@@ -1,6 +1,6 @@
 From: cyy <cyyever@gmail.com>
 Date: Sun, 27 Jul 2026 00:00:00 +0000
-Subject: [PATCH] kernelbase: append --no-sandbox --in-process-gpu to steamwebhelper.exe
+Subject: [PATCH] kernelbase: append CEF flags to steamwebhelper.exe
 
 Steam's CEF host steamwebhelper.exe crashes under Wine on macOS without two
 Chromium flags:
@@ -24,6 +24,18 @@ as the d3d11 builtin (`make dxmt`); `make proton` alone reinstalls wined3d's
 d3d11 and must be followed by `make dxmt` (build-proton-x86.sh now restores
 DXMT over wined3d after install to make this order-independent).
 
+  - --use-angle=swiftshader: ANGLE's default D3D11 backend cannot create a
+    window surface under Wine — eglCreateWindowSurface fails with EGL_BAD_ALLOC
+    after SwapChain11::reset reports "Could not create additional swap chains or
+    offscreen surfaces" (HRESULT 0x80004005). The window frame appears but its
+    contents never paint. Reproduced with an unmodified upstream Chromium in the
+    same bottle: the default backend logs one EGL_BAD_ALLOC, while
+    --use-angle=swiftshader and --disable-gpu log none. SwiftShader renders in
+    software, which is enough for a 2D store/login UI and avoids the surface
+    allocation entirely. (DirectComposition is also unimplemented in Wine —
+    DCompositionCreateDevice3 returns E_NOTIMPL — but that is not the cause:
+    Chromium falls back from it correctly, and the fallback is what fails.)
+
 Whisky previously injected the flags via an IFEO "Debugger" wrapper around
 steamwebhelper.exe (steamwebhelper_wrapper.exe + a steamwebhelper_real.exe copy
 + a per-bottle registry value, on top of patch 0010's IFEO-debugger support).
@@ -43,7 +55,7 @@ diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
          {L"Red Tie Runner.exe", L" --use-angle=gl"},
          {L"UnrealCEFSubProcess.exe", L" --use-gl=swiftshader", "2316580"},
          {L"UnrealCEFSubProcess.exe", L" --use-angle=d3d9", "2684500"},
-+        {L"steamwebhelper.exe", L" --no-sandbox --in-process-gpu"},
++        {L"steamwebhelper.exe", L" --no-sandbox --in-process-gpu --use-angle=swiftshader"},
      };
      unsigned int i;
      char sgi[64];
