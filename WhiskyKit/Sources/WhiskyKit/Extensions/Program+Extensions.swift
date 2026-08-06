@@ -44,6 +44,12 @@ extension Program {
             }
             await Steam.reapSteamProcesses(in: bottle)
         }
+        // GOG Galaxy is single-instance too, but decides that from lock files that
+        // outlive a killed process — leaving every later launch to quit silently
+        // (exit 0, nothing on screen). Clear them when no client is running.
+        if GogGalaxy.isGalaxyClient(url), !GogGalaxy.isGalaxyRunning(in: bottle) {
+            GogGalaxy.clearStaleLocks(in: bottle)
+        }
         let arguments = settings.arguments.split { $0.isWhitespace }.map(String.init)
         do {
             try await Wine.runProgram(

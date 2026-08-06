@@ -54,7 +54,13 @@ public struct GamingPlatform: Identifiable, Hashable, Sendable {
     /// installed client can be added to the bottle's program list. A best-effort
     /// default path — if the vendor installed elsewhere the entry is simply not
     /// shown (the list drops entries whose file is missing).
-    public var installedExecutablePath: String?
+    ///
+    /// A list rather than one path: whether an installer lands in `Program Files`
+    /// or `Program Files (x86)` depends on the bitness it picks at install time,
+    /// which is not always what the vendor's docs imply (GOG Galaxy installs
+    /// 64-bit). The first candidate that exists wins, so listing both costs
+    /// nothing and avoids the client silently never appearing.
+    public var installedExecutablePaths: [String] = []
 
     // swiftlint:disable line_length
     public static let steam = Self(
@@ -62,7 +68,7 @@ public struct GamingPlatform: Identifiable, Hashable, Sendable {
         installerURL: URL(string: "https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe")!,
         installerFilename: "SteamSetup.exe",
         installerArgs: ["/S"],  // NSIS silent install — Steam bootstrapper, no wizard
-        installedExecutablePath: "Program Files (x86)/Steam/Steam.exe"
+        installedExecutablePaths: ["Program Files (x86)/Steam/Steam.exe"]
     )
 
     public static let all: [Self] = [
@@ -71,31 +77,35 @@ public struct GamingPlatform: Identifiable, Hashable, Sendable {
             id: "epic", name: "Epic Games", symbol: "e.circle",
             installerURL: URL(string: "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi")!,
             installerFilename: "EpicGamesLauncherInstaller.msi",
-            installedExecutablePath: "Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win32/EpicGamesLauncher.exe"
+            installedExecutablePaths: ["Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win32/EpicGamesLauncher.exe"]
         ),
         Self(
             id: "gog", name: "GOG Galaxy", symbol: "g.circle",
             installerURL: URL(string: "https://webinstallers.gog-statics.com/download/GOG_Galaxy_2.0.exe")!,
             installerFilename: "GOG_Galaxy_2.0.exe",
-            installedExecutablePath: "Program Files (x86)/GOG Galaxy/GalaxyClient.exe"
+            installedExecutablePaths: ["Program Files/GOG Galaxy/GalaxyClient.exe",
+                                       "Program Files (x86)/GOG Galaxy/GalaxyClient.exe"]
         ),
         Self(
             id: "ea", name: "EA app", symbol: "a.circle",
             installerURL: URL(string: "https://origin-a.akamaihd.net/EA-Desktop-Client-Download/installer-releases/EAappInstaller.exe")!,
             installerFilename: "EAappInstaller.exe",
-            installedExecutablePath: "Program Files/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe"
+            installedExecutablePaths: ["Program Files/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe",
+                                       "Program Files (x86)/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe"]
         ),
         Self(
             id: "ubisoft", name: "Ubisoft Connect", symbol: "u.circle",
             installerURL: URL(string: "https://ubistatic3-a.akamaihd.net/orbit/launcher_installer/UbisoftConnectInstaller.exe")!,
             installerFilename: "UbisoftConnectInstaller.exe",
-            installedExecutablePath: "Program Files (x86)/Ubisoft/Ubisoft Game Launcher/UbisoftConnect.exe"
+            installedExecutablePaths: ["Program Files (x86)/Ubisoft/Ubisoft Game Launcher/UbisoftConnect.exe",
+                                       "Program Files/Ubisoft/Ubisoft Game Launcher/UbisoftConnect.exe"]
         ),
         Self(
             id: "battlenet", name: "Battle.net", symbol: "b.circle",
             installerURL: URL(string: "https://downloader.battle.net/download/getInstallerForGame?os=win&gameProgram=BATTLENET_APP&version=Live")!,
             installerFilename: "Battle.net-Setup.exe",
-            installedExecutablePath: "Program Files (x86)/Battle.net/Battle.net Launcher.exe"
+            installedExecutablePaths: ["Program Files (x86)/Battle.net/Battle.net Launcher.exe",
+                                       "Program Files/Battle.net/Battle.net Launcher.exe"]
         )
     ]
     // swiftlint:enable line_length
@@ -109,6 +119,11 @@ public enum GamingPlatformInstaller {
     /// flag where one is known-good for that vendor (Steam passes `/S`), otherwise
     /// no args so the installer's own wizard drives it. `waitForExit` so we only
     /// report completion once the installer has actually finished.
+    ///
+    /// The installed client is then added to the bottle's program list and
+    /// launched: these installers only lay down a bootstrapper, and the real
+    /// client is fetched by its own first-run self-update, so stopping at
+    /// "installed" leaves the user with a stub that looks finished but isn't.
     public static func install(_ platform: GamingPlatform, in bottle: Bottle) async throws {
         let installer = try await download(platform, in: bottle)
         // waitForExit so we only report done once the installer has actually
@@ -116,21 +131,36 @@ public enum GamingPlatformInstaller {
         try await Wine.runProgram(
             at: installer, args: platform.installerArgs, bottle: bottle, waitForExit: true
         )
-        addToProgramList(platform, in: bottle)
+        guard let client = addToProgramList(platform, in: bottle) else { return }
+        // A freshly installed client has no stale state, but the installer itself
+        // may have started and stopped one (Galaxy's installer launches it), so
+        // clear locks here too rather than relying on the first launch to fail.
+        if GogGalaxy.isGalaxyClient(client) { GogGalaxy.clearStaleLocks(in: bottle) }
+        // Deliberately not waitForExit: first run self-updates (hundreds of MB)
+        // and then stays up as the client, so waiting would pin the UI's
+        // progress indicator for the whole session.
+        try await Wine.runProgram(at: client, bottle: bottle)
     }
 
     /// Add the freshly installed client to the bottle's program list so it shows
-    /// up on the bottle's home. Silently does nothing when the platform declares
-    /// no path, the file isn't where we expected, or it's already listed.
-    private static func addToProgramList(_ platform: GamingPlatform, in bottle: Bottle) {
-        guard let path = platform.installedExecutablePath else { return }
-        let url = bottle.url.appending(path: "drive_c").appending(path: path)
-        guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {
-            Logger.wineKit.info("\(platform.name) installed but no client at \(url.path) — not listed")
-            return
+    /// up on the bottle's home, and return its URL. Nil when the platform declares
+    /// no path or the client isn't where we expected.
+    @discardableResult
+    private static func addToProgramList(_ platform: GamingPlatform, in bottle: Bottle) -> URL? {
+        let driveC = bottle.url.appending(path: "drive_c")
+        guard let url = platform.installedExecutablePaths
+            .map({ driveC.appending(path: $0) })
+            .first(where: { FileManager.default.fileExists(atPath: $0.path(percentEncoded: false)) })
+        else {
+            Logger.wineKit.info(
+                "\(platform.name) installed but no client at any of \(platform.installedExecutablePaths) — not listed"
+            )
+            return nil
         }
-        guard !bottle.settings.pins.contains(where: { $0.url == url }) else { return }
-        bottle.settings.pins.append(PinnedProgram(name: platform.name, url: url))
+        if !bottle.settings.pins.contains(where: { $0.url == url }) {
+            bottle.settings.pins.append(PinnedProgram(name: platform.name, url: url))
+        }
+        return url
     }
 
     /// Directory holding downloaded installers for a bottle. Kept next to the
