@@ -1,13 +1,45 @@
-From: cyy <cyyever@gmail.com>
 Subject: [PATCH] loader64: build a 64-bit wine64 loader on macOS
 
-Add loader64/ building wine64 from ../loader sources. wine_info.plist.in
-in SOURCES so makedep generates loader64/wine_info.plist (satisfies the
-wine_info.plist dep). No preloader on macOS (uses -segaddr LDFLAGS), so
-PROGRAMS is wine64 only.
----
+macOS needs a wine64 binary that loader/ does not build (it produces only the
+host-named loader). Add a loader64 directory that reuses ../loader's sources
+via PARENTSRC and builds wine64 from the same main.c.
+
+Its program list comes from a new WINELOADER64_PROGRAMS configure substitution
+rather than being hardcoded to "wine64". WINELOADER_PROGRAMS gains
+"wine-preloader" whenever configure sets wine_use_preloader (every Linux host,
+and macOS x86_64 with a pre-Xcode-15.3 linker); hardcoding the 64-bit list
+dropped the matching wine64-preloader while HAVE_WINE_PRELOADER stayed defined,
+so preloader_exec() would exec a binary that no longer exists. The failed execv
+falls through to running the loader directly, silently losing the preloader's
+reserved low-memory ranges -- the symptom is an address-space allocation
+failure much later, not an obvious error.
+
+wine64_preloader_OBJS lists preloader_mac.o alongside preloader.o, matching
+loader/Makefile.in; without it the preloader would fail to link on macOS.
+
+diff --git a/configure.ac b/configure.ac
+index 7434ef9..3fa6a89 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2139,6 +2139,8 @@ fi
+ dnl **** Platform-specific checks ****
+ 
+ AC_SUBST(WINELOADER_PROGRAMS,"wine")
++dnl macOS also builds a 64-bit loader (loader64); keep its program list in step.
++AC_SUBST(WINELOADER64_PROGRAMS,"wine64")
+ 
+ case $host_os in
+   linux*)
+@@ -2152,6 +2154,7 @@ esac
+ if test "$wine_use_preloader" = "yes"
+ then
+   WINELOADER_PROGRAMS="$WINELOADER_PROGRAMS wine-preloader"
++  WINELOADER64_PROGRAMS="$WINELOADER64_PROGRAMS wine64-preloader"
+   AC_DEFINE(HAVE_WINE_PRELOADER, 1, [Define to 1 if the Wine preloader is being used.])
+ fi
+ 
 diff --git a/loader64/Makefile.in b/loader64/Makefile.in
-index cfbe51d..ddcf3ff 100644
+index cfbe51d..83d8adf 100644
 --- a/loader64/Makefile.in
 +++ b/loader64/Makefile.in
 @@ -3,10 +3,11 @@ PARENTSRC = ../loader
@@ -20,8 +52,16 @@ index cfbe51d..ddcf3ff 100644
  
 -PROGRAMS = wine64 wine64-preloader
 -INSTALL_LIB = wine64 wine64-preloader
-+PROGRAMS = wine64
-+INSTALL_LIB = wine64
++PROGRAMS = $(WINELOADER64_PROGRAMS)
++INSTALL_LIB = $(WINELOADER64_PROGRAMS)
  UNIX_CFLAGS = -fPIE
  
  preloader_EXTRADEFS = -fno-builtin
+@@ -15,6 +16,6 @@ wine64_OBJS = main.o
+ wine64_DEPS = $(WINELOADER_DEPENDS)
+ wine64_LDFLAGS = $(WINELOADER_LDFLAGS) $(LDEXECFLAGS) $(PTHREAD_LIBS)
+ 
+-wine64_preloader_OBJS = preloader.o
++wine64_preloader_OBJS = preloader.o preloader_mac.o
+ wine64_preloader_DEPS = $(WINELOADER_DEPENDS)
+ wine64_preloader_LDFLAGS = $(WINEPRELOADER_LDFLAGS)

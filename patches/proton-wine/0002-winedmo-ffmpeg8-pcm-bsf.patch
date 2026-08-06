@@ -14,7 +14,7 @@ demuxer via a null bitstream filter. Uses only public FFmpeg API
 pinned FFmpeg. Also replaces the removed AVCodecParameters.channels.
 ---
 diff --git a/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c b/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
-index 2237b1e..196d2cd 100644
+index 2237b1e..ae5c28b 100644
 --- a/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
 +++ b/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
 @@ -26,36 +26,31 @@
@@ -78,7 +78,7 @@ index 2237b1e..196d2cd 100644
  {
      switch (codec_id)
      {
-@@ -75,83 +70,51 @@ static enum AVCodecID reverse_codec_id(enum AVCodecID codec_id)
+@@ -75,83 +70,67 @@ static enum AVCodecID reverse_codec_id(enum AVCodecID codec_id)
      }
  }
  
@@ -111,8 +111,10 @@ index 2237b1e..196d2cd 100644
 + * all of its properties/timestamps are left untouched.  Mirrors the old
 + * bitstream-filter byte_order_reverse_filter(), which allocated a fresh packet
 + * and reversed each sample's bytes into it.
++ *
++ * Returns 0, or a negative AVERROR if the packet could not be made writable.
 + */
-+void pcm_byte_order_reverse_bsf_filter(const AVCodecParameters *par_in, AVPacket *pkt)
++int pcm_byte_order_reverse_bsf_filter(const AVCodecParameters *par_in, AVPacket *pkt)
  {
 -    unsigned int bytes_per_sample;
 -    const uint8_t *buf_end;
@@ -120,31 +122,39 @@ index 2237b1e..196d2cd 100644
 -    unsigned int i;
 -    AVPacket *in;
 -    uint8_t *out;
--    int ret;
--
++    unsigned int bytes_per_sample = par_in->bits_per_coded_sample / 8u;
++    uint8_t *buf, *buf_end;
+     int ret;
+ 
 -    ret = ff_bsf_get_packet(ctx, &in);
 -    if (ret < 0)
 -        return ret;
-+    unsigned int bytes_per_sample = par_in->bits_per_coded_sample / 8u;
-+    uint8_t *buf = pkt->data;
-+    uint8_t *buf_end = pkt->data + pkt->size;
- 
+-
 -    buf = in->data;
 -    buf_end = in->data + in->size;
 +    if (bytes_per_sample < 2)
-+        return; /* 8-bit (or invalid) samples: nothing to swap */
++        return 0; /* 8-bit (or invalid) samples: nothing to swap */
  
 -    ret = av_new_packet(pkt, in->size);
 -    if (ret < 0)
--        return ret;
++    /* Unlike the filter this replaces, the swap is in place, and libavformat
++     * can hand out several packets sharing one AVBufferRef (parse_packet()
++     * refs the input buffer when the parser output aliases it). Swapping a
++     * shared buffer would corrupt the siblings, and a read-only one would
++     * fault, so take a private copy first if the buffer is not exclusively
++     * ours. This is a no-op for the common refcount-of-one case. */
++    if ((ret = av_packet_make_writable( pkt )) < 0)
+         return ret;
 -    out = pkt->data;
 -
 -    ret = av_packet_copy_props(pkt, in);
 -    if (ret < 0)
 -        goto fail;
--
+ 
 -    bytes_per_sample = ctx->par_in->bits_per_coded_sample / 8u;
--
++    buf = pkt->data;
++    buf_end = pkt->data + pkt->size;
+ 
 -    while (buf < buf_end)
 +    while (buf + bytes_per_sample <= buf_end)
      {
@@ -160,12 +170,13 @@ index 2237b1e..196d2cd 100644
          buf += bytes_per_sample;
 -        out += bytes_per_sample;
      }
--
+ 
 -fail:
 -    if (ret < 0)
 -        av_packet_unref(pkt);
 -    av_packet_free(&in);
 -    return ret;
++    return 0;
  }
  
 -static const enum AVCodecID codec_ids[] = {
@@ -194,7 +205,7 @@ index 2237b1e..196d2cd 100644
 -
  #endif /* HAVE_FFMPEG */
 diff --git a/dlls/winedmo/unix_demuxer.c b/dlls/winedmo/unix_demuxer.c
-index 24681e2..4a9d1d1 100644
+index 24681e2..66b10cb 100644
 --- a/dlls/winedmo/unix_demuxer.c
 +++ b/dlls/winedmo/unix_demuxer.c
 @@ -38,6 +38,7 @@ struct stream
@@ -205,7 +216,7 @@ index 24681e2..4a9d1d1 100644
  };
  
  struct demuxer
-@@ -144,10 +145,14 @@ static NTSTATUS demuxer_create_streams( struct demuxer *demuxer )
+@@ -144,14 +145,25 @@ static NTSTATUS demuxer_create_streams( struct demuxer *demuxer )
          }
          else if (codec_is_big_endian_pcm(par->codec_id))
          {
@@ -214,31 +225,47 @@ index 24681e2..4a9d1d1 100644
 +            /* WAVEFORMATEX does not contain endianness info, so this needs to be converted here.
 +             * FFmpeg 8 dropped the AVBSFContext internals an out-of-tree bitstream filter relied
 +             * on, so pass the packets through a null filter and byte-swap the samples ourselves. */
-+            av_bsf_get_null_filter( &stream->filter );
++            if (av_bsf_get_null_filter( &stream->filter ) < 0) return STATUS_UNSUCCESSFUL;
              avcodec_parameters_copy( stream->filter->par_in, par );
 -            av_bsf_init( stream->filter );
 +            avcodec_parameters_copy( stream->filter->par_out, par );
-+            if (pcm_byte_order_reverse_bsf_init( par, stream->filter->par_out ) < 0) return STATUS_UNSUCCESSFUL;
-+            stream->reverse_pcm = TRUE;
++            /* A track whose parameters avformat could not fully probe (zero
++             * channels, or a sample format that is not a whole number of bytes)
++             * cannot be byte-swapped. Leave it as a plain pass-through rather
++             * than failing: this is one stream of a file, and refusing it here
++             * makes the whole file unopenable, including its other streams. */
++            if (pcm_byte_order_reverse_bsf_init( par, stream->filter->par_out ) < 0)
++                WARN( "stream %u: cannot reverse PCM byte order, passing through unswapped\n", i );
++            else
++                stream->reverse_pcm = TRUE;
              continue;
          }
  
-@@ -344,7 +349,12 @@ static NTSTATUS demuxer_filter_packet( struct demuxer *demuxer, AVPacket **packe
+-        av_bsf_get_null_filter( &stream->filter );
++        if (av_bsf_get_null_filter( &stream->filter ) < 0) return STATUS_UNSUCCESSFUL;
+         avcodec_parameters_copy( stream->filter->par_in, demuxer->ctx->streams[i]->codecpar );
+         avcodec_parameters_copy( stream->filter->par_out, demuxer->ctx->streams[i]->codecpar );
+     }
+@@ -344,7 +356,16 @@ static NTSTATUS demuxer_filter_packet( struct demuxer *demuxer, AVPacket **packe
          if (!(stream = demuxer->last_stream)) ret = 0;
          else
          {
 -            if (!(ret = av_bsf_receive_packet( stream->filter, *packet ))) return STATUS_SUCCESS;
 +            if (!(ret = av_bsf_receive_packet( stream->filter, *packet )))
 +            {
-+                if (stream->reverse_pcm)
-+                    pcm_byte_order_reverse_bsf_filter( stream->filter->par_in, *packet );
++                if (stream->reverse_pcm &&
++                    (ret = pcm_byte_order_reverse_bsf_filter( stream->filter->par_in, *packet )) < 0)
++                {
++                    WARN( "Failed to byte-swap PCM packet, error %s.\n", debugstr_averr( ret ) );
++                    return STATUS_UNSUCCESSFUL;
++                }
 +                return STATUS_SUCCESS;
 +            }
              if (ret == AVERROR_EOF) stream->eos = TRUE;
              if (!ret || ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) ret = 0;
              else WARN( "Failed to read packet from filter, error %s.\n", debugstr_averr( ret ) );
 diff --git a/dlls/winedmo/unix_private.h b/dlls/winedmo/unix_private.h
-index 8974afd..baf9ab5 100644
+index 8974afd..0c8b2dc 100644
 --- a/dlls/winedmo/unix_private.h
 +++ b/dlls/winedmo/unix_private.h
 @@ -44,9 +44,11 @@ extern void mediaconv_demuxer_init(void);
@@ -251,7 +278,7 @@ index 8974afd..baf9ab5 100644
 -extern const AVBitStreamFilter ff_pcm_byte_order_reverse_bsf;
 +extern enum AVCodecID pcm_byte_order_reverse_codec_id( enum AVCodecID codec_id );
 +extern int pcm_byte_order_reverse_bsf_init( const AVCodecParameters *par_in, AVCodecParameters *par_out );
-+extern void pcm_byte_order_reverse_bsf_filter( const AVCodecParameters *par_in, AVPacket *pkt );
++extern int pcm_byte_order_reverse_bsf_filter( const AVCodecParameters *par_in, AVPacket *pkt );
  #endif
  
  /* unixlib.c */
