@@ -26,6 +26,11 @@ if ! xcrun -f metal >/dev/null 2>&1; then
     exit 1
 fi
 require_tools meson ninja x86_64-w64-mingw32-gcc
+
+# DXMT reaches winemac.drv's internals by dlsym, against struct layouts that
+# only patch 0009 keeps in step. Nothing links the two, so check before building
+# rather than after a submodule bump quietly moves the contract.
+"$(dirname "${BASH_SOURCE[0]}")/check-dxmt-abi.sh"
 [ -d "$WINE_BUILD" ] || { echo "ERROR: Wine build dir missing ($WINE_BUILD). Run 'make proton' first." >&2; exit 1; }
 [ -d "$WINE_LIB/x86_64-windows" ] || { echo "ERROR: Wine not installed. Run 'make proton' first." >&2; exit 1; }
 
