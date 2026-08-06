@@ -1,0 +1,67 @@
+Subject: winemac.drv: snap a borderless display-sized window to the display origin (macOS)
+
+A borderless window sized exactly to a display is a fullscreen game window
+(Unity's -popupwindow, for instance). Some titles position it at the work area
+-- below the menu bar -- rather than at the display origin, which leaves the
+menu bar visible across the top and clips the same number of pixels off the
+bottom of the frame.
+
+Snap such a window to cover the display. The frame-changed event generated at
+the end of setFrameFromWine: syncs the corrected origin back to the Win32 side,
+so input coordinate mapping follows the window and clicks still land where the
+game expects them.
+
+The candidate display is the one containing the window's centre, not simply the
+first display of a matching size: with two identically-sized displays, choosing
+by size alone would teleport a window from the second to the first. A window
+placed on the work area is still centred within its display's frame, so the
+centre identifies it correctly.
+
+The match is otherwise deliberately narrow -- borderless, non-empty, and within
+a pixel of the display's size in both axes, but not already at its origin -- so
+an ordinary borderless window that merely happens to be display-sized is not
+moved unless it is also misplaced.
+
+Split out of the DXMT winemac patch, which it shared a file with but has
+nothing to do with.
+
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 7d6d704..7487fe4 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1956,6 +1956,35 @@ - (void) setFrameFromWine:(NSRect)contentRect
+            (left, bottom) in a bottom-up space. */
+         [[WineApplicationController sharedController] flipRect:&contentRect];
+ 
++        /* A borderless window sized exactly to a display is a fullscreen game
++           window (e.g. Unity's -popupwindow).  Some apps position it at the
++           work area (below the menu bar) instead of the display origin, which
++           leaves the menu bar visible and clips the bottom.  Snap it to cover
++           the display; the frame-changed event generated at the end of this
++           method syncs the new origin back to the Win32 side, so input mapping
++           stays correct. */
++        if (!([self styleMask] & NSWindowStyleMaskTitled) && !NSIsEmptyRect(contentRect))
++        {
++            NSPoint center = NSMakePoint(NSMidX(contentRect), NSMidY(contentRect));
++
++            for (NSScreen* snapScreen in [NSScreen screens])
++            {
++                NSRect sf = [snapScreen frame];
++
++                /* Match the display the window is actually on, not merely the
++                   first one of its size: with two identical displays, choosing
++                   by size alone teleports a window from the second to the
++                   first.  A window sitting on the work area is still centred
++                   within its display's frame, so the centre identifies it. */
++                if (!NSPointInRect(center, sf)) continue;
++                if (fabs(contentRect.size.width - sf.size.width) < 1.0 &&
++                    fabs(contentRect.size.height - sf.size.height) < 1.0 &&
++                    !NSEqualPoints(contentRect.origin, sf.origin))
++                    contentRect.origin = sf.origin;
++                break;
++            }
++        }
++
+         /* The back end is establishing a new window size and position.  It's
+            not interested in any stale events regarding those that may be sitting
+            in the queue. */
