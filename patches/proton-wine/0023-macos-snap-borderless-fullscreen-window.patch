@@ -1,63 +1,74 @@
-Subject: winemac.drv: snap a borderless display-sized window to the display origin (macOS)
+Subject: winemac.drv: correct a borderless window placed at the work-area origin (macOS)
 
-A borderless window sized exactly to a display is a fullscreen game window
-(Unity's -popupwindow, for instance). Some titles position it at the work area
--- below the menu bar -- rather than at the display origin, which leaves the
-menu bar visible across the top and clips the same number of pixels off the
-bottom of the frame.
+rcWork and rcMonitor share an origin on Windows -- the taskbar is at the bottom
+-- but not on macOS, where the menu bar is at the top. Measured in a bottle:
 
-Snap such a window to cover the display. The frame-changed event generated at
-the end of setFrameFromWine: syncs the corrected origin back to the Win32 side,
-so input coordinate mapping follows the window and clicks still land where the
-game expects them.
+    rcMonitor  0,0   1470x956
+    rcWork     0,33  1470x923
 
-The candidate display is the one containing the window's centre, not simply the
-first display of a matching size: with two identically-sized displays, choosing
-by size alone would teleport a window from the second to the first. A window
-placed on the work area is still centred within its display's frame, so the
-centre identifies it correctly.
+So an app that asks for the work-area origin while sizing to the full monitor is
+self-consistent only on Windows, and only because of where the taskbar happens
+to be. Here the same code lands one menu-bar height too low: the menu bar stays
+visible across the top and the same number of pixels hang off the bottom.
+Fullscreen game windows do this (Unity's -popupwindow, for instance).
 
-The match is otherwise deliberately narrow -- borderless, non-empty, and within
-a pixel of the display's size in both axes, but not already at its origin -- so
-an ordinary borderless window that merely happens to be display-sized is not
-moved unless it is also misplaced.
+Snap exactly that case: a borderless window the size of a display whose top edge
+was aligned to that display's work area. An earlier version matched on
+"borderless, within a pixel of a display's size, centre inside it, not already
+at the origin", which also dragged back a window an app had deliberately placed
+elsewhere -- tests/window-snap-test.c covers that case.
 
-Split out of the DXMT winemac patch, which it shared a file with but has
-nothing to do with.
+Having moved the NSWindow somewhere Wine did not ask for, Wine has to be told,
+or its rects keep the pre-snap origin and every click lands offset by the menu
+bar. The frame-changed event that normally does this is emitted only when the
+window is ordered in and only when the frame actually changed; initial
+positioning runs before show_window(), and a repeat SetWindowPos with the same
+rect compares equal once the NSWindow already sits at the snapped origin. So the
+event is forced whenever a snap happened.
+
+Titled windows are left alone: one whose content happened to be display-sized
+would have its title bar pushed under the menu bar. They are separately subject
+to AppKit's constrainFrameRect:toScreen:, which pins a titled window's top a
+couple of points below the work area regardless of what was asked for -- Wine
+reports the constrained position faithfully, which is correct and not something
+this patch should fight.
 
 diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
-index 7d6d704..7487fe4 100644
+index 7d6d704436c..c2568f54276 100644
 --- a/dlls/winemac.drv/cocoa_window.m
 +++ b/dlls/winemac.drv/cocoa_window.m
-@@ -1956,6 +1956,35 @@ - (void) setFrameFromWine:(NSRect)contentRect
+@@ -1956,6 +1956,38 @@ - (void) setFrameFromWine:(NSRect)contentRect
             (left, bottom) in a bottom-up space. */
          [[WineApplicationController sharedController] flipRect:&contentRect];
  
-+        /* A borderless window sized exactly to a display is a fullscreen game
-+           window (e.g. Unity's -popupwindow).  Some apps position it at the
-+           work area (below the menu bar) instead of the display origin, which
-+           leaves the menu bar visible and clips the bottom.  Snap it to cover
-+           the display; the frame-changed event generated at the end of this
-+           method syncs the new origin back to the Win32 side, so input mapping
-+           stays correct. */
++        BOOL snapped = FALSE;
++
++        /* rcWork and rcMonitor share an origin on Windows -- the taskbar is at
++           the bottom -- but not on macOS, where the menu bar is at the top.  An
++           app that asks for the work-area origin while sizing to the full
++           monitor is therefore self-consistent only on Windows; here it lands
++           one menu-bar height too low, leaving the menu bar visible and hanging
++           the same number of pixels off the bottom.
++
++           Correct exactly that: a window the size of a display whose top edge
++           was aligned to that display's work area.  Matching on "borderless and
++           display-sized and not at the origin" instead would also drag back a
++           window an app deliberately placed elsewhere.
++
++           Still borderless-only: a titled window whose content happened to be
++           display-sized would have its title bar pushed under the menu bar. */
 +        if (!([self styleMask] & NSWindowStyleMaskTitled) && !NSIsEmptyRect(contentRect))
 +        {
-+            NSPoint center = NSMakePoint(NSMidX(contentRect), NSMidY(contentRect));
-+
 +            for (NSScreen* snapScreen in [NSScreen screens])
 +            {
-+                NSRect sf = [snapScreen frame];
++                NSRect sf = [snapScreen frame], vf = [snapScreen visibleFrame];
 +
-+                /* Match the display the window is actually on, not merely the
-+                   first one of its size: with two identical displays, choosing
-+                   by size alone teleports a window from the second to the
-+                   first.  A window sitting on the work area is still centred
-+                   within its display's frame, so the centre identifies it. */
-+                if (!NSPointInRect(center, sf)) continue;
-+                if (fabs(contentRect.size.width - sf.size.width) < 1.0 &&
-+                    fabs(contentRect.size.height - sf.size.height) < 1.0 &&
-+                    !NSEqualPoints(contentRect.origin, sf.origin))
-+                    contentRect.origin = sf.origin;
++                if (!NSEqualSizes(contentRect.size, sf.size)) continue;
++                if (fabs(NSMaxY(contentRect) - NSMaxY(vf)) > 1.0) continue;
++                if (NSEqualPoints(contentRect.origin, sf.origin)) continue;
++
++                contentRect.origin = sf.origin;
++                snapped = TRUE;
 +                break;
 +            }
 +        }
@@ -65,3 +76,39 @@ index 7d6d704..7487fe4 100644
          /* The back end is establishing a new window size and position.  It's
             not interested in any stale events regarding those that may be sitting
             in the queue. */
+@@ -1965,6 +1997,7 @@ - (void) setFrameFromWine:(NSRect)contentRect
+         if (!NSIsEmptyRect(contentRect))
+         {
+             NSRect frame, oldFrame;
++            BOOL frameChanged = FALSE;
+ 
+             oldFrame = self.wine_fractionalFrame;
+             frame = [self frameRectForContentRect:contentRect];
+@@ -2016,13 +2049,21 @@ - (void) setFrameFromWine:(NSRect)contentRect
+ 
+                 [self updateFullscreen];
+ 
+-                if ([self isOrderedIn])
+-                {
+-                    /* In case Cocoa adjusted the frame we tried to set, generate a frame-changed
+-                       event.  The back end will ignore it if nothing actually changed. */
+-                    [self windowDidResize:nil skipSizeMove:TRUE];
+-                }
++                frameChanged = TRUE;
+             }
++
++            /* In case Cocoa adjusted the frame we tried to set, generate a frame-changed
++               event.  The back end will ignore it if nothing actually changed.
++
++               Also unconditionally after a snap: that moved the NSWindow somewhere
++               Wine did not ask for, and Wine has to be told or every click lands
++               offset by the menu-bar height.  Neither of the two conditions above
++               covers it -- initial positioning runs before show_window(), so
++               isOrderedIn is false, and once the NSWindow sits at the snapped
++               origin a repeat SetWindowPos with the same rect compares equal to
++               oldFrame, so the desync would never be repaired. */
++            if ((frameChanged && [self isOrderedIn]) || snapped)
++                [self windowDidResize:nil skipSizeMove:TRUE];
+         }
+     }
+ 

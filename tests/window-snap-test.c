@@ -54,7 +54,8 @@ static void pump(void)
 /* One case: place a window of `style` at (x,y) sized cx x cy, then check where
  * it ends up. `expect_snap` says whether the origin should have been corrected
  * to the monitor origin. */
-static void check(const char *name, DWORD style, int x, int y, int cx, int cy, BOOL expect_snap)
+static void check(const char *name, DWORD style, int x, int y, int cx, int cy,
+                  BOOL expect_snap, BOOL allow_constraint)
 {
     RECT got;
     HWND hwnd;
@@ -78,22 +79,24 @@ static void check(const char *name, DWORD style, int x, int y, int cx, int cy, B
 
     GetWindowRect(hwnd, &got);
 
-    /* Assert on the snap, not on pixel-exact placement. AppKit's
-     * constrainFrameRect:toScreen: refuses to put a titled window's title bar
-     * under the menu bar and pins its top a couple of points below the work
-     * area, so a titled window asked for the work-area origin lands slightly
-     * lower no matter what — measured: request 0,33 and 0,0 both give 0,35.
-     * Wine reports that faithfully, which is correct; demanding the requested
-     * coordinates back would be asserting something macOS cannot do. What
-     * matters here is only whether the origin was rewritten to the monitor's. */
-    if (expect_snap ? (got.left == want_x && got.top == want_y)
-                    : !(got.left == monitor_rc.left && got.top == monitor_rc.top))
+    /* Compare against where the window was asked to go, not against a fixed
+     * position: "must not be snapped" and "is at the monitor origin" are not
+     * opposites — a window asked for the origin belongs there.
+     *
+     * allow_constraint covers AppKit's constrainFrameRect:toScreen:, which
+     * refuses to put a titled window's title bar under the menu bar and pins
+     * its top a couple of points below the work area. Measured: a titled window
+     * asked for 0,33 and one asked for 0,0 both land at 0,35. Wine reports the
+     * constrained position faithfully, which is correct, so the assertion is
+     * "not moved up", not a pixel match macOS cannot deliver. */
+    if (got.left == want_x && (got.top == want_y || (allow_constraint && got.top > want_y)))
         printf("PASS %-38s at %ld,%ld\n", name, got.left, got.top);
     else
     {
-        printf("FAIL %-38s at %ld,%ld%s\n", name, got.left, got.top,
-               expect_snap ? "  (not snapped to the monitor origin, or Wine was not told)"
-                           : "  (snapped to the monitor origin when it should not be)");
+        printf("FAIL %-38s at %ld,%ld, wanted %d,%d%s\n", name, got.left, got.top,
+               want_x, want_y,
+               expect_snap ? "  (not snapped, or Wine was not told)"
+                           : "  (moved when it should not be)");
         failures++;
     }
     DestroyWindow(hwnd);
@@ -131,32 +134,32 @@ int main(void)
 
     /* The case the snap exists for: work-area origin, full-monitor size. */
     check("borderless, monitor-sized, work origin", WS_POPUP,
-          work_rc.left, work_rc.top, mon_w, mon_h, TRUE);
+          work_rc.left, work_rc.top, mon_w, mon_h, TRUE, FALSE);
 
     /* Already correct — must not be touched. */
     check("borderless, monitor-sized, at origin", WS_POPUP,
-          monitor_rc.left, monitor_rc.top, mon_w, mon_h, FALSE);
+          monitor_rc.left, monitor_rc.top, mon_w, mon_h, FALSE, FALSE);
 
     /* Deliberately placed elsewhere. Nothing about this says "the app confused
      * the work-area origin for the screen origin", so it must be left alone.
      * A heuristic keyed only on "borderless, monitor-sized, not at the origin"
      * moves this one. */
     check("borderless, monitor-sized, offset 100", WS_POPUP,
-          monitor_rc.left + 100, monitor_rc.top + 100, mon_w, mon_h, FALSE);
+          monitor_rc.left + 100, monitor_rc.top + 100, mon_w, mon_h, FALSE, FALSE);
 
     /* Titled: has a title bar, so it is not a fullscreen game window. */
     check("titled, monitor-sized, work origin", WS_OVERLAPPEDWINDOW,
-          work_rc.left, work_rc.top, mon_w, mon_h, FALSE);
+          work_rc.left, work_rc.top, mon_w, mon_h, FALSE, TRUE);
 
     /* One pixel short of the monitor in each axis: not a fullscreen window. */
     check("borderless, monitor-1px, work origin", WS_POPUP,
-          work_rc.left, work_rc.top, mon_w - 1, mon_h - 1, FALSE);
+          work_rc.left, work_rc.top, mon_w - 1, mon_h - 1, FALSE, FALSE);
 
     /* Work-area *sized* as well as positioned: this app asked for the work area
      * and got it. Nothing to correct. */
     check("borderless, work-sized, work origin", WS_POPUP,
           work_rc.left, work_rc.top,
-          work_rc.right - work_rc.left, work_rc.bottom - work_rc.top, FALSE);
+          work_rc.right - work_rc.left, work_rc.bottom - work_rc.top, FALSE, FALSE);
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures,
            failures == 1 ? "" : "s");

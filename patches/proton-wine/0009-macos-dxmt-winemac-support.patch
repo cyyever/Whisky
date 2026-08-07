@@ -1,149 +1,91 @@
-Subject: winemac.drv: DXMT Metal-swapchain client surfaces + macdrv_functions export (macOS)
+Subject: winemac.drv: export a Metal-view entry point for DXMT (macOS)
 
-DXMT does not use any public Wine interface to reach the Cocoa view behind an
-HWND. It resolves winemac.drv's *internal* symbols with dlsym(RTLD_DEFAULT) --
-either a "macdrv_functions" table or bare get_win_data/macdrv_view_* -- and
-then reads win_data->client_cocoa_view. No upstream Wine exports any of that;
-DXMT is written against 3Shain's own Wine fork. This patch provides the three
-things that make DXMT work on Proton's Wine instead:
+DXMT needs one thing from this driver: a CAMetalLayer for an HWND. Wine has no
+public interface for that -- its supported graphics boundaries are OpenGL,
+Vulkan and GDI -- so DXMT resolves driver-internal symbols with
+dlsym(RTLD_DEFAULT), being written against 3Shain's own Wine fork. Without
+something to resolve, DXMT treats the missing view as a broken Wine: it logs
+"your Wine has no exported symbols needed by DXMT" and calls abort().
 
-  1. macdrv_functions, exported with visibility("default"). Pairs with the
-     RTLD_GLOBAL driver dlopen in dlls/ntdll/unix/loader.c, without which
-     dlsym cannot see driver symbols at all.
+Export two functions for it:
 
-  2. struct dxmt_win_data, in the 8.16-era layout DXMT still expects. Wine 11.9
-     refactored macdrv_win_data (cocoa_view is gone, client_view replaces it),
-     so the real struct can no longer be handed over as-is.
+    int  macdrv_dxmt_create_metal_view(UINT64 hwnd, UINT64 device,
+                                       UINT64 *view, UINT64 *layer);
+    void macdrv_dxmt_release_metal_view(UINT64 view);
 
-  3. The views themselves. Wine only attaches a client view when something
-     creates a client surface; DXMT expects one to already exist.
+Scalar arguments only. An earlier version of this patch instead exported a
+"macdrv_functions" table plus a struct in the 8.16-era layout DXMT's copy
+expected; every field of both was pointer-sized, so a rename or a reorder on
+either side compiled clean on both and then called the wrong function pointer,
+with the symptom surfacing far from the cause. It needed a build-time guard
+script to police it. There is now nothing to police, and no such script.
 
-Neither struct has a version field or any other handshake, so a rename or a
-reordering on either side would compile clean and then call the wrong function
-pointer -- every field is pointer-sized. scripts/check-dxmt-abi.sh compares the
-two field lists and fails the build on a mismatch; build-dxmt.sh runs it.
+The view comes from macdrv_client_surface_create() -- the call winemac's own
+Vulkan driver makes to hand MoltenVK a Metal view -- registered with win32u via
+add_window_client_surface(), which this patch moves from win32u_private.h to
+gdi_driver.h so a driver can call it. Wine then owns repositioning on
+move/resize (update_client_surfaces) and teardown on window destroy
+(detach_client_surfaces), and the returned handle is the surface itself, so its
+reference count is the whole lifetime rule: DXMT pairs create and release 1:1
+(d3d11_swapchain.cpp:134/209) and never dereferences the handle.
 
-For (3) the views come from macdrv_client_surface_create() -- the same call
-winemac's own Vulkan driver uses to get a Metal view for MoltenVK -- rather than
-being hand-rolled from macdrv_create_view(). That keeps the parts that are easy
-to get wrong in Wine's code:
+Getting the view right is what this patch originally got wrong. It hand-rolled
+one with macdrv_create_view() and only attached it when data->cocoa_window was
+set -- true for a toplevel, never for a child HWND, which has no Cocoa window of
+its own. Its own comment said as much: "Assumes the swapchain hwnd is its own
+toplevel (true for the game windows DXMT renders into)." A browser is not:
+Chromium/CEF and Qt WebEngine composite into a child HWND, so their GPU process
+died the instant it created a swapchain -- a black window for a few seconds and
+then nothing, which is what Steam and GOG showed.
 
-  * A child HWND has no Cocoa window of its own, so the view must be created
-    on the toplevel ancestor and parented under its client view.
-    macdrv_client_surface_create()/_update() do this via GA_ROOT.
-  * Repositioning on move/resize is macdrv_client_surface_update(), including
-    the client/visible offset and the superview fixup.
+Pairs with the RTLD_GLOBAL driver dlopen in dlls/ntdll/unix/loader.c, without
+which dlsym cannot see driver symbols at all.
 
-An earlier version of this patch created the view directly and only handled the
-case where the swapchain window is its own toplevel, which is true of the game
-windows DXMT was written for. A browser is not: Chromium/CEF and Qt WebEngine
-composite into a child HWND, which left client_cocoa_view NULL. DXMT reads that
-as a broken Wine -- it logs "your Wine has no exported symbols needed by DXMT"
-and calls abort() -- so the GPU process died the instant it created a swapchain.
-That is what made Steam and GOG show a black window for a few seconds and then
-vanish.
+Covered by tests/dxmt-child-swapchain-test.c.
 
-Surfaces are tracked one per window rather than in a single current slot, for
-the same reason: a browser composites several child HWNDs at once and holds a
-swapchain on each, so one slot would release a surface DXMT is still rendering
-into as soon as the next window asked for one.
-
-The surfaces are not registered with add_window_client_surface(), which is
-private to win32u, so they are not in the automatic update list and
-macdrv_WindowPosChanged drives their update explicitly.
-
-Locking: the list has its own mutex, taken while win_data is already held (from
-macdrv_WindowPosChanged), so win_data_mutex -> dxmt_surfaces_mutex is the only
-permitted nesting and nothing calls out while it is held. In particular
-client_surface_release() reaches win32u's surfaces_lock and then win_data_mutex
-through the detach callback -- the same order update_client_surfaces() uses --
-so surfaces are unlinked under the lock and released outside it, and
-macdrv_DestroyWindow does that before it acquires win_data.
-
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1010,7 +1010,21 @@
+     void *module, *handle;
+     const IMAGE_NT_HEADERS *nt;
+ 
+-    handle = dlopen( so_name, RTLD_NOW );
++    int flags = RTLD_NOW;
++
++#ifdef __APPLE__
++    /* The Mac driver only, and only so DXMT can find its Metal-view entry
++     * points with dlsym(RTLD_DEFAULT): Wine has no public interface for "give
++     * me the CAMetalLayer for this HWND", so the driver exports two functions
++     * for it (see patches/proton-wine/0009).
++     *
++     * Deliberately not RTLD_GLOBAL for every unixlib: that puts each one's
++     * default-visibility symbols into a single namespace, where a collision
++     * between two .so files silently binds to whichever loaded first. */
++    if (strstr( so_name, "winemac.so" )) flags |= RTLD_GLOBAL;
++#endif
++
++    handle = dlopen( so_name, flags );
+     if (!handle)
+     {
+         WARN( "failed to load .so lib %s: %s\n", debugstr_a(so_name), dlerror() );
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index dbc2d332c7e..05f73d18af6 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -322,7 +322,6 @@ extern HWND get_shell_window(void);
+ extern HWND get_progman_window(void);
+ extern HWND get_taskman_window(void);
+ extern BOOL is_client_surface_window( struct client_surface *surface, HWND hwnd );
+-extern void add_window_client_surface( HWND hwnd, struct client_surface *surface );
+ extern HICON get_window_icon_info( HWND hwnd, UINT type, HICON icon, ICONINFO *ret );
+ extern void init_startup_info(void);
+ 
 diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
-index 4f19100bbb8..f36c27c1d0e 100644
+index 4f19100bbb8..f5b788311cf 100644
 --- a/dlls/winemac.drv/window.c
 +++ b/dlls/winemac.drv/window.c
-@@ -1236,12 +1236,92 @@ LRESULT macdrv_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
- /***********************************************************************
-  *              DestroyWindow   (MACDRV.@)
-  */
-+/* ===== DXMT compatibility shim (see bottom of file) =====
-+ * The client surfaces backing DXMT's Metal swapchains. Each is a real
-+ * macdrv_client_surface, so creation, child-HWND parenting and repositioning
-+ * are Wine's own code — the same path winemac's Vulkan driver uses to hand
-+ * MoltenVK a Metal view. Only registration differs: add_window_client_surface()
-+ * is private to win32u, so these are not in the auto-update list and
-+ * macdrv_WindowPosChanged() has to drive their update explicitly.
-+ *
-+ * One per window, not one globally: a browser composites several child HWNDs at
-+ * once and holds a swapchain on each, so a single slot would release a surface
-+ * DXMT is still rendering into as soon as the next window asked for one.
-+ *
-+ * The list has its own lock. The only nesting is dxmt_surfaces_mutex ->
-+ * win_data_mutex: dxmt_sync_view_position() runs after macdrv_WindowPosChanged
-+ * has released win_data, and macdrv_client_surface_update() re-acquires it from
-+ * under the list lock. Do not walk the list from under win_data_mutex, and do
-+ * not call client_surface_release() (which takes win32u's surfaces_lock, then
-+ * win_data_mutex via detach) while holding either -- unlink under the lock and
-+ * release outside it, as dxmt_surface_destroy() does. */
-+/* DXMT resolves "macdrv_functions" via dlsym(RTLD_DEFAULT) and reads
-+ * win_data->client_cocoa_view. Wine 11.9 refactored macdrv_win_data (the old
-+ * cocoa_view is gone; client_view replaces it), so hand back a struct in DXMT's
-+ * expected 8.16-era layout instead. scripts/check-dxmt-abi.sh keeps the two in
-+ * step; nothing else does. */
-+struct dxmt_win_data
-+{
-+    HWND          hwnd;
-+    macdrv_window cocoa_window;
-+    macdrv_view   cocoa_view;
-+    macdrv_view   client_cocoa_view;
-+};
-+
-+struct dxmt_surface_entry
-+{
-+    struct list                   entry;
-+    HWND                          hwnd;
-+    struct macdrv_client_surface *surface;
-+    /* The struct handed back to DXMT. Per window, not one global: DXMT reads
-+     * client_cocoa_view out of it *after* get_win_data() returns, so a shared
-+     * slot lets two threads creating swapchains for different windows hand each
-+     * other's view over -- and attach a Metal layer to the wrong window. */
-+    struct dxmt_win_data          wd;
-+};
-+
-+static pthread_mutex_t dxmt_surfaces_mutex = PTHREAD_MUTEX_INITIALIZER;
-+static struct list dxmt_surfaces = LIST_INIT(dxmt_surfaces);
-+
-+
-+/* Drop every surface belonging to hwnd. Unlinks under the lock and releases
-+ * outside it, because client_surface_release() reaches win32u's surfaces_lock
-+ * and then win_data_mutex through the detach callback. */
-+static void dxmt_surface_destroy(HWND hwnd)
-+{
-+    struct dxmt_surface_entry *entry, *next;
-+    struct list dead = LIST_INIT(dead);
-+
-+    pthread_mutex_lock(&dxmt_surfaces_mutex);
-+    LIST_FOR_EACH_ENTRY_SAFE(entry, next, &dxmt_surfaces, struct dxmt_surface_entry, entry)
-+    {
-+        if (entry->hwnd != hwnd) continue;
-+        list_remove(&entry->entry);
-+        list_add_tail(&dead, &entry->entry);
-+    }
-+    pthread_mutex_unlock(&dxmt_surfaces_mutex);
-+
-+    LIST_FOR_EACH_ENTRY_SAFE(entry, next, &dead, struct dxmt_surface_entry, entry)
-+    {
-+        list_remove(&entry->entry);
-+        client_surface_release(&entry->surface->client);
-+        free(entry);
-+    }
-+}
-+
- void macdrv_DestroyWindow(HWND hwnd)
- {
-     struct macdrv_win_data *data;
+@@ -1242,6 +1242,11 @@ void macdrv_DestroyWindow(HWND hwnd)
  
      TRACE("%p\n", hwnd);
  
@@ -152,194 +94,89 @@ index 4f19100bbb8..f36c27c1d0e 100644
 +     * update_client_surfaces() uses. Doing it while already holding win_data
 +     * would invert that pair and can deadlock against a concurrent update.
 +     * Being first also means the early return below cannot leak the surface. */
-+    dxmt_surface_destroy(hwnd);
-+
      if (!(data = get_win_data(hwnd))) return;
  
      if (hwnd == get_capture()) macdrv_SetCapture(0, 0);
-@@ -1580,6 +1660,43 @@ BOOL macdrv_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *styl
- }
- 
- 
-+/* Keep DXMT's client surface glued to its window. macdrv_client_surface_update()
-+ * already does the work — client rect mapped into toplevel coordinates, plus
-+ * the superview fixup a child HWND needs — so this only decides whether the
-+ * window that just moved is one the surface cares about.
-+ *
-+ * hwnd may be the swapchain window or the toplevel it hangs off, and is very
-+ * often neither, so an early-out on both is the point of the function. */
-+static void dxmt_sync_view_position(HWND hwnd)
-+{
-+    struct dxmt_surface_entry *entry;
-+
-+    /* Done entirely under the list lock, and with no reference taken. A surface
-+     * cannot go away underneath us because dxmt_surface_destroy() unlinks under
-+     * this same lock and only releases afterwards, so membership in the list is
-+     * itself the lifetime guarantee.
-+     *
-+     * Taking a reference here would mean releasing it here too, and
-+     * client_surface_release() can reach win32u's surfaces_lock -- which
-+     * update_client_surfaces() takes before win_data_mutex. Not touching the
-+     * refcount keeps this path away from that pair entirely.
-+     *
-+     * macdrv_client_surface_update() does take win_data_mutex, but this runs
-+     * after macdrv_WindowPosChanged() has released it, so it is acquired fresh
-+     * rather than nested. */
-+    pthread_mutex_lock(&dxmt_surfaces_mutex);
-+    LIST_FOR_EACH_ENTRY(entry, &dxmt_surfaces, struct dxmt_surface_entry, entry)
-+    {
-+        /* Filter here rather than snapshotting a fixed number of entries and
-+         * filtering after: a long-lived browser accumulates surfaces, and a cap
-+         * applied before the match silently strands whichever ones sort late. */
-+        if (entry->hwnd != hwnd && NtUserGetAncestor(entry->hwnd, GA_ROOT) != hwnd) continue;
-+        macdrv_client_surface_update(&entry->surface->client);
-+    }
-+    pthread_mutex_unlock(&dxmt_surfaces_mutex);
-+}
-+
-+
- /***********************************************************************
-  *              WindowPosChanged   (MACDRV.@)
-  */
-@@ -1644,6 +1761,17 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
+@@ -1644,6 +1649,7 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
  
  done:
      release_win_data(data);
 +
-+    /* Keep DXMT's Metal views glued to their client areas. Deliberately out
-+     * here rather than beside set_cocoa_window_properties() above: that path is
-+     * skipped while a WINDOW_FRAME_CHANGED event is being processed, so a live
-+     * drag-resize would never update, and it is unreachable for a child HWND,
-+     * which has no cocoa_window and takes the `goto done` -- and a child HWND is
-+     * exactly what a browser composites into. Wine's own equivalent,
-+     * update_client_surfaces(), is likewise unconditional.
-+     *
-+     * After release_win_data() so none of this runs under win_data_mutex. */
-+    dxmt_sync_view_position(hwnd);
  }
  
  
-@@ -2162,3 +2290,123 @@ void init_win_context(void)
+@@ -2162,3 +2168,62 @@ void init_win_context(void)
      pthread_mutex_init(&win_data_mutex, &attr);
      pthread_mutexattr_destroy(&attr);
  }
 +
-+/* ===== DXMT compatibility shim =====
-+ * DXMT resolves "macdrv_functions" via dlsym(RTLD_DEFAULT) and reads
-+ * win_data->client_cocoa_view. Wine 11.9 refactored macdrv_win_data (the old
-+ * cocoa_view is gone; client_view replaces it), so return a struct in DXMT's
-+ * expected 8.16-era layout. */
-+static struct dxmt_win_data *dxmt_get_win_data( HWND hwnd )
++/* ===== DXMT entry points =====
++ * DXMT needs one thing from this driver: a CAMetalLayer for an HWND. Wine has
++ * no public interface for that -- its supported graphics boundaries are OpenGL,
++ * Vulkan and GDI -- so DXMT resolves driver-internal symbols with
++ * dlsym(RTLD_DEFAULT), being written against 3Shain's own Wine fork. These two
++ * are what we export for it.
++ *
++ * Pairs with the RTLD_GLOBAL driver dlopen in dlls/ntdll/unix/loader.c, without
++ * which dlsym cannot see driver symbols at all. */
++
++/* Create a Metal view over hwnd's client area on DXMT's Metal device, and hand
++ * back the layer to render into.
++ *
++ * The returned handle is the client surface. DXMT stores it opaquely and only
++ * ever passes it back to the release below (d3d11_swapchain.cpp:134/209 pair
++ * them 1:1), so the surface's own reference count is the whole lifetime rule --
++ * no separate per-window registry, exactly as winemac's Vulkan driver does it.
++ *
++ * Registering with win32u also means Wine repositions the view on move/resize
++ * and detaches it on window destroy. Getting *that* wrong is what this patch
++ * originally got wrong: a child HWND has no Cocoa window of its own, the
++ * hand-rolled view was never created for one, and DXMT reads a NULL view as a
++ * broken Wine and calls abort() -- so a browser, which composites into child
++ * HWNDs, lost its GPU process the instant it made a swapchain.
++ *
++ * Returns 0 on failure with both outputs zeroed. */
++__attribute__((visibility("default")))
++int macdrv_dxmt_create_metal_view( UINT64 hwnd, UINT64 device, UINT64 *ret_view, UINT64 *ret_layer )
 +{
-+    struct macdrv_win_data *data;
++    struct macdrv_client_surface *surface;
++    macdrv_metal_view view;
 +
-+    /* DXMT wants a macdrv_view it can hang a Metal layer off. That is precisely
-+     * what a client surface is, and winemac's Vulkan driver already gets one
-+     * this way to hand MoltenVK — so create a real client surface rather than
-+     * hand-rolling the view. Wine's own code then owns the parts that are easy
-+     * to get wrong: a child HWND has no Cocoa window, so the view has to be
-+     * created on the toplevel ancestor and parented under its client view,
-+     * which macdrv_client_surface_create()/_update() handle via GA_ROOT.
-+     *
-+     * Getting that wrong is not a cosmetic bug: DXMT treats a NULL view as a
-+     * broken Wine ("your Wine has no exported symbols needed by DXMT") and
-+     * calls abort(), so every browser that composites into a child HWND lost
-+     * its GPU process the moment it created a swapchain. */
-+    struct dxmt_surface_entry *entry, *existing, *loser = NULL;
-+    struct macdrv_client_surface *surface = NULL, *present = NULL;
-+    macdrv_window cocoa_window;
-+
-+    /* win_data first: it must not be acquired while holding the list lock (see
-+     * dxmt_sync_view_position, which takes them the other way round). */
-+    if (!(data = get_win_data( hwnd ))) return NULL;
-+    cocoa_window = data->cocoa_window;
-+    release_win_data( data );
-+
-+    pthread_mutex_lock( &dxmt_surfaces_mutex );
-+    LIST_FOR_EACH_ENTRY( existing, &dxmt_surfaces, struct dxmt_surface_entry, entry )
-+        if (existing->hwnd == hwnd) { entry = existing; goto found; }
-+    pthread_mutex_unlock( &dxmt_surfaces_mutex );
-+
-+    /* macdrv_client_surface_create() calls into win32u, so it cannot run under
-+     * the list lock; that leaves a window in which another thread can create a
-+     * surface for the same HWND, so re-check on the way back in. */
-+    if (!(surface = macdrv_client_surface_create( hwnd ))) return NULL;
-+    if (!(entry = calloc( 1, sizeof(*entry) )))
++    *ret_view = *ret_layer = 0;
++    if (!(surface = macdrv_client_surface_create( (HWND)(ULONG_PTR)hwnd ))) return 0;
++    if (!(view = macdrv_view_create_metal_view( surface->cocoa_view,
++                                                (macdrv_metal_device)(ULONG_PTR)device )))
 +    {
 +        client_surface_release( &surface->client );
-+        return NULL;
-+    }
-+    entry->hwnd = hwnd;
-+    entry->surface = surface;
-+
-+    pthread_mutex_lock( &dxmt_surfaces_mutex );
-+    LIST_FOR_EACH_ENTRY( existing, &dxmt_surfaces, struct dxmt_surface_entry, entry )
-+    {
-+        if (existing->hwnd != hwnd) continue;
-+        loser = entry;
-+        entry = existing;
-+        /* The loser's macdrv_client_surface_create() already ran present(),
-+         * which hid the window's previous client view and installed its own.
-+         * Releasing it disposes that view but does not restore the winner's, so
-+         * the winner has to be re-presented or DXMT renders into a hidden view
-+         * -- a permanently black window, the very thing this shim exists to
-+         * avoid. Done after the unlock, like every other call-out. */
-+        present = entry->surface;
-+        break;
-+    }
-+    if (!loser) list_add_tail( &dxmt_surfaces, &entry->entry );
-+
-+found:
-+    /* Filled in under the lock. The struct lives in the entry, and the entry is
-+     * only unlinked and freed by dxmt_surface_destroy() under this same lock,
-+     * so this cannot be writing into memory a concurrent window destruction has
-+     * already released. */
-+    entry->wd.hwnd = hwnd;
-+    entry->wd.cocoa_window = cocoa_window;
-+    entry->wd.cocoa_view = entry->surface->cocoa_view;
-+    entry->wd.client_cocoa_view = entry->surface->cocoa_view;
-+    pthread_mutex_unlock( &dxmt_surfaces_mutex );
-+
-+    if (loser)
-+    {
-+        client_surface_release( &loser->surface->client );
-+        free( loser );
-+        macdrv_client_surface_present( &present->client, 0 );
++        return 0;
 +    }
 +
-+    /* DXMT reads client_cocoa_view out of the returned struct after this
-+     * returns and never tells us when it is done with it, so the list's
-+     * reference is what keeps the view alive -- until macdrv_DestroyWindow. */
-+    return &entry->wd;
++    /* Hand the view to the surface so macdrv_client_surface_destroy() releases
++     * it; DXMT owns the device, so metal_device stays NULL and is not touched. */
++    surface->metal_view = view;
++    add_window_client_surface( (HWND)(ULONG_PTR)hwnd, &surface->client );
++
++    *ret_view = (UINT64)(ULONG_PTR)surface;
++    *ret_layer = (UINT64)(ULONG_PTR)macdrv_view_get_metal_layer( view );
++    return 1;
 +}
 +
-+static void dxmt_release_win_data( struct dxmt_win_data *data ) { (void)data; }
-+
-+struct dxmt_macdrv_functions
-+{
-+    void (*macdrv_init_display_devices)(BOOL);
-+    struct dxmt_win_data *(*get_win_data)(HWND);
-+    void (*release_win_data)(struct dxmt_win_data *);
-+    macdrv_window (*macdrv_get_cocoa_window)(HWND, BOOL);
-+    macdrv_metal_device (*macdrv_create_metal_device)(void);
-+    void (*macdrv_release_metal_device)(macdrv_metal_device);
-+    macdrv_metal_view (*macdrv_view_create_metal_view)(macdrv_view, macdrv_metal_device);
-+    macdrv_metal_layer (*macdrv_view_get_metal_layer)(macdrv_metal_view);
-+    void (*macdrv_view_release_metal_view)(macdrv_metal_view);
-+    void (*on_main_thread)(void *);
-+};
-+
 +__attribute__((visibility("default")))
-+struct dxmt_macdrv_functions macdrv_functions =
++void macdrv_dxmt_release_metal_view( UINT64 handle )
 +{
-+    NULL,
-+    dxmt_get_win_data,
-+    dxmt_release_win_data,
-+    macdrv_get_cocoa_window,
-+    macdrv_create_metal_device,
-+    macdrv_release_metal_device,
-+    macdrv_view_create_metal_view,
-+    macdrv_view_get_metal_layer,
-+    macdrv_view_release_metal_view,
-+    NULL,
-+};
++    struct macdrv_client_surface *surface = (struct macdrv_client_surface *)(ULONG_PTR)handle;
++
++    if (surface) client_surface_release( &surface->client );
++}
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 34075ed7cfa..b3de8cf4747 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -273,6 +273,7 @@ W32KAPI void client_surface_add_ref( struct client_surface *surface );
+ W32KAPI void client_surface_release( struct client_surface *surface );
+ W32KAPI void client_surface_present( struct client_surface *surface );
+ W32KAPI void client_surface_update( struct client_surface *surface );
++W32KAPI void add_window_client_surface( HWND hwnd, struct client_surface *surface );
+ W32KAPI void detach_client_surfaces( HWND hwnd );
+ 
+ static inline const char *debugstr_client_surface( struct client_surface *surface )

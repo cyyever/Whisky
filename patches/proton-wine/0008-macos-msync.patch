@@ -7,10 +7,10 @@ lost-wake fix that lets Steam log in with WINEMSYNC=1:
 
   - msync fast-sync core (CrossOver port; ~msync.c client+server, de-linux)
   - msync mixed-wait hybrid (msync_wait_mixed_any: bounded server poll on the
-    server subset of a mixed msync+server wait set), plus an event-driven
-    WINEMSYNC_UNIFIED variant (server-side "bridge": msync_register_bridge /
-    msync_unregister_bridge subscribe a client bridge auto-event to a set of
-    server objects so the client blocks once instead of polling)
+    server subset of a mixed msync+server wait set). An event-driven
+    WINEMSYNC_UNIFIED "bridge" variant was tried and removed: it was opt-in via
+    an env var nothing set, leaked subscriptions on thread death, and recycled
+    bridge shm indices could hand a dead thread's subscriptions to a new one.
   - per-object msync idx for waits; the earlier "uniform inproc_sync shadow"
     approach was mismatched to macOS (msync objects are pure shm+__ulock with no
     fd, so the server can't wait on them) and is dropped:
@@ -48,7 +48,7 @@ server/request_trace.h) regenerated from server/protocol.def, since only this
 patch modifies protocol.def -- so a fresh apply needs no make_requests step.
 
 diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
-index 38c865b..e0b2741 100644
+index 38c865b3611..e0b2741f154 100644
 --- a/dlls/ntdll/Makefile.in
 +++ b/dlls/ntdll/Makefile.in
 @@ -51,6 +51,7 @@ SOURCES = \
@@ -60,7 +60,7 @@ index 38c865b..e0b2741 100644
  	unix/loadorder.c \
  	unix/process.c \
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
-index f67fa07..701ee0b 100644
+index f67fa07d366..7c827ee2542 100644
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
 @@ -38,7 +38,9 @@
@@ -81,18 +81,7 @@ index f67fa07..701ee0b 100644
  #include "wine/list.h"
  #include "ntsyscalls.h"
  #include "wine/debug.h"
-@@ -1007,7 +1010,9 @@ static NTSTATUS dlopen_dll( const char *so_name, UNICODE_STRING *nt_name, void *
-     void *module, *handle;
-     const IMAGE_NT_HEADERS *nt;
- 
--    handle = dlopen( so_name, RTLD_NOW );
-+    /* RTLD_GLOBAL so DXMT's dlsym(RTLD_DEFAULT, "macdrv_functions") can see
-+     * winemac.so's exported table (Metal D3D11 view attach). */
-+    handle = dlopen( so_name, RTLD_NOW | RTLD_GLOBAL );
-     if (!handle)
-     {
-         WARN( "failed to load .so lib %s: %s\n", debugstr_a(so_name), dlerror() );
-@@ -2443,6 +2448,7 @@ static void start_main_thread(void)
+@@ -2443,6 +2446,7 @@ static void start_main_thread(void)
      signal_init_threading();
      dbg_init();
      startup_info_size = server_init_process();
@@ -100,7 +89,7 @@ index f67fa07..701ee0b 100644
      hacks_init();
      virtual_map_user_shared_data();
      init_cpu_info();
-@@ -2452,7 +2458,9 @@ static void start_main_thread(void)
+@@ -2452,7 +2456,9 @@ static void start_main_thread(void)
      set_thread_teb( teb );
  #endif
  
@@ -110,7 +99,7 @@ index f67fa07..701ee0b 100644
      init_startup_info();
      *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
      set_load_order_app_name( main_wargv[0] );
-@@ -2461,7 +2469,9 @@ static void start_main_thread(void)
+@@ -2461,7 +2467,9 @@ static void start_main_thread(void)
      load_ntdll();
      load_wow64_ntdll( main_image_info.Machine );
      load_apiset_dll();
@@ -122,7 +111,7 @@ index f67fa07..701ee0b 100644
  
 diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
 new file mode 100644
-index 0000000..9f3c4b0
+index 00000000000..9f3c4b03c72
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync.c
 @@ -0,0 +1,2100 @@
@@ -2228,7 +2217,7 @@ index 0000000..9f3c4b0
 +}
 diff --git a/dlls/ntdll/unix/msync.h b/dlls/ntdll/unix/msync.h
 new file mode 100644
-index 0000000..ca92d32
+index 00000000000..ca92d32ad8d
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync.h
 @@ -0,0 +1,51 @@
@@ -2284,7 +2273,7 @@ index 0000000..ca92d32
 +extern NTSTATUS msync_signal_and_wait( HANDLE signal, HANDLE wait,
 +    BOOLEAN alertable, const LARGE_INTEGER *timeout );
 diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
-index 112157b..310516b 100644
+index 112157b0dd7..310516b1e60 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
 @@ -79,6 +79,7 @@
@@ -2306,7 +2295,7 @@ index 112157b..310516b 100644
      {
          req->handle = wine_server_obj_handle( handle );
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index 67ab945..f3f2e49 100644
+index 67ab945cef8..f3f2e491b84 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
 @@ -61,7 +61,9 @@
@@ -2657,7 +2646,7 @@ index 67ab945..f3f2e49 100644
          /* Since server_wait will result in an unconditional implicit yield,
             we never return STATUS_NO_YIELD_PERFORMED */
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
-index 2f649ca..78f1323 100644
+index 2f649ca399e..78f1323104c 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
 @@ -117,6 +117,8 @@ struct ntdll_thread_data
@@ -2670,7 +2659,7 @@ index 2f649ca..78f1323 100644
  
  C_ASSERT( sizeof(struct ntdll_thread_data) <= sizeof(((TEB *)0)->GdiTebBatch) );
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index d5b9341..c66b96e 100644
+index d5b93415c2a..c66b96ed592 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
 @@ -4268,6 +4268,8 @@ static TEB *init_teb( void *ptr, BOOL is_wow )
@@ -2683,7 +2672,7 @@ index d5b9341..c66b96e 100644
      thread_data->reply_fd   = -1;
      thread_data->wait_fd[0] = -1;
 diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
-index d908717..24114eb 100644
+index d9087179099..24114ebf02b 100644
 --- a/include/wine/server_protocol.h
 +++ b/include/wine/server_protocol.h
 @@ -977,6 +977,12 @@ struct obj_locator
@@ -3170,7 +3159,7 @@ index d908717..24114eb 100644
  
  #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
 diff --git a/server/Makefile.in b/server/Makefile.in
-index d9ac607..b2ce9e8 100644
+index d9ac607f66f..b2ce9e8df51 100644
 --- a/server/Makefile.in
 +++ b/server/Makefile.in
 @@ -16,6 +16,7 @@ SOURCES = \
@@ -3182,7 +3171,7 @@ index d9ac607..b2ce9e8 100644
  	hook.c \
  	inproc_sync.c \
 diff --git a/server/async.c b/server/async.c
-index 907d5f5..755c6de 100644
+index 907d5f53346..755c6deed4a 100644
 --- a/server/async.c
 +++ b/server/async.c
 @@ -53,6 +53,7 @@ static const struct object_ops async_cancel_ops =
@@ -3210,7 +3199,7 @@ index 907d5f5..755c6de 100644
      no_signal,                /* signal */
      no_get_fd,                /* get_fd */
 diff --git a/server/atom.c b/server/atom.c
-index 3076341..f086a7a 100644
+index 307634124f5..f086a7a6064 100644
 --- a/server/atom.c
 +++ b/server/atom.c
 @@ -77,6 +77,7 @@ static const struct object_ops atom_table_ops =
@@ -3222,7 +3211,7 @@ index 3076341..f086a7a 100644
      no_signal,                    /* signal */
      no_get_fd,                    /* get_fd */
 diff --git a/server/change.c b/server/change.c
-index be3251a..8ff0225 100644
+index be3251a1eef..8ff0225be8e 100644
 --- a/server/change.c
 +++ b/server/change.c
 @@ -112,6 +112,7 @@ static const struct object_ops dir_ops =
@@ -3234,7 +3223,7 @@ index be3251a..8ff0225 100644
      no_signal,                /* signal */
      dir_get_fd,               /* get_fd */
 diff --git a/server/clipboard.c b/server/clipboard.c
-index 59a5035..d0e421f 100644
+index 59a50354b48..d0e421f921c 100644
 --- a/server/clipboard.c
 +++ b/server/clipboard.c
 @@ -76,6 +76,7 @@ static const struct object_ops clipboard_ops =
@@ -3246,7 +3235,7 @@ index 59a5035..d0e421f 100644
      no_signal,                    /* signal */
      no_get_fd,                    /* get_fd */
 diff --git a/server/completion.c b/server/completion.c
-index dbcf4e2..446d3ec 100644
+index dbcf4e2480c..446d3ecf245 100644
 --- a/server/completion.c
 +++ b/server/completion.c
 @@ -92,6 +92,7 @@ static const struct object_ops completion_wait_ops =
@@ -3266,7 +3255,7 @@ index dbcf4e2..446d3ec 100644
      no_signal,                 /* signal */
      no_get_fd,                 /* get_fd */
 diff --git a/server/console.c b/server/console.c
-index eb849b7..435c410 100644
+index eb849b7d239..435c410f473 100644
 --- a/server/console.c
 +++ b/server/console.c
 @@ -41,6 +41,7 @@
@@ -3414,7 +3403,7 @@ index eb849b7..435c410 100644
      if (list_empty( &server->queue )) reset_sync( server->sync );
      release_object( server );
 diff --git a/server/d3dkmt.c b/server/d3dkmt.c
-index 800afb4..5e4fce3 100644
+index 800afb44142..5e4fce390a2 100644
 --- a/server/d3dkmt.c
 +++ b/server/d3dkmt.c
 @@ -57,6 +57,7 @@ static const struct object_ops d3dkmt_object_ops =
@@ -3450,7 +3439,7 @@ index 800afb4..5e4fce3 100644
      no_signal,                              /* signal */
      no_get_fd,                              /* get_fd */
 diff --git a/server/debugger.c b/server/debugger.c
-index c709e34..380f595 100644
+index c709e34078b..380f59589a8 100644
 --- a/server/debugger.c
 +++ b/server/debugger.c
 @@ -88,6 +88,7 @@ static const struct object_ops debug_event_ops =
@@ -3470,7 +3459,7 @@ index c709e34..380f595 100644
      no_signal,                     /* signal */
      no_get_fd,                     /* get_fd */
 diff --git a/server/device.c b/server/device.c
-index 3eed743..cfe3833 100644
+index 3eed74343e5..cfe38331199 100644
 --- a/server/device.c
 +++ b/server/device.c
 @@ -38,6 +38,7 @@
@@ -3578,7 +3567,7 @@ index 3eed743..cfe3833 100644
              else close_handle( current->process, reply->next );
          }
 diff --git a/server/directory.c b/server/directory.c
-index c56c216..8a1fbb3 100644
+index c56c216d6d5..8a1fbb3366c 100644
 --- a/server/directory.c
 +++ b/server/directory.c
 @@ -69,6 +69,7 @@ static const struct object_ops object_type_ops =
@@ -3598,7 +3587,7 @@ index c56c216..8a1fbb3 100644
      no_signal,                    /* signal */
      no_get_fd,                    /* get_fd */
 diff --git a/server/event.c b/server/event.c
-index b70e9e0..7aed926 100644
+index b70e9e06e2e..7aed92623bb 100644
 --- a/server/event.c
 +++ b/server/event.c
 @@ -35,6 +35,7 @@
@@ -3776,7 +3765,7 @@ index b70e9e0..7aed926 100644
      release_object( event );
  }
 diff --git a/server/fd.c b/server/fd.c
-index aa71e6d..69d7bcb 100644
+index aa71e6dfe2a..69d7bcbc9cf 100644
 --- a/server/fd.c
 +++ b/server/fd.c
 @@ -101,6 +101,7 @@
@@ -3896,7 +3885,7 @@ index aa71e6d..69d7bcb 100644
  {
      int events = 0;
 diff --git a/server/file.c b/server/file.c
-index 55f304e..a51839f 100644
+index 55f304e0068..a51839fbd90 100644
 --- a/server/file.c
 +++ b/server/file.c
 @@ -123,6 +123,7 @@ static const struct object_ops file_ops =
@@ -3908,7 +3897,7 @@ index 55f304e..a51839f 100644
      no_signal,                    /* signal */
      file_get_fd,                  /* get_fd */
 diff --git a/server/file.h b/server/file.h
-index d516681..35da6ad 100644
+index d5166815565..35da6ad1fca 100644
 --- a/server/file.h
 +++ b/server/file.h
 @@ -109,6 +109,7 @@ extern char *dup_fd_name( struct fd *root, const char *name ) __WINE_DEALLOC(fre
@@ -3920,7 +3909,7 @@ index d516681..35da6ad 100644
  extern int default_fd_get_poll_events( struct fd *fd );
  extern void default_poll_event( struct fd *fd, int event );
 diff --git a/server/handle.c b/server/handle.c
-index a88f94a..3d77aff 100644
+index a88f94a3395..3d77affcec5 100644
 --- a/server/handle.c
 +++ b/server/handle.c
 @@ -126,6 +126,7 @@ static const struct object_ops handle_table_ops =
@@ -3932,7 +3921,7 @@ index a88f94a..3d77aff 100644
      no_signal,                       /* signal */
      no_get_fd,                       /* get_fd */
 diff --git a/server/hook.c b/server/hook.c
-index fe3c045..24a266b 100644
+index fe3c0459651..24a266bb49a 100644
 --- a/server/hook.c
 +++ b/server/hook.c
 @@ -76,6 +76,7 @@ static const struct object_ops hook_table_ops =
@@ -3944,7 +3933,7 @@ index fe3c045..24a266b 100644
      no_signal,                    /* signal */
      no_get_fd,                    /* get_fd */
 diff --git a/server/inproc_sync.c b/server/inproc_sync.c
-index a7020ef..80ebebb 100644
+index a7020ef8fcd..80ebebb7de9 100644
 --- a/server/inproc_sync.c
 +++ b/server/inproc_sync.c
 @@ -36,7 +36,9 @@
@@ -4014,7 +4003,7 @@ index a7020ef..80ebebb 100644
      return -1;
  }
 diff --git a/server/mailslot.c b/server/mailslot.c
-index 430566d..7bb2228 100644
+index 430566d044d..7bb2228dbda 100644
 --- a/server/mailslot.c
 +++ b/server/mailslot.c
 @@ -82,6 +82,7 @@ static const struct object_ops mailslot_ops =
@@ -4050,7 +4039,7 @@ index 430566d..7bb2228 100644
      no_signal,                              /* signal */
      mailslot_device_file_get_fd,            /* get_fd */
 diff --git a/server/main.c b/server/main.c
-index 7f6912b..debc687 100644
+index 7f6912bc01b..debc687986a 100644
 --- a/server/main.c
 +++ b/server/main.c
 @@ -43,6 +43,7 @@
@@ -4075,7 +4064,7 @@ index 7f6912b..debc687 100644
      set_current_time();
      init_signals();
 diff --git a/server/mapping.c b/server/mapping.c
-index 2b3ebd1..e29658b 100644
+index 2b3ebd1826c..e29658bf58e 100644
 --- a/server/mapping.c
 +++ b/server/mapping.c
 @@ -71,6 +71,7 @@ static const struct object_ops ranges_ops =
@@ -4104,7 +4093,7 @@ index 2b3ebd1..e29658b 100644
      mapping_get_fd,              /* get_fd */
 diff --git a/server/msync.c b/server/msync.c
 new file mode 100644
-index 0000000..dd66000
+index 00000000000..dd66000d006
 --- /dev/null
 +++ b/server/msync.c
 @@ -0,0 +1,1042 @@
@@ -5152,7 +5141,7 @@ index 0000000..dd66000
 +
 diff --git a/server/msync.h b/server/msync.h
 new file mode 100644
-index 0000000..186b85d
+index 00000000000..186b85d7af9
 --- /dev/null
 +++ b/server/msync.h
 @@ -0,0 +1,39 @@
@@ -5196,7 +5185,7 @@ index 0000000..186b85d
 +extern int msync_is_manual_event( struct msync *msync );
 +extern void msync_abandon_mutexes( struct thread *thread );
 diff --git a/server/mutex.c b/server/mutex.c
-index a168453..a9c30e0 100644
+index a1684536dc2..a9c30e0cc58 100644
 --- a/server/mutex.c
 +++ b/server/mutex.c
 @@ -72,6 +72,7 @@ static const struct object_ops mutex_sync_ops =
@@ -5216,7 +5205,7 @@ index a168453..a9c30e0 100644
      mutex_signal,              /* signal */
      no_get_fd,                 /* get_fd */
 diff --git a/server/named_pipe.c b/server/named_pipe.c
-index c88dc8b..1667029 100644
+index c88dc8b5ad6..166702943fc 100644
 --- a/server/named_pipe.c
 +++ b/server/named_pipe.c
 @@ -122,6 +122,7 @@ static const struct object_ops named_pipe_ops =
@@ -5268,7 +5257,7 @@ index c88dc8b..1667029 100644
      no_signal,                               /* signal */
      named_pipe_dir_get_fd,                   /* get_fd */
 diff --git a/server/object.c b/server/object.c
-index 103a208..4758320 100644
+index 103a208fab3..47583203a3c 100644
 --- a/server/object.c
 +++ b/server/object.c
 @@ -37,6 +37,7 @@
@@ -5330,7 +5319,7 @@ index 103a208..4758320 100644
  }
  
 diff --git a/server/object.h b/server/object.h
-index 21f5ea8..487b91a 100644
+index 21f5ea88bd3..487b91a9613 100644
 --- a/server/object.h
 +++ b/server/object.h
 @@ -42,6 +42,7 @@ struct async;
@@ -5367,7 +5356,7 @@ index 21f5ea8..487b91a 100644
  /* serial functions */
  
 diff --git a/server/process.c b/server/process.c
-index 287718a..5bbc373 100644
+index 287718adc66..5bbc373213d 100644
 --- a/server/process.c
 +++ b/server/process.c
 @@ -64,6 +64,7 @@
@@ -5451,7 +5440,7 @@ index 287718a..5bbc373 100644
  {
      access = default_map_access( obj, access );
 diff --git a/server/process.h b/server/process.h
-index 5d157d6..50ba91d 100644
+index 5d157d66979..50ba91db5e2 100644
 --- a/server/process.h
 +++ b/server/process.h
 @@ -90,6 +90,7 @@ struct process
@@ -5463,7 +5452,7 @@ index 5d157d6..50ba91d 100644
  
  /* process functions */
 diff --git a/server/protocol.def b/server/protocol.def
-index ac38076..591f9cd 100644
+index ac38076b22c..591f9cddab8 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
 @@ -4353,3 +4353,57 @@ enum fsync_type
@@ -5525,7 +5514,7 @@ index ac38076..591f9cd 100644
 +    unsigned int shm_idx;
 +@END
 diff --git a/server/queue.c b/server/queue.c
-index 1412411..329a360 100644
+index 14124112b9d..329a360859a 100644
 --- a/server/queue.c
 +++ b/server/queue.c
 @@ -45,6 +45,7 @@
@@ -5748,7 +5737,7 @@ index 1412411..329a360 100644
  {
      struct desktop *desktop;
 diff --git a/server/registry.c b/server/registry.c
-index bf42c8e..7b4529c 100644
+index bf42c8e013f..7b4529c2663 100644
 --- a/server/registry.c
 +++ b/server/registry.c
 @@ -185,6 +185,7 @@ static const struct object_ops key_ops =
@@ -5760,7 +5749,7 @@ index bf42c8e..7b4529c 100644
      no_signal,               /* signal */
      no_get_fd,               /* get_fd */
 diff --git a/server/request.c b/server/request.c
-index 7e22a05..571097a 100644
+index 7e22a059b6c..571097afe5b 100644
 --- a/server/request.c
 +++ b/server/request.c
 @@ -89,6 +89,7 @@ static const struct object_ops master_socket_ops =
@@ -5772,7 +5761,7 @@ index 7e22a05..571097a 100644
      no_signal,                     /* signal */
      no_get_fd,                     /* get_fd */
 diff --git a/server/request_handlers.h b/server/request_handlers.h
-index 42eb7da..6181d17 100644
+index 42eb7daeab1..6181d176240 100644
 --- a/server/request_handlers.h
 +++ b/server/request_handlers.h
 @@ -97,6 +97,7 @@ DECL_HANDLER(create_key);
@@ -6032,7 +6021,7 @@ index 42eb7da..6181d17 100644
 +C_ASSERT( offsetof(struct get_msync_apc_idx_reply, shm_idx) == 8 );
 +C_ASSERT( sizeof(struct get_msync_apc_idx_reply) == 16 );
 diff --git a/server/request_trace.h b/server/request_trace.h
-index 5e94ddf..c3e6f37 100644
+index 5e94ddf90ef..c3e6f37f969 100644
 --- a/server/request_trace.h
 +++ b/server/request_trace.h
 @@ -22,9 +22,11 @@ static void dump_varargs_apc_call( const char *prefix, data_size_t size );
@@ -6422,7 +6411,7 @@ index 5e94ddf..c3e6f37 100644
      { "NO_SUCH_FILE",                STATUS_NO_SUCH_FILE },
      { "NO_TOKEN",                    STATUS_NO_TOKEN },
 diff --git a/server/semaphore.c b/server/semaphore.c
-index 69e4cef..633826a 100644
+index 69e4cef987e..633826a3ab6 100644
 --- a/server/semaphore.c
 +++ b/server/semaphore.c
 @@ -69,6 +69,7 @@ static const struct object_ops semaphore_sync_ops =
@@ -6442,7 +6431,7 @@ index 69e4cef..633826a 100644
      semaphore_signal,              /* signal */
      no_get_fd,                     /* get_fd */
 diff --git a/server/serial.c b/server/serial.c
-index 66cb4aa..d3ba228 100644
+index 66cb4aabfbc..d3ba228eb55 100644
 --- a/server/serial.c
 +++ b/server/serial.c
 @@ -91,6 +91,7 @@ static const struct object_ops serial_ops =
@@ -6454,7 +6443,7 @@ index 66cb4aa..d3ba228 100644
      no_signal,                    /* signal */
      serial_get_fd,                /* get_fd */
 diff --git a/server/signal.c b/server/signal.c
-index 078951a..2bde18a 100644
+index 078951af6e4..2bde18a9621 100644
 --- a/server/signal.c
 +++ b/server/signal.c
 @@ -62,6 +62,7 @@ static const struct object_ops handler_ops =
@@ -6466,7 +6455,7 @@ index 078951a..2bde18a 100644
      no_signal,                /* signal */
      no_get_fd,                /* get_fd */
 diff --git a/server/sock.c b/server/sock.c
-index 0337d8d..7a7d3af 100644
+index 0337d8d3220..7a7d3af1771 100644
 --- a/server/sock.c
 +++ b/server/sock.c
 @@ -486,6 +486,7 @@ static const struct object_ops sock_ops =
@@ -6494,7 +6483,7 @@ index 0337d8d..7a7d3af 100644
      no_signal,                  /* signal */
      no_get_fd,                  /* get_fd */
 diff --git a/server/symlink.c b/server/symlink.c
-index 238dcfa..0f3843c 100644
+index 238dcfad1c7..0f3843c11e8 100644
 --- a/server/symlink.c
 +++ b/server/symlink.c
 @@ -71,6 +71,7 @@ static const struct object_ops symlink_ops =
@@ -6506,7 +6495,7 @@ index 238dcfa..0f3843c 100644
      no_signal,                    /* signal */
      no_get_fd,                    /* get_fd */
 diff --git a/server/thread.c b/server/thread.c
-index 5c4a6bd..1b8e26a 100644
+index 5c4a6bd0207..1b8e26a153a 100644
 --- a/server/thread.c
 +++ b/server/thread.c
 @@ -60,6 +60,7 @@
@@ -6655,7 +6644,7 @@ index 5c4a6bd..1b8e26a 100644
      if (violent_death) send_thread_signal( thread, SIGQUIT );
      cleanup_thread( thread );
 diff --git a/server/thread.h b/server/thread.h
-index 77ea355..ccc11e7 100644
+index 77ea355483d..ccc11e7c126 100644
 --- a/server/thread.h
 +++ b/server/thread.h
 @@ -59,6 +59,8 @@ struct thread
@@ -6674,7 +6663,7 @@ index 77ea355..ccc11e7 100644
 +
  #endif  /* __WINE_SERVER_THREAD_H */
 diff --git a/server/timer.c b/server/timer.c
-index a4309d5..2cea1e4 100644
+index a4309d54045..2cea1e47029 100644
 --- a/server/timer.c
 +++ b/server/timer.c
 @@ -35,6 +35,7 @@
@@ -6748,7 +6737,7 @@ index a4309d5..2cea1e4 100644
  
  /* create a timer */
 diff --git a/server/token.c b/server/token.c
-index b75a589..2e7221c 100644
+index b75a589a834..2e7221c825e 100644
 --- a/server/token.c
 +++ b/server/token.c
 @@ -150,6 +150,7 @@ static const struct object_ops token_ops =
@@ -6760,7 +6749,7 @@ index b75a589..2e7221c 100644
      no_signal,                 /* signal */
      no_get_fd,                 /* get_fd */
 diff --git a/server/window.c b/server/window.c
-index a8c21a1..958f18a 100644
+index a8c21a1d4ba..958f18a918b 100644
 --- a/server/window.c
 +++ b/server/window.c
 @@ -111,6 +111,7 @@ static const struct object_ops window_ops =
@@ -6772,7 +6761,7 @@ index a8c21a1..958f18a 100644
      no_signal,                /* signal */
      no_get_fd,                /* get_fd */
 diff --git a/server/winstation.c b/server/winstation.c
-index 8eaf15e..07828f4 100644
+index 8eaf15ec635..07828f4d13f 100644
 --- a/server/winstation.c
 +++ b/server/winstation.c
 @@ -76,6 +76,7 @@ static const struct object_ops winstation_ops =

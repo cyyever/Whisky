@@ -14,7 +14,7 @@ demuxer via a null bitstream filter. Uses only public FFmpeg API
 pinned FFmpeg. Also replaces the removed AVCodecParameters.channels.
 ---
 diff --git a/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c b/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
-index 2237b1eaa84..ae5c28b49b3 100644
+index 2237b1eaa84..4eb6b165eb7 100644
 --- a/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
 +++ b/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
 @@ -26,36 +26,31 @@
@@ -78,7 +78,7 @@ index 2237b1eaa84..ae5c28b49b3 100644
  {
      switch (codec_id)
      {
-@@ -75,83 +70,67 @@ static enum AVCodecID reverse_codec_id(enum AVCodecID codec_id)
+@@ -75,83 +70,73 @@ static enum AVCodecID reverse_codec_id(enum AVCodecID codec_id)
      }
  }
  
@@ -94,7 +94,13 @@ index 2237b1eaa84..ae5c28b49b3 100644
 +    if (par_in->ch_layout.nb_channels <= 0 || par_in->sample_rate <= 0)
          return AVERROR(EINVAL);
 -    if (ctx->par_in->bits_per_coded_sample % 8u)
-+    if (par_in->bits_per_coded_sample % 8u)
++    /* Must match what the filter is willing to swap, or the codec_id below is
++     * flipped to the little-endian variant for samples that then pass through
++     * unswapped -- the app gets big-endian bytes labelled little-endian, which
++     * is noise rather than audio. 0 is the case that motivates the lower bound:
++     * avformat leaves bits_per_coded_sample unset on a track it could not fully
++     * probe, and 0 % 8 is 0. */
++    if (par_in->bits_per_coded_sample < 16 || par_in->bits_per_coded_sample % 8u)
          return AVERROR(EINVAL);
  
 -    ctx->par_out->codec_id = reverse_codec_id(ctx->par_in->codec_id);

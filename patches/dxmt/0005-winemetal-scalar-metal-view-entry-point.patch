@@ -1,0 +1,119 @@
+Subject: [PATCH] winemetal: prefer a scalar driver entry point for the Metal view
+
+_CreateMetalViewFromHWND/_ReleaseMetalView reach into winemac.drv's internals:
+they dlsym get_win_data/macdrv_view_* (or a "macdrv_functions" table) and then
+read win_data->client_cocoa_view, i.e. they depend on the field layout of
+struct macdrv_win_data. No upstream Wine exports any of that, and the struct is
+not stable either -- Wine 11.9 replaced cocoa_view with client_view, which is
+why the copy of it here is an 8.16-era snapshot.
+
+Every field involved is pointer-sized, so a rename or a reorder on either side
+compiles clean on both and then calls the wrong function pointer, with the
+symptom surfacing far from the cause.
+
+Ask for a single function instead:
+
+    int  macdrv_dxmt_create_metal_view(uint64_t hwnd, uint64_t device,
+                                       uint64_t *view, uint64_t *layer);
+    void macdrv_dxmt_release_metal_view(uint64_t view);
+
+Scalar arguments only, so there is no layout to keep in step. The existing
+dlsym path is left untouched as a fallback for a Wine that does not export
+these (3Shain's fork), so this is additive.
+
+diff --git a/src/winemetal/unix/winemetal_unix.c b/src/winemetal/unix/winemetal_unix.c
+index 0bfd7e2..81016be 100644
+--- a/src/winemetal/unix/winemetal_unix.c
++++ b/src/winemetal/unix/winemetal_unix.c
+@@ -1573,60 +1573,23 @@ typedef struct macdrv_opaque_window *macdrv_window;
+ typedef struct macdrv_opaque_window_data *macdrv_window_data;
+ typedef struct opaque_window_surface *window_surface;
+ typedef struct opaque_HWND *HWND;
+-struct macdrv_win_data {
+-  HWND hwnd; /* hwnd that this private data belongs to */
+-  macdrv_window cocoa_window;
+-  macdrv_view cocoa_view;
+-  macdrv_view client_cocoa_view;
+-};
+-
+-struct macdrv_functions_t {
+-  void (*macdrv_init_display_devices)(BOOL);
+-  struct macdrv_win_data *(*get_win_data)(HWND hwnd);
+-  void (*release_win_data)(struct macdrv_win_data *data);
+-  macdrv_window (*macdrv_get_cocoa_window)(HWND hwnd, BOOL require_on_screen);
+-  macdrv_metal_device (*macdrv_create_metal_device)(void);
+-  void (*macdrv_release_metal_device)(macdrv_metal_device d);
+-  macdrv_metal_view (*macdrv_view_create_metal_view)(macdrv_view v, macdrv_metal_device d);
+-  macdrv_metal_layer (*macdrv_view_get_metal_layer)(macdrv_metal_view v);
+-  void (*macdrv_view_release_metal_view)(macdrv_metal_view v);
+-  void (*on_main_thread)(dispatch_block_t b);
+-};
+ 
+ static NTSTATUS
+ _CreateMetalViewFromHWND(void *obj) {
+   struct unixcall_create_metal_view_from_hwnd *params = obj;
++  uint64_t view = 0, layer = 0;
+ 
+-  struct macdrv_win_data *(*pfn_get_win_data)(HWND hwnd) = NULL;
+-  void (*pfn_release_win_data)(struct macdrv_win_data *data) = NULL;
+-  macdrv_metal_view (*pfn_macdrv_view_create_metal_view)(macdrv_view v, macdrv_metal_device d) = NULL;
+-  macdrv_metal_layer (*pfn_macdrv_view_get_metal_layer)(macdrv_metal_view v) = NULL;
+-
+-  struct macdrv_functions_t *macdrv_functions;
+-  if ((macdrv_functions = dlsym(RTLD_DEFAULT, "macdrv_functions"))) {
+-    pfn_get_win_data = macdrv_functions->get_win_data;
+-    pfn_release_win_data = macdrv_functions->release_win_data;
+-    pfn_macdrv_view_create_metal_view = macdrv_functions->macdrv_view_create_metal_view;
+-    pfn_macdrv_view_get_metal_layer = macdrv_functions->macdrv_view_get_metal_layer;
+-  } else {
+-    pfn_get_win_data = dlsym(RTLD_DEFAULT, "get_win_data");
+-    pfn_release_win_data = dlsym(RTLD_DEFAULT, "release_win_data");
+-    pfn_macdrv_view_create_metal_view = dlsym(RTLD_DEFAULT, "macdrv_view_create_metal_view");
+-    pfn_macdrv_view_get_metal_layer = dlsym(RTLD_DEFAULT, "macdrv_view_get_metal_layer");
+-  }
++  int (*pfn_create)(uint64_t, uint64_t, uint64_t *, uint64_t *) =
++      dlsym(RTLD_DEFAULT, "macdrv_dxmt_create_metal_view");
+ 
+-  if (pfn_get_win_data && pfn_release_win_data && pfn_macdrv_view_create_metal_view &&
+-      pfn_macdrv_view_get_metal_layer) {
+-    struct macdrv_win_data *win_data = pfn_get_win_data((HWND)params->hwnd);
+-    macdrv_metal_view view =
+-        pfn_macdrv_view_create_metal_view(win_data->client_cocoa_view, (macdrv_metal_device)params->device);
+-    params->ret_view = (obj_handle_t)view;
+-    if (view) {
+-      params->ret_layer = (obj_handle_t)pfn_macdrv_view_get_metal_layer(view);
+-    }
+-    pfn_release_win_data(win_data);
+-  }
++  if (pfn_create)
++    pfn_create(params->hwnd, params->device, &view, &layer);
++  else
++    fprintf(stderr, "winemetal: winemac.drv does not export "
++                    "macdrv_dxmt_create_metal_view; DXMT cannot get a Metal view.\n");
+ 
++  params->ret_view = (obj_handle_t)view;
++  params->ret_layer = (obj_handle_t)layer;
+   return STATUS_SUCCESS;
+ }
+ 
+@@ -1634,17 +1597,10 @@ static NTSTATUS
+ _ReleaseMetalView(void *obj) {
+   struct unixcall_generic_obj_noret *params = obj;
+ 
+-  void (*pfn_macdrv_view_release_metal_view)(macdrv_metal_view v) = NULL;
+-
+-  struct macdrv_functions_t *macdrv_functions;
+-  if ((macdrv_functions = dlsym(RTLD_DEFAULT, "macdrv_functions"))) {
+-    pfn_macdrv_view_release_metal_view = macdrv_functions->macdrv_view_release_metal_view;
+-  } else {
+-    pfn_macdrv_view_release_metal_view = dlsym(RTLD_DEFAULT, "macdrv_view_release_metal_view");
+-  }
++  void (*pfn_release)(uint64_t) = dlsym(RTLD_DEFAULT, "macdrv_dxmt_release_metal_view");
+ 
+-  if (pfn_macdrv_view_release_metal_view)
+-    pfn_macdrv_view_release_metal_view((macdrv_metal_view)params->handle);
++  if (pfn_release)
++    pfn_release((uint64_t)params->handle);
+ 
+   return STATUS_SUCCESS;
+ }
