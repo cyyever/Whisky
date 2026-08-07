@@ -301,6 +301,16 @@ public class Wine {
             // from wineserver, so the gamepad workaround must be set here too.
             "SDL_JOYSTICK_MFI": "0"
         ]
+        // The same bottle settings the clients get. WINEMSYNC is the one that
+        // must not diverge: server/msync.c has its own do_msync(), so leaving
+        // this out let a bottle with enhanced sync set to none run clients on
+        // server-sync while the wineserver still believed msync was on. Neither
+        // half is wrong on its own, which is what makes it easy to miss --
+        // and it silently invalidates any msync A/B run through this path,
+        // because only one side of the pair actually changed. Everything else
+        // here is inert server-side but is inherited by the processes wineserver
+        // spawns, same as SDL_JOYSTICK_MFI above.
+        bottle.settings.environmentVariables(wineEnv: &result)
         guard !environment.isEmpty else { return result }
         result.merge(environment, uniquingKeysWith: { $1 })
         return result
