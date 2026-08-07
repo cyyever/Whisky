@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build a 32-bit SDL2.dll for the bottle.
+# Build a 32-bit SDL2.dll for the bottle. OPTIONAL — see the measurement below.
 #
 # Steam's GPU probe, bin/gldriverquery.exe, is a 32-bit PE that imports SDL2.dll.
 # Every package Steam downloads for a 64-bit install is *_win64 or *_all, so the
@@ -10,10 +10,22 @@
 #   Error: CFindCurrentBucketJob::YieldingRunTestProgram:
 #          process exit code 3221225781: .\bin\gldriverquery.exe
 #
-# Note the 64-bit sibling, gldriverquery64.exe, does not import SDL2 and already
-# runs, so this is not on the critical path for anything known. It removes one
-# startup error, which is worth having while the remaining "Steam never calls
-# ShowWindow" problem is still being narrowed down.
+# That log line is the ENTIRE effect of not having this DLL. Measured on
+# 2026-08-07 by moving Steam/bin/SDL2.dll aside and launching from the Whisky
+# GUI: the probe failed exactly as above (10:08:03 in logs/shader_log.txt, so
+# the control was valid), and Steam logged in three seconds later
+# (RecvMsgClientLogOnResponse ... processing complete, 10:08:06 in
+# logs/connection_log.txt) and brought up its whole UI — main window 1280x800,
+# Friends List, Special Offers, all onscreen. So this script is cosmetic: it
+# removes one startup error and is a prerequisite for nothing. Do not treat a
+# bottle without SDL2.dll as broken.
+#
+# It also has nothing to do with Steam's own UI, even though those windows have
+# the Win32 class SDL_app: that class comes from Steam's own 64-bit SDL3.dll,
+# which Steam ships and Steam.exe maps. No Steam process maps an SDL2 at all —
+# only the separate 32-bit gldriverquery.exe loads the DLL built here.
+#
+# The 64-bit sibling gldriverquery64.exe does not import SDL2 and always ran.
 #
 # SDL2's ABI is stable across the 2.x series, so the exact release does not
 # matter much; vendor/sdl2 is pinned at a release tag rather than a branch tip
