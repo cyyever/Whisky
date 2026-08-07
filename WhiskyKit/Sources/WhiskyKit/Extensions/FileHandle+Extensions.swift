@@ -26,7 +26,8 @@ extension FileHandle {
             // A short read near EOF returns a non-nil, under-length Data; loading
             // T from it would over-read and trap. Require the full size.
             guard let data = try self.read(upToCount: MemoryLayout<T>.size),
-                  data.count == MemoryLayout<T>.size else {
+                data.count == MemoryLayout<T>.size
+            else {
                 return nil
             }
             return data.withUnsafeBytes { $0.loadUnaligned(as: T.self) }
@@ -50,8 +51,19 @@ extension FileHandle {
         let macOSVersion = ProcessInfo.processInfo.operatingSystemVersion
 
         header += "Whisky Version: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "")\n"
+        // Which BUILD, not just which version. The marketing version is identical
+        // across rebuilds, so a stale app is invisible in a log: it runs, it opens
+        // bottles, it just carries different code. Stamped by `make install-app`;
+        // absent for a bundle installed some other way, which is itself the answer
+        // to "where did this app come from?".
+        if let sha = Bundle.main.infoDictionary?["WhiskyBuildSHA"] as? String {
+            header += "Whisky Build: \(sha) built \(Bundle.main.infoDictionary?["WhiskyBuildDate"] as? String ?? "?")\n"
+        } else {
+            header += "Whisky Build: unstamped (not installed by `make install-app`)\n"
+        }
         header += "Date: \(ISO8601DateFormatter().string(from: Date.now))\n"
-        header += "macOS Version: \(macOSVersion.majorVersion).\(macOSVersion.minorVersion).\(macOSVersion.patchVersion)\n\n"
+        header +=
+            "macOS Version: \(macOSVersion.majorVersion).\(macOSVersion.minorVersion).\(macOSVersion.patchVersion)\n\n"
         write(line: header)
     }
     // swiftlint:enable line_length
