@@ -20,7 +20,7 @@ import Foundation
 
 extension PEFile {
     /// Optional Header
-    /// 
+    ///
     /// https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#optional-header-image-only
     public struct OptionalHeader: Hashable, Equatable, Sendable {
         // Standard Fields

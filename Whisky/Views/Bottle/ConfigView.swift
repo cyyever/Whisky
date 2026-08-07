@@ -78,18 +78,20 @@ struct ConfigView: View {
                 }
                 SettingItemView(title: "config.retinaMode", loadingState: retinaModeLoadingState) {
                     Toggle("config.retinaMode", isOn: $retinaMode)
-                        .onChange(of: retinaMode, { _, newValue in
-                            Task(priority: .userInitiated) {
-                                retinaModeLoadingState = .modifying
-                                do {
-                                    try await Wine.changeRetinaMode(bottle: bottle, retinaMode: newValue)
-                                    retinaModeLoadingState = .success
-                                } catch {
-                                    print("Failed to change build version")
-                                    retinaModeLoadingState = .failed
+                        .onChange(
+                            of: retinaMode,
+                            { _, newValue in
+                                Task(priority: .userInitiated) {
+                                    retinaModeLoadingState = .modifying
+                                    do {
+                                        try await Wine.changeRetinaMode(bottle: bottle, retinaMode: newValue)
+                                        retinaModeLoadingState = .success
+                                    } catch {
+                                        print("Failed to change build version")
+                                        retinaModeLoadingState = .failed
+                                    }
                                 }
-                            }
-                        })
+                            })
                 }
                 // Enhanced Sync selector removed: the backend is locked to msync on
                 // this stack (macOS has no eventfd for esync). `enhancedSync` stays in
@@ -254,10 +256,10 @@ struct DPIConfigSheetView: View {
                     HStack {
                         Text("configDpi.previewText")
                             .padding(16)
-                            .font(.system(size:
-                                (10 * CGFloat(stagedChanges)) / 72 *
-                                          (isRetinaMode ? 0.5 : 1)
-                            ))
+                            .font(
+                                .system(
+                                    size: (10 * CGFloat(stagedChanges)) / 72 * (isRetinaMode ? 0.5 : 1)
+                                ))
                         Spacer()
                     }
                     Spacer()
@@ -265,9 +267,11 @@ struct DPIConfigSheetView: View {
                 .frame(maxWidth: .infinity, maxHeight: 80)
             }
             HStack {
-                Slider(value: $stagedChanges, in: 96...480, step: 24, onEditingChanged: { _ in
-                    textFocused = false
-                })
+                Slider(
+                    value: $stagedChanges, in: 96...480, step: 24,
+                    onEditingChanged: { _ in
+                        textFocused = false
+                    })
                 TextField(String(), value: $stagedChanges, format: .number)
                     .frame(width: 40)
                     .focused($textFocused)

@@ -119,7 +119,8 @@ public class Wine {
         at url: URL, args: [String] = [], bottle: Bottle,
         environment: [String: String] = [:], waitForExit: Bool = false
     ) async throws {
-        let allArgs = (waitForExit ? ["start", "/wait", "/unix"] : ["start", "/unix"])
+        let allArgs =
+            (waitForExit ? ["start", "/wait", "/unix"] : ["start", "/unix"])
             + [url.path(percentEncoded: false)] + args
 
         // Installer path: stream + log the output. `start /wait` keeps the `wine`
@@ -128,7 +129,7 @@ public class Wine {
         if waitForExit {
             for await _ in try Self.runWineProcess(
                 name: url.lastPathComponent, args: allArgs, bottle: bottle, environment: environment
-            ) { }
+            ) {}
             return
         }
 
@@ -156,7 +157,7 @@ public class Wine {
         // it is still running past the deadline, abandon it: terminate the stuck
         // launcher (the program itself is owned by wineserver, not this process) and
         // return anyway.
-        for _ in 0..<300 {   // ~30s at 100ms
+        for _ in 0..<300 {  // ~30s at 100ms
             if !process.isRunning { break }
             try? await Task.sleep(for: .milliseconds(100))
         }
@@ -278,7 +279,7 @@ public class Wine {
             // it to the wineserver baseline (~6.2 CPU-s / 0.6M wakeups), matching
             // WINEMSYNC=0. Coarser lever if it ever regresses: WINEMSYNC_NO_EVENT=1
             // (all events -> server). Ignored when msync is off / lever absent.
-            "WINEMSYNC_NO_MANUALEVENT": "1"
+            "WINEMSYNC_NO_MANUALEVENT": "1",
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
         guard !environment.isEmpty else { return result }
@@ -299,7 +300,7 @@ public class Wine {
             "GST_DEBUG": "1",
             // winedevice.exe (hosting winebus.sys) inherits its unix environment
             // from wineserver, so the gamepad workaround must be set here too.
-            "SDL_JOYSTICK_MFI": "0"
+            "SDL_JOYSTICK_MFI": "0",
         ]
         // The same bottle settings the clients get. WINEMSYNC is the one that
         // must not diverge: server/msync.c has its own do_msync(), so leaving
@@ -376,10 +377,12 @@ extension Wine {
     }
 
     public static func changeBuildVersion(bottle: Bottle, version: Int) async throws {
-        try await addRegistryKey(bottle: bottle, key: RegistryKey.currentVersion.rawValue,
-                                name: "CurrentBuild", data: "\(version)", type: .string)
-        try await addRegistryKey(bottle: bottle, key: RegistryKey.currentVersion.rawValue,
-                                name: "CurrentBuildNumber", data: "\(version)", type: .string)
+        try await addRegistryKey(
+            bottle: bottle, key: RegistryKey.currentVersion.rawValue,
+            name: "CurrentBuild", data: "\(version)", type: .string)
+        try await addRegistryKey(
+            bottle: bottle, key: RegistryKey.currentVersion.rawValue,
+            name: "CurrentBuildNumber", data: "\(version)", type: .string)
     }
 
     public static func buildVersion(bottle: Bottle) async throws -> String? {
@@ -391,9 +394,11 @@ extension Wine {
 
     public static func retinaMode(bottle: Bottle) async throws -> Bool {
         let values: Set<String> = ["y", "n"]
-        guard let output = try await Self.queryRegistryKey(
-            bottle: bottle, key: RegistryKey.macDriver.rawValue, name: "RetinaMode", type: .string
-        ), values.contains(output) else {
+        guard
+            let output = try await Self.queryRegistryKey(
+                bottle: bottle, key: RegistryKey.macDriver.rawValue, name: "RetinaMode", type: .string
+            ), values.contains(output)
+        else {
             try await changeRetinaMode(bottle: bottle, retinaMode: false)
             return false
         }
@@ -408,9 +413,12 @@ extension Wine {
     }
 
     public static func dpiResolution(bottle: Bottle) async throws -> Int? {
-        guard let output = try await Self.queryRegistryKey(bottle: bottle, key: RegistryKey.desktop.rawValue,
-                                                     name: "LogPixels", type: .dword
-        ) else { return nil }
+        guard
+            let output = try await Self.queryRegistryKey(
+                bottle: bottle, key: RegistryKey.desktop.rawValue,
+                name: "LogPixels", type: .dword
+            )
+        else { return nil }
 
         let noPrefix = output.replacingOccurrences(of: "0x", with: "")
         let int = Int(noPrefix, radix: 16)

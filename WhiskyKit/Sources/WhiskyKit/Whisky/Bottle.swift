@@ -32,11 +32,16 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
     public var isAvailable: Bool = false
 
     /// All pins, each with a `Program` built for its pinned executable.
-    public var pinnedPrograms: [(pin: PinnedProgram, program: Program, // swiftlint:disable:this large_tuple
-                                 id: String)] {
+    public var pinnedPrograms:
+        [(
+            pin: PinnedProgram, program: Program,  // swiftlint:disable:this large_tuple
+            id: String
+        )]
+    {
         return settings.pins.compactMap { pin in
             guard let url = pin.url,
-                  FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else { return nil }
+                FileManager.default.fileExists(atPath: url.path(percentEncoded: false))
+            else { return nil }
             return (pin, Program(url: url, bottle: self), "\(pin.name)//\(url)")
         }
     }
@@ -52,7 +57,7 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
             self.settings = try BottleSettings.decode(from: metadataURL)
         } catch {
             Logger.wineKit.error(
-              "Failed to load settings for bottle `\(metadataURL.path(percentEncoded: false))`: \(error)"
+                "Failed to load settings for bottle `\(metadataURL.path(percentEncoded: false))`: \(error)"
             )
             // Individual stale/malformed fields now fall back on their own (see
             // `decodeResilient`), so reaching here means the file is corrupt as a

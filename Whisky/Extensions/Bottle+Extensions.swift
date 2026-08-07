@@ -33,15 +33,17 @@ extension Bottle {
                 for index in 0..<bottle.settings.pins.count {
                     let pin = bottle.settings.pins[index]
                     if let url = pin.url {
-                        bottle.settings.pins[index].url = url.updateParentBottle(old: url,
-                                                                                 new: destination)
+                        bottle.settings.pins[index].url = url.updateParentBottle(
+                            old: url,
+                            new: destination)
                     }
                 }
 
                 for index in 0..<bottle.settings.blocklist.count {
                     let blockedUrl = bottle.settings.blocklist[index]
-                    bottle.settings.blocklist[index] = blockedUrl.updateParentBottle(old: url,
-                                                                                     new: destination)
+                    bottle.settings.blocklist[index] = blockedUrl.updateParentBottle(
+                        old: url,
+                        new: destination)
                 }
             }
             try FileManager.default.moveItem(at: url, to: destination)

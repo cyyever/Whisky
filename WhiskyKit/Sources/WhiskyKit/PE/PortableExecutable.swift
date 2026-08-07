@@ -59,12 +59,12 @@ public struct PEFile: Hashable, Equatable, Sendable {
             throw PEError.invalidPEFile
         }
         // Check signature ("PE\0\0")
-        guard peHeader.bigEndian == 0x50450000 else {
+        guard peHeader.bigEndian == 0x5045_0000 else {
             throw PEError.invalidPEFile
         }
 
         let coffFileHeader = COFFFileHeader(handle: fileHandle, offset: offset)
-        offset += 24 // Size of COFFHeader
+        offset += 24  // Size of COFFHeader
         self.coffFileHeader = coffFileHeader
 
         if coffFileHeader.sizeOfOptionalHeader > 0 {
@@ -79,13 +79,13 @@ public struct PEFile: Hashable, Equatable, Sendable {
             if let section = Section(handle: fileHandle, offset: offset) {
                 sections.append(section)
             }
-            offset += 40 // Size of Section
+            offset += 40  // Size of Section
         }
         self.sections = sections
     }
 
     /// Read the resource section
-    /// 
+    ///
     /// - Parameters:
     ///   - handle: The `FileHandle` to read the resource table section from.
     ///   - types: Only read entrys of the given types. Only applies to the root table. Default includes all types.

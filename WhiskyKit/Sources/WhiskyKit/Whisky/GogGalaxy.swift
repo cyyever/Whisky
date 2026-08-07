@@ -61,8 +61,10 @@ public enum GogGalaxy {
         // enough — and safer than removing the directory, which the client may
         // expect to exist.
         let lockDirectory = programData.appending(path: "lock-files")
-        if let entries = try? manager.contentsOfDirectory(at: lockDirectory,
-                                                          includingPropertiesForKeys: nil) {
+        if let entries = try? manager.contentsOfDirectory(
+            at: lockDirectory,
+            includingPropertiesForKeys: nil)
+        {
             for entry in entries {
                 try? manager.removeItem(at: entry)
                 Logger.wineKit.info("Removed stale GOG Galaxy lock \(entry.lastPathComponent)")
@@ -71,7 +73,8 @@ public enum GogGalaxy {
 
         // The embedded Chromium's LevelDB lock. Held for the process lifetime, so
         // it survives a kill too and blocks the web view from opening its store.
-        let webCacheLock = programData
+        let webCacheLock =
+            programData
             .appending(path: "webcache")
             .appending(path: "common")
             .appending(path: "Local Storage")
@@ -94,8 +97,8 @@ public enum GogGalaxy {
         process.standardError = FileHandle.nullDevice
 
         guard (try? process.run()) != nil,
-              let data = try? pipe.fileHandleForReading.readToEnd(),
-              let output = String(data: data, encoding: .utf8)
+            let data = try? pipe.fileHandleForReading.readToEnd(),
+            let output = String(data: data, encoding: .utf8)
         else { return [] }
         process.waitUntilExit()
 

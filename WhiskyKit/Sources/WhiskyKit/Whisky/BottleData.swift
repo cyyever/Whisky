@@ -25,11 +25,13 @@ public struct BottleData: Codable {
         .appending(path: "Containers")
         .appending(path: Bundle.whiskyBundleIdentifier)
 
-    public static let bottleEntriesDir = containerDir
+    public static let bottleEntriesDir =
+        containerDir
         .appending(path: "BottleVM")
         .appendingPathExtension("plist")
 
-    public static let defaultBottleDir = containerDir
+    public static let defaultBottleDir =
+        containerDir
         .appending(path: "Bottles")
 
     static let currentVersion = SemanticVersion(1, 0, 0)
@@ -53,7 +55,8 @@ public struct BottleData: Codable {
         var bottles: [Bottle] = []
 
         for path in paths {
-            let bottleMetadata = path
+            let bottleMetadata =
+                path
                 .appending(path: "Metadata")
                 .appendingPathExtension("plist")
                 .path(percentEncoded: false)

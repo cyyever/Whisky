@@ -83,7 +83,11 @@ struct BottleView: View {
                 "menu.platformInstallFailed",
                 isPresented: Binding(get: { installError != nil }, set: { if !$0 { installError = nil } })
             ) {
-                Button(role: .cancel) { installError = nil } label: { Text(verbatim: "OK") }
+                Button(role: .cancel) {
+                    installError = nil
+                } label: {
+                    Text(verbatim: "OK")
+                }
             } message: {
                 if let installError { Text(installError) }
             }
@@ -178,8 +182,10 @@ struct BottleView: View {
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [UTType.exe,
-                                     UTType(exportedAs: "com.microsoft.msi-installer")]
+        panel.allowedContentTypes = [
+            UTType.exe,
+            UTType(exportedAs: "com.microsoft.msi-installer"),
+        ]
         panel.directoryURL = bottle.url.appending(path: "drive_c")
         panel.begin { result in
             guard result == .OK, let url = panel.urls.first else { return }

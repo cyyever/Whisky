@@ -43,8 +43,9 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
         Task.detached {
             var bottleId: Bottle?
             do {
-                try FileManager.default.createDirectory(atPath: newBottleDir.path(percentEncoded: false),
-                                                        withIntermediateDirectories: true)
+                try FileManager.default.createDirectory(
+                    atPath: newBottleDir.path(percentEncoded: false),
+                    withIntermediateDirectories: true)
                 let bottle = Bottle(bottleUrl: newBottleDir, inFlight: true)
                 bottleId = bottle
 

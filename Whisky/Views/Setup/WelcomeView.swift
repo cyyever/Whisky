@@ -86,7 +86,7 @@ struct WelcomeView: View {
 
 struct InstallStatusView: View {
     @Binding var isInstalled: Bool?
-    @State var name: String // swiftlint:disable:this private_swiftui_state
+    @State var name: String  // swiftlint:disable:this private_swiftui_state
     @State private var text = String(localized: "setup.install.checking")
 
     var body: some View {

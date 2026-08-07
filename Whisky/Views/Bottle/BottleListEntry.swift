@@ -64,7 +64,8 @@ struct BottleListEntry: View {
                     panel.begin { result in
                         if result == .OK {
                             if let url = panel.urls.first {
-                                let newBottePath = url
+                                let newBottePath =
+                                    url
                                     .appending(path: bottle.url.lastPathComponent)
 
                                 bottle.move(destination: newBottePath)
@@ -85,11 +86,13 @@ struct BottleListEntry: View {
     }
 
     func showRemoveAlert(bottle: Bottle) {
-        let checkbox = NSButton(checkboxWithTitle: String(localized: "button.removeAlert.checkbox"),
-                                target: self, action: nil)
+        let checkbox = NSButton(
+            checkboxWithTitle: String(localized: "button.removeAlert.checkbox"),
+            target: self, action: nil)
         let alert = NSAlert()
-        alert.messageText = String(format: String(localized: "button.removeAlert.msg"),
-                                   bottle.settings.name)
+        alert.messageText = String(
+            format: String(localized: "button.removeAlert.msg"),
+            bottle.settings.name)
         alert.informativeText = String(localized: "button.removeAlert.info")
         alert.alertStyle = .warning
         let delete = alert.addButton(withTitle: String(localized: "button.removeAlert.delete"))

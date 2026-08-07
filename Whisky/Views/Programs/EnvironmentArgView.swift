@@ -53,9 +53,10 @@ struct EnvironmentArgView: View {
     var body: some View {
         Section(isExpanded: $isExpanded) {
             List(environmentKeys, id: \.id) { key in
-                KeyItem(focus: _focus,
-                        environmentKeys: $environmentKeys,
-                        key: key)
+                KeyItem(
+                    focus: _focus,
+                    environmentKeys: $environmentKeys,
+                    key: key)
             }
             .alternatingRowBackgrounds(.enabled)
             .onAppear {
@@ -139,7 +140,7 @@ struct EnvironmentArgView: View {
 struct KeyItem: View {
     @FocusState var focus: Focusable?
     @Binding var environmentKeys: [Key]
-    @State var key: Key // swiftlint:disable:this private_swiftui_state
+    @State var key: Key  // swiftlint:disable:this private_swiftui_state
     @State private var hovered: Bool = false
 
     var body: some View {

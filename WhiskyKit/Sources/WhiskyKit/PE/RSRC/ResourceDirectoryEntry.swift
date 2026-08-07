@@ -22,7 +22,7 @@ import Foundation
 ///
 /// https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#resource-directory-entries
 public enum ResourceDirectoryEntry {
-    public struct ID { // swiftlint:disable:this type_name
+    public struct ID {  // swiftlint:disable:this type_name
         public let type: ResourceType
         private let rawOffset: UInt32
 
@@ -37,13 +37,13 @@ public enum ResourceDirectoryEntry {
 
         /// Check if the entry is a directory entry
         var isDirectory: Bool {
-            (rawOffset & 0x80000000) != 0
+            (rawOffset & 0x8000_0000) != 0
         }
 
         /// The offset of the entry
         var offset: UInt32 {
             if isDirectory {
-                return rawOffset & 0x7FFFFFFF
+                return rawOffset & 0x7FFF_FFFF
             } else {
                 return rawOffset
             }

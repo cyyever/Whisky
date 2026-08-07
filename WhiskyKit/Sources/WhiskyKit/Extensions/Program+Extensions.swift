@@ -72,9 +72,10 @@ extension Program {
     @MainActor private func showRunError(message: String) {
         let alert = NSAlert()
         alert.messageText = String(localized: "alert.message")
-        alert.informativeText = String(localized: "alert.info")
-        + " \(self.url.lastPathComponent): "
-        + message
+        alert.informativeText =
+            String(localized: "alert.info")
+            + " \(self.url.lastPathComponent): "
+            + message
         alert.alertStyle = .critical
         alert.addButton(withTitle: String(localized: "button.ok"))
         alert.runModal()

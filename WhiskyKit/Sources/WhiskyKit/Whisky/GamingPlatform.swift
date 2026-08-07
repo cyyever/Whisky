@@ -75,38 +75,57 @@ public struct GamingPlatform: Identifiable, Hashable, Sendable {
         steam,
         Self(
             id: "epic", name: "Epic Games", symbol: "e.circle",
-            installerURL: URL(string: "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi")!,
+            installerURL: URL(
+                string:
+                    "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi"
+            )!,
             installerFilename: "EpicGamesLauncherInstaller.msi",
-            installedExecutablePaths: ["Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win32/EpicGamesLauncher.exe"]
+            installedExecutablePaths: [
+                "Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win32/EpicGamesLauncher.exe"
+            ]
         ),
         Self(
             id: "gog", name: "GOG Galaxy", symbol: "g.circle",
             installerURL: URL(string: "https://webinstallers.gog-statics.com/download/GOG_Galaxy_2.0.exe")!,
             installerFilename: "GOG_Galaxy_2.0.exe",
-            installedExecutablePaths: ["Program Files/GOG Galaxy/GalaxyClient.exe",
-                                       "Program Files (x86)/GOG Galaxy/GalaxyClient.exe"]
+            installedExecutablePaths: [
+                "Program Files/GOG Galaxy/GalaxyClient.exe",
+                "Program Files (x86)/GOG Galaxy/GalaxyClient.exe",
+            ]
         ),
         Self(
             id: "ea", name: "EA app", symbol: "a.circle",
-            installerURL: URL(string: "https://origin-a.akamaihd.net/EA-Desktop-Client-Download/installer-releases/EAappInstaller.exe")!,
+            installerURL: URL(
+                string: "https://origin-a.akamaihd.net/EA-Desktop-Client-Download/installer-releases/EAappInstaller.exe"
+            )!,
             installerFilename: "EAappInstaller.exe",
-            installedExecutablePaths: ["Program Files/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe",
-                                       "Program Files (x86)/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe"]
+            installedExecutablePaths: [
+                "Program Files/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe",
+                "Program Files (x86)/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe",
+            ]
         ),
         Self(
             id: "ubisoft", name: "Ubisoft Connect", symbol: "u.circle",
-            installerURL: URL(string: "https://ubistatic3-a.akamaihd.net/orbit/launcher_installer/UbisoftConnectInstaller.exe")!,
+            installerURL: URL(
+                string: "https://ubistatic3-a.akamaihd.net/orbit/launcher_installer/UbisoftConnectInstaller.exe")!,
             installerFilename: "UbisoftConnectInstaller.exe",
-            installedExecutablePaths: ["Program Files (x86)/Ubisoft/Ubisoft Game Launcher/UbisoftConnect.exe",
-                                       "Program Files/Ubisoft/Ubisoft Game Launcher/UbisoftConnect.exe"]
+            installedExecutablePaths: [
+                "Program Files (x86)/Ubisoft/Ubisoft Game Launcher/UbisoftConnect.exe",
+                "Program Files/Ubisoft/Ubisoft Game Launcher/UbisoftConnect.exe",
+            ]
         ),
         Self(
             id: "battlenet", name: "Battle.net", symbol: "b.circle",
-            installerURL: URL(string: "https://downloader.battle.net/download/getInstallerForGame?os=win&gameProgram=BATTLENET_APP&version=Live")!,
+            installerURL: URL(
+                string:
+                    "https://downloader.battle.net/download/getInstallerForGame?os=win&gameProgram=BATTLENET_APP&version=Live"
+            )!,
             installerFilename: "Battle.net-Setup.exe",
-            installedExecutablePaths: ["Program Files (x86)/Battle.net/Battle.net Launcher.exe",
-                                       "Program Files/Battle.net/Battle.net Launcher.exe"]
-        )
+            installedExecutablePaths: [
+                "Program Files (x86)/Battle.net/Battle.net Launcher.exe",
+                "Program Files/Battle.net/Battle.net Launcher.exe",
+            ]
+        ),
     ]
     // swiftlint:enable line_length
 }
@@ -148,9 +167,10 @@ public enum GamingPlatformInstaller {
     @discardableResult
     private static func addToProgramList(_ platform: GamingPlatform, in bottle: Bottle) -> URL? {
         let driveC = bottle.url.appending(path: "drive_c")
-        guard let url = platform.installedExecutablePaths
-            .map({ driveC.appending(path: $0) })
-            .first(where: { FileManager.default.fileExists(atPath: $0.path(percentEncoded: false)) })
+        guard
+            let url = platform.installedExecutablePaths
+                .map({ driveC.appending(path: $0) })
+                .first(where: { FileManager.default.fileExists(atPath: $0.path(percentEncoded: false)) })
         else {
             Logger.wineKit.info(
                 "\(platform.name) installed but no client at any of \(platform.installedExecutablePaths) — not listed"
@@ -208,8 +228,8 @@ public enum GamingPlatformInstaller {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
         guard let head = try? handle.read(upToCount: 8), !head.isEmpty else { return false }
-        let peMagic: [UInt8] = [0x4D, 0x5A]                                  // "MZ" (PE/exe)
-        let oleMagic: [UInt8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1] // MSI compound file
+        let peMagic: [UInt8] = [0x4D, 0x5A]  // "MZ" (PE/exe)
+        let oleMagic: [UInt8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]  // MSI compound file
         let bytes = [UInt8](head)
         return bytes.starts(with: peMagic) || bytes.starts(with: oleMagic)
     }
@@ -221,9 +241,9 @@ public enum GamingPlatformError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case let .badResponse(platform, status):
+        case .badResponse(let platform, let status):
             return "Failed to download the \(platform) installer (HTTP \(status))."
-        case let .corruptDownload(platform):
+        case .corruptDownload(let platform):
             return "The downloaded \(platform) installer was not a valid program — please try again."
         }
     }
