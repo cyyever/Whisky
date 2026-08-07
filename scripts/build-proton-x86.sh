@@ -78,6 +78,7 @@ echo "=== Building Wine (x86_64) with $NCPU cores ==="
 arch -x86_64 env -i \
     HOME="$HOME" \
     PATH="$CLEAN_PATH" \
+    DEVELOPER_DIR="$DEVELOPER_DIR" \
     make -j"$NCPU"
 
 echo "=== Installing to $INSTALL_DIR ==="

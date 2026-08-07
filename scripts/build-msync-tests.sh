@@ -70,6 +70,7 @@ echo "=== Building the two sync test PEs with $NCPU cores ==="
 arch -x86_64 env -i \
     HOME="$HOME" \
     PATH="$CLEAN_PATH" \
+    DEVELOPER_DIR="$DEVELOPER_DIR" \
     make -j"$NCPU" dlls/ntdll/tests/all dlls/kernel32/tests/all
 
 echo ""

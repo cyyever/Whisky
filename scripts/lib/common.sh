@@ -28,6 +28,26 @@ X86_BREW="$X86_BREW_HOME/bin/brew"
 WHISKY_PATCH_BRANCH="whisky/patches"
 WHISKY_PATCH_BASE="whisky/base"
 
+# Every compile here runs under Rosetta, and the cc driver shells out to xcrun,
+# which dlopens libxcrun from the *active* developer dir. A Command Line Tools
+# install ships an arm64-only one, so x86_64 xcrun dies there with "missing
+# compatible architecture" and configure fails at "C compiler cannot create
+# executables". Xcode.app's copy is fat, so prefer it -- through the environment,
+# since `xcode-select -s` needs sudo and would change the machine globally.
+#
+# Always resolved to a concrete path, never left unset: the builds run configure
+# and make inside `env -i` clean rooms that pass an explicit allowlist, and a
+# conditionally-absent variable cannot be expanded into one safely.
+if [ -z "${DEVELOPER_DIR:-}" ]; then
+    DEVELOPER_DIR="$(xcode-select -p 2>/dev/null)"
+    if ! lipo -archs "$DEVELOPER_DIR/usr/lib/libxcrun.dylib" 2>/dev/null | grep -q x86_64 &&
+       [ -d /Applications/Xcode.app/Contents/Developer ]
+    then
+        DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+    fi
+fi
+export DEVELOPER_DIR
+
 # USTC mirrors for Homebrew (git remotes + bottle/api domains). Call before any
 # x86_64 `brew` invocation that may fetch from the network.
 export_homebrew_mirrors() {
@@ -210,6 +230,7 @@ wine_configure() {
     arch -x86_64 env -i \
         HOME="$HOME" \
         PATH="$clean_path" \
+        DEVELOPER_DIR="$DEVELOPER_DIR" \
         CC="$cc_cmd" \
         CXX="$cxx_cmd" \
         PKG_CONFIG="$arm_prefix/bin/pkg-config" \
