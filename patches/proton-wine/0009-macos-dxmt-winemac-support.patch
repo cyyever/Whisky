@@ -61,10 +61,10 @@ so surfaces are unlinked under the lock and released outside it, and
 macdrv_DestroyWindow does that before it acquires win_data.
 
 diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
-index 4f19100..d0c575f 100644
+index 4f19100bbb8..f36c27c1d0e 100644
 --- a/dlls/winemac.drv/window.c
 +++ b/dlls/winemac.drv/window.c
-@@ -1236,12 +1236,105 @@ LRESULT macdrv_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+@@ -1236,12 +1236,92 @@ LRESULT macdrv_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
  /***********************************************************************
   *              DestroyWindow   (MACDRV.@)
   */
@@ -80,10 +80,13 @@ index 4f19100..d0c575f 100644
 + * once and holds a swapchain on each, so a single slot would release a surface
 + * DXMT is still rendering into as soon as the next window asked for one.
 + *
-+ * The list has its own lock, and is walked from macdrv_WindowPosChanged() with
-+ * win_data already held. That makes win_data_mutex -> dxmt_surfaces_mutex the
-+ * one permitted nesting, so nothing may call out (least of all into
-+ * client_surface_*, which takes win32u's surfaces_lock) while holding it. */
++ * The list has its own lock. The only nesting is dxmt_surfaces_mutex ->
++ * win_data_mutex: dxmt_sync_view_position() runs after macdrv_WindowPosChanged
++ * has released win_data, and macdrv_client_surface_update() re-acquires it from
++ * under the list lock. Do not walk the list from under win_data_mutex, and do
++ * not call client_surface_release() (which takes win32u's surfaces_lock, then
++ * win_data_mutex via detach) while holding either -- unlink under the lock and
++ * release outside it, as dxmt_surface_destroy() does. */
 +/* DXMT resolves "macdrv_functions" via dlsym(RTLD_DEFAULT) and reads
 + * win_data->client_cocoa_view. Wine 11.9 refactored macdrv_win_data (the old
 + * cocoa_view is gone; client_view replaces it), so hand back a struct in DXMT's
@@ -112,22 +115,6 @@ index 4f19100..d0c575f 100644
 +static pthread_mutex_t dxmt_surfaces_mutex = PTHREAD_MUTEX_INITIALIZER;
 +static struct list dxmt_surfaces = LIST_INIT(dxmt_surfaces);
 +
-+/* hwnd's entry, or NULL. The entry stays valid while it is in the list, and it
-+ * is only unlinked by dxmt_surface_destroy() when the window is destroyed. */
-+static struct dxmt_surface_entry *dxmt_surface_find(HWND hwnd)
-+{
-+    struct dxmt_surface_entry *entry, *found = NULL;
-+
-+    pthread_mutex_lock(&dxmt_surfaces_mutex);
-+    LIST_FOR_EACH_ENTRY(entry, &dxmt_surfaces, struct dxmt_surface_entry, entry)
-+    {
-+        if (entry->hwnd != hwnd) continue;
-+        found = entry;
-+        break;
-+    }
-+    pthread_mutex_unlock(&dxmt_surfaces_mutex);
-+    return found;
-+}
 +
 +/* Drop every surface belonging to hwnd. Unlinks under the lock and releases
 + * outside it, because client_surface_release() reaches win32u's surfaces_lock
@@ -170,7 +157,7 @@ index 4f19100..d0c575f 100644
      if (!(data = get_win_data(hwnd))) return;
  
      if (hwnd == get_capture()) macdrv_SetCapture(0, 0);
-@@ -1580,6 +1673,43 @@ BOOL macdrv_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *styl
+@@ -1580,6 +1660,43 @@ BOOL macdrv_GetWindowStyleMasks(HWND hwnd, UINT style, UINT ex_style, UINT *styl
  }
  
  
@@ -214,7 +201,7 @@ index 4f19100..d0c575f 100644
  /***********************************************************************
   *              WindowPosChanged   (MACDRV.@)
   */
-@@ -1644,6 +1774,17 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
+@@ -1644,6 +1761,17 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
  
  done:
      release_win_data(data);
@@ -232,7 +219,7 @@ index 4f19100..d0c575f 100644
  }
  
  
-@@ -2162,3 +2303,109 @@ void init_win_context(void)
+@@ -2162,3 +2290,123 @@ void init_win_context(void)
      pthread_mutex_init(&win_data_mutex, &attr);
      pthread_mutexattr_destroy(&attr);
  }
@@ -259,56 +246,70 @@ index 4f19100..d0c575f 100644
 +     * calls abort(), so every browser that composites into a child HWND lost
 +     * its GPU process the moment it created a swapchain. */
 +    struct dxmt_surface_entry *entry, *existing, *loser = NULL;
-+    struct macdrv_client_surface *surface;
++    struct macdrv_client_surface *surface = NULL, *present = NULL;
++    macdrv_window cocoa_window;
 +
-+    if (!(entry = dxmt_surface_find( hwnd )))
-+    {
-+        /* macdrv_client_surface_create() calls into win32u, so it cannot run
-+         * under the list lock; that leaves a window in which another thread can
-+         * create a surface for the same HWND, so re-check on the way in. */
-+        if (!(surface = macdrv_client_surface_create( hwnd ))) return NULL;
-+        if (!(entry = calloc( 1, sizeof(*entry) )))
-+        {
-+            client_surface_release( &surface->client );
-+            return NULL;
-+        }
-+        entry->hwnd = hwnd;
-+        entry->surface = surface;
-+
-+        pthread_mutex_lock( &dxmt_surfaces_mutex );
-+        LIST_FOR_EACH_ENTRY( existing, &dxmt_surfaces, struct dxmt_surface_entry, entry )
-+        {
-+            if (existing->hwnd != hwnd) continue;
-+            loser = entry;
-+            entry = existing;
-+            break;
-+        }
-+        if (!loser) list_add_tail( &dxmt_surfaces, &entry->entry );
-+        pthread_mutex_unlock( &dxmt_surfaces_mutex );
-+
-+        if (loser)
-+        {
-+            /* The loser's macdrv_client_surface_create() already ran present(),
-+             * which hides the window's previous client view and installs its
-+             * own. Releasing it detaches and disposes that view but does not
-+             * restore the winner's, so re-present the winner or DXMT renders
-+             * into a hidden view -- a permanently black window, the very thing
-+             * this shim exists to avoid. */
-+            client_surface_release( &loser->surface->client );
-+            free( loser );
-+            macdrv_client_surface_present( &entry->surface->client, 0 );
-+        }
-+    }
-+
++    /* win_data first: it must not be acquired while holding the list lock (see
++     * dxmt_sync_view_position, which takes them the other way round). */
 +    if (!(data = get_win_data( hwnd ))) return NULL;
++    cocoa_window = data->cocoa_window;
++    release_win_data( data );
++
++    pthread_mutex_lock( &dxmt_surfaces_mutex );
++    LIST_FOR_EACH_ENTRY( existing, &dxmt_surfaces, struct dxmt_surface_entry, entry )
++        if (existing->hwnd == hwnd) { entry = existing; goto found; }
++    pthread_mutex_unlock( &dxmt_surfaces_mutex );
++
++    /* macdrv_client_surface_create() calls into win32u, so it cannot run under
++     * the list lock; that leaves a window in which another thread can create a
++     * surface for the same HWND, so re-check on the way back in. */
++    if (!(surface = macdrv_client_surface_create( hwnd ))) return NULL;
++    if (!(entry = calloc( 1, sizeof(*entry) )))
++    {
++        client_surface_release( &surface->client );
++        return NULL;
++    }
++    entry->hwnd = hwnd;
++    entry->surface = surface;
++
++    pthread_mutex_lock( &dxmt_surfaces_mutex );
++    LIST_FOR_EACH_ENTRY( existing, &dxmt_surfaces, struct dxmt_surface_entry, entry )
++    {
++        if (existing->hwnd != hwnd) continue;
++        loser = entry;
++        entry = existing;
++        /* The loser's macdrv_client_surface_create() already ran present(),
++         * which hid the window's previous client view and installed its own.
++         * Releasing it disposes that view but does not restore the winner's, so
++         * the winner has to be re-presented or DXMT renders into a hidden view
++         * -- a permanently black window, the very thing this shim exists to
++         * avoid. Done after the unlock, like every other call-out. */
++        present = entry->surface;
++        break;
++    }
++    if (!loser) list_add_tail( &dxmt_surfaces, &entry->entry );
++
++found:
++    /* Filled in under the lock. The struct lives in the entry, and the entry is
++     * only unlinked and freed by dxmt_surface_destroy() under this same lock,
++     * so this cannot be writing into memory a concurrent window destruction has
++     * already released. */
 +    entry->wd.hwnd = hwnd;
-+    entry->wd.cocoa_window = data->cocoa_window;
++    entry->wd.cocoa_window = cocoa_window;
 +    entry->wd.cocoa_view = entry->surface->cocoa_view;
 +    entry->wd.client_cocoa_view = entry->surface->cocoa_view;
-+    release_win_data( data );
-+    /* No reference is handed to DXMT: it never tells us when it is done with
-+     * the view (dxmt_release_win_data is a no-op), so the list's reference is
-+     * what keeps the surface alive, until macdrv_DestroyWindow. */
++    pthread_mutex_unlock( &dxmt_surfaces_mutex );
++
++    if (loser)
++    {
++        client_surface_release( &loser->surface->client );
++        free( loser );
++        macdrv_client_surface_present( &present->client, 0 );
++    }
++
++    /* DXMT reads client_cocoa_view out of the returned struct after this
++     * returns and never tells us when it is done with it, so the list's
++     * reference is what keeps the view alive -- until macdrv_DestroyWindow. */
 +    return &entry->wd;
 +}
 +

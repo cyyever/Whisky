@@ -14,7 +14,7 @@ demuxer via a null bitstream filter. Uses only public FFmpeg API
 pinned FFmpeg. Also replaces the removed AVCodecParameters.channels.
 ---
 diff --git a/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c b/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
-index 2237b1e..ae5c28b 100644
+index 2237b1eaa84..ae5c28b49b3 100644
 --- a/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
 +++ b/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
 @@ -26,36 +26,31 @@
@@ -205,7 +205,7 @@ index 2237b1e..ae5c28b 100644
 -
  #endif /* HAVE_FFMPEG */
 diff --git a/dlls/winedmo/unix_demuxer.c b/dlls/winedmo/unix_demuxer.c
-index 24681e2..66b10cb 100644
+index 24681e2d5df..5ee793244d2 100644
 --- a/dlls/winedmo/unix_demuxer.c
 +++ b/dlls/winedmo/unix_demuxer.c
 @@ -38,6 +38,7 @@ struct stream
@@ -246,7 +246,7 @@ index 24681e2..66b10cb 100644
          avcodec_parameters_copy( stream->filter->par_in, demuxer->ctx->streams[i]->codecpar );
          avcodec_parameters_copy( stream->filter->par_out, demuxer->ctx->streams[i]->codecpar );
      }
-@@ -344,7 +356,16 @@ static NTSTATUS demuxer_filter_packet( struct demuxer *demuxer, AVPacket **packe
+@@ -344,7 +356,17 @@ static NTSTATUS demuxer_filter_packet( struct demuxer *demuxer, AVPacket **packe
          if (!(stream = demuxer->last_stream)) ret = 0;
          else
          {
@@ -257,6 +257,7 @@ index 24681e2..66b10cb 100644
 +                    (ret = pcm_byte_order_reverse_bsf_filter( stream->filter->par_in, *packet )) < 0)
 +                {
 +                    WARN( "Failed to byte-swap PCM packet, error %s.\n", debugstr_averr( ret ) );
++                    av_packet_free( packet );
 +                    return STATUS_UNSUCCESSFUL;
 +                }
 +                return STATUS_SUCCESS;
@@ -265,7 +266,7 @@ index 24681e2..66b10cb 100644
              if (!ret || ret == AVERROR_EOF || ret == AVERROR(EAGAIN)) ret = 0;
              else WARN( "Failed to read packet from filter, error %s.\n", debugstr_averr( ret ) );
 diff --git a/dlls/winedmo/unix_private.h b/dlls/winedmo/unix_private.h
-index 8974afd..0c8b2dc 100644
+index 8974afd5f72..0c8b2dc1586 100644
 --- a/dlls/winedmo/unix_private.h
 +++ b/dlls/winedmo/unix_private.h
 @@ -44,9 +44,11 @@ extern void mediaconv_demuxer_init(void);
