@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build + run scripts/msync-close-during-wait-test.c inside a bottle under
-# WINEMSYNC=1 (full msync, NO_ANON_AUTOEVENT unset) and WINEMSYNC=0 (server
+# WINEMSYNC=1 (full msync, event masks unset) and WINEM
 # oracle), and print both so the STATUS and timing can be diffed. See the C
 # file's header for what it probes (patch 0016 non-mutex close-during-wait).
 #
@@ -35,7 +35,6 @@ run_mode() {
     (
         eval "$(bottle_shellenv "$BOTTLE")"
         export WINEDEBUG="-all"
-        unset WINEMSYNC_NO_ANON_AUTOEVENT
         export WINEMSYNC="$mode"
         exec wine64 "$OUT" "$ITERS" 2>&1
     ) | grep -aE 'RESULT|===' || true

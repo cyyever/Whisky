@@ -16,14 +16,15 @@ tree that plain WineHQ 11.13 lacks.
 - **Steam logs in fully.** With the minimal-msync config Steam boots → CEF webhelper →
   full CM logon: `RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, login window
   interactive, zero `OBJECT_TYPE_MISMATCH`. The launch config is:
-  `WINEMSYNC_NO_ANON_AUTOEVENT=1` (anon auto-reset events → server-sync,
-  everything else on msync — a workaround lever; the residual full-msync spin is not
-  reliably root-caused, see "Steam on Proton"), `PROTON_DISABLE_LSTEAMCLIENT=1`,
+  `WINEMSYNC_NO_MANUALEVENT=1` (manual-reset events → server-sync, everything else on
+  msync — this is what fixed the full-msync spin, see "Steam on Proton"),
+  `PROTON_DISABLE_LSTEAMCLIENT=1`,
   Follow-System-Proxy OFF, and msync-only (no eventfd on macOS, so WINEESYNC is unset).
   (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
   redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
-  in main: `patches/proton-wine/` (**19-patch series**) + `scripts/build-proton-x86.sh`
+  in main: `patches/proton-wine/` (**21-patch series**, base `c3007e6f` on Valve's
+  `bleeding-edge`) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
   `scripts/build-dxmt.sh` defaults `DXMT_WINE_BUILD` to `vendor/proton-wine/build`.
 - **App wiring**: single backend, no selector. `BottleSettings` has no `WineBackend`;
@@ -54,7 +55,10 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 19-patch series
+## patches/proton-wine/ — 21-patch series
+Base: **`c3007e6f`** on Valve's `bleeding-edge` — the only branch Valve still pushes to
+(see the header comment in `scripts/build-proton-x86.sh`, which is the source of truth).
+
 Disjoint file ownership; all apply cleanly (`git apply --check`). Exported as
 `git format-patch` style `.patch` files. Groups: `0001`–`0006` build/portability
 (`0007` **dropped** → gap), `0008` the single consolidated msync patch, `0009` + `0011`–`0013`
@@ -62,7 +66,10 @@ macOS capability ports (`0010` removed), `0014`–`0015` Steam-runtime deadlock 
 abandoned-mutex on last-handle-close, `0017` D3D/Vulkan builtin load-order default,
 `0018` ws2_32 prefix hosts-file lookup, `0019` ws2_32 IPv4-only `getaddrinfo`
 (`WINE_DISABLE_IPV6`), `0020` kernelbase appends `--no-sandbox --in-process-gpu` to
-`steamwebhelper.exe` (retires the IFEO wrapper — see `docs/steam-webhelper.md`).
+`steamwebhelper.exe` (retires the IFEO wrapper — see `docs/steam-webhelper.md`),
+`0021` ws2_32 `WSALookupServiceBegin` half-stub, `0022` server clears stale
+`AFD_POLL_CONNECT_ERR` on socket reuse (backport of upstream `864ca426`, Wine 11.14),
+`0023` winemac snaps a borderless work-area-origin fullscreen window.
 
 ### 0001–0006 — build / portability (make Proton compile + boot on macOS; 0007 dropped)
 - `0001-macos-de-linux-ntdll` — guard Linux-only futex/CPU paths in
@@ -100,7 +107,13 @@ abandoned-mutex on last-handle-close, `0017` D3D/Vulkan builtin load-order defau
   - the **socket-async / system-APC lost-wake fix** (`msync_run_system_apcs()` drains
     system APCs on the SIGUSR1/EINTR interrupt so socket async completions deliver — the
     fix that made Steam log in);
-  - the experimental `WINEMSYNC_UNIFIED` event-driven mixed-wait bridge (opt-in);
+  - (**removed 2026-08-06, `e01790ad`** — was: an experimental `WINEMSYNC_UNIFIED`
+    event-driven mixed-wait bridge. Opt-in via an env var nothing in the tree ever set,
+    so it was unreachable; it also leaked subscriptions on thread death and could hand a
+    recycled bridge shm index's subscriptions to a new thread. Deleted along with the
+    unreachable inproc_sync msync backing and the `MSYNCSPIN`/`INNERSPIN`/`WAITDUMP`
+    debug instrumentation — ~570 lines total, no behavior change. msync runs on the
+    classic per-object shm path and always did);
   - **four NT-sync conformance fixes** (formerly standalone `0016`/`0017` in two rounds,
     now all folded into `0008` to keep `dlls/ntdll/unix/msync.c` single-owner): mutex
     `NtReleaseMutant` previous-count (`*prev = 1 - mutex->count`); msync/fsync alertable
@@ -129,9 +142,44 @@ conformance work above: msync-only failures went **6 → 2**.
   task, not committed).
 
 ### 0009–0013 — macOS capability ports
-- `0009-macos-dxmt-winemac-support` — winemac.drv Metal-swapchain client view;
-  `macdrv_functions` export + `winemetal.so` Wine-ABI unix driver; RTLD_GLOBAL driver
-  dlopen — the winemac side DXMT needs.
+- `0009-macos-dxmt-winemac-support` — the winemac side DXMT needs: a Metal view for an
+  HWND. **Rewritten 2026-08-06** (`fc088f9e` → `845bd4d4` → `77a47e98`); the old shape
+  described here — a `macdrv_functions` table plus a struct mimicking DXMT's 8.16-era
+  copy of `macdrv_win_data` — is **gone**. Current shape:
+  - two **scalar** exports, `macdrv_dxmt_create_metal_view(hwnd, device, *view, *layer)`
+    and `macdrv_dxmt_release_metal_view(view)`. Every field of the old table and struct
+    was pointer-sized, so a rename or reorder on either side compiled clean on both and
+    then called the wrong function pointer. Scalars have no layout to keep in step.
+    The DXMT side is `patches/dxmt/0005-winemetal-scalar-metal-view-entry-point.patch`
+    (additive — the old dlsym path stays as a fallback for 3Shain's fork).
+  - the view comes from `macdrv_client_surface_create()` (what winemac's own Vulkan
+    driver uses for MoltenVK), registered with win32u via `add_window_client_surface()`,
+    which the patch moves from `win32u_private.h` to `include/wine/gdi_driver.h` so a
+    driver can call it. Wine then owns repositioning (`update_client_surfaces`) and
+    teardown (`detach_client_surfaces`); the returned handle is the surface, so its
+    refcount is the whole lifetime rule.
+  - **the bug this fixed:** the old code hand-rolled a view with `macdrv_create_view()`
+    and only attached it when `data->cocoa_window` was set — true for a toplevel, never
+    for a child HWND. DXMT reads a NULL view as a broken Wine, logs *"your Wine has no
+    exported symbols needed by DXMT"* and `abort()`s. Browsers (Chromium/CEF, Qt
+    WebEngine) composite into child HWNDs, games do not — which is why only browsers
+    died, black window then gone. Covered by `tests/dxmt-child-swapchain-test.c`.
+  - still pairs with the **`RTLD_GLOBAL` dlopen for `winemac.so` only** in
+    `dlls/ntdll/unix/loader.c` (not every unixlib — that would put all their
+    default-visibility symbols in one namespace).
+  - a `scripts/check-dxmt-abi.sh` guard existed briefly (`21adee60`) to police the
+    struct ABI and was **deleted the same night** (`2744d49a`): with scalar arguments
+    there is nothing to police. It does not exist; ignore any reference to it.
+- `0023-macos-snap-borderless-fullscreen-window` — `rcWork` and `rcMonitor` share an
+  origin on Windows (taskbar at the bottom) but not on macOS (menu bar at the top);
+  measured in a bottle: `rcMonitor 0,0 1470x956` vs `rcWork 0,33 1470x923`. An app that
+  asks for the work-area origin while sizing to the full monitor (Unity `-popupwindow`
+  and friends) therefore lands one menu-bar height too low. Snaps exactly that case —
+  borderless, display-sized, top edge aligned to that display's work area — and forces
+  the frame-changed event so Wine's rects follow. Titled windows are left alone: AppKit's
+  `constrainFrameRect:toScreen:` pins their top a couple of points below the work area
+  (a titled window asked for `0,33` or `0,0` both land at `0,35`), and Wine reporting
+  that faithfully is correct, not something to fight. `tests/window-snap-test.c`.
 - `0010` (macos-kernelbase-ifeo-debugger) — **removed.** IFEO `Debugger` support in
   kernelbase + a kernel32 conformance test; its only consumer was the Steam webhelper
   wrapper, retired by `0020`. With the wrapper gone the feature had no consumer, so the
@@ -145,7 +193,9 @@ conformance work above: msync-only failures went **6 → 2**.
 
 Provenance — these were ported from the now-removed Whisky-Wine `patches/wine/` set:
 `0009`≈old `0002`+`0005`+`0006` (macdrv export + Metal view position + borderless
-fullscreen-snap), `0010`≈`0003` (removed), `0011`≈`0004`, `0012`≈`0007`. The old rundll32
+fullscreen-snap) — the fullscreen-snap has since been **split out into `0023`**, so
+`0009` is now the Metal-view entry points only; `0010`≈`0003` (removed), `0011`≈`0004`,
+`0012`≈`0007`. The old rundll32
 WS_VISIBLE patch was obsolete (dropped above). `0008`/`0013` (msync + fsync) and
 `0001`–`0006` are Proton-specific (WineHQ 11.13 already had msync-free sync and none of
 Proton's extra unixlibs).
@@ -161,10 +211,11 @@ polls — grab any ready msync object in userspace, and between checks do a shor
 `server_wait()` on just the server subset (`objs[i]==NULL` marks a server object). Only
 mixed waits (RPC/service, never a game hot path) take this path. Hardened per review:
 propagate real `server_wait` errors instead of busy-looping on non-`STATUS_TIMEOUT`; back
-the poll interval off 2 ms → 16 ms when idle; NULL-guard `msync_apc_addr`. The
-experimental `WINEMSYNC_UNIFIED` bridge in `0008` is a later event-driven alternative to
-this poll path (opt-in). (The earlier "uniform inproc_sync shadows" rework was folded into
-`0008` as well.)
+the poll interval off 2 ms → 16 ms when idle; NULL-guard `msync_apc_addr`. **This poll is
+the only mixed-wait mechanism.** An event-driven `WINEMSYNC_UNIFIED` bridge and a "uniform
+inproc_sync shadows" rework were both tried as alternatives and are both **gone** (see the
+removal note under `0008` above); inproc_sync is structurally wrong for macOS, where an
+msync object is pure shm + `__ulock` with no fd for the server to wait on.
 
 ### 0014–0015 — Steam-runtime deadlock fixes (all found live under Steam)
 Both are **PE** dlls built for BOTH arches (`dlls/{combase,ntdll}/{i386,x86_64}-windows/*.dll`
@@ -212,34 +263,45 @@ After all of the above, with msync enabled (the default; no `WINEMSYNC=1` needed
 completes a full CM logon (`RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID,
 interactive login window, zero `OBJECT_TYPE_MISMATCH`).
 
-**Remaining rough edge:** a full-msync (all-events-on-msync) CPU spin. `WINEMSYNC_NO_ANON_AUTOEVENT=1`
-(anon auto-reset events → server-sync, everything else on msync) is the currently wired
-Proton-backend default (`Wine.swift`), but re-verification found steam.exe can still pin a
-core with it set (the busy-poll was seen on a *manual* event, type=3, not an auto-reset
-event), so it is an **unproven workaround, not a fix or a diagnosis**. The earlier
-"anonymous auto-reset events" localization was **retracted as unverified**; the root cause
-is not reliably localized.
+**The full-msync CPU spin — localized and fixed (`a54abb92`).** steam.exe pinned a core
+inside `msync_wait_multiple` on a rapidly set/reset **MANUAL** event (type 3), not an
+auto-reset one — so no auto-event lever could ever have stopped it.
+Reproduced and bisected with `scripts/msync-manualevent-spin-test.c`: plain msync burns
+~13.6 CPU-s / 12.6M wakeups, `WINEMSYNC_NO_MANUALEVENT=1` drops it to ~6.2 CPU-s / 0.6M —
+identical to the `WINEMSYNC=0` server baseline, and `scripts/test-msync.sh` shows no new
+msync-only failures. `Wine.swift` sets it (alongside an inert `NO_ANON_AUTOEVENT=1` — see
+the levers list below); coarser lever if it ever regresses is
+`WINEMSYNC_NO_EVENT=1` (all events → server). An inner-loop bounded-spin/`usleep` backoff
+on `STATUS_PENDING` was tried and **reverted** — the cost is a wake storm (real
+`STATUS_SUCCESS` returns), so a per-`STATUS_PENDING` backoff never fires; routing is the
+right layer, not a fast-path code patch.
+
+Note the spin was blamed for the invisible Steam login window; that turned out to be an
+unrelated DXMT/winemac bug (see `0009` above and `docs/steam-webhelper.md` §0). The spin
+was real and the fix is real, but it was not that bug's cause.
 
 **msync enablement scope + gating code** (all in `dlls/ntdll/unix/msync.c`, code is the
 source of truth):
 - **Global switch — `do_msync()`.** On macOS msync defaults **ON** (`WINEMSYNC` unset ⇒ 1);
   `WINEMSYNC=0` forces it off (debug/fallback to the slower wineserver sync). It is the
   `__ulock`/mach-semaphore fast path.
-- **Per-type scope.** Semaphores and mutexes are **never** gated — always on msync when the
-  global switch is on (the game hot path). Only **events** are maskable, via
-  `event_uses_msync(type, named)`: when it returns 0 the `Nt*Event` wrapper returns
-  `STATUS_NOT_IMPLEMENTED` and falls through to the wineserver path (same as server-only
-  objects — no msync/server casting). Manual-reset events go through msync unless
-  `WINEMSYNC_NO_EVENT`; auto-reset events are additionally steerable (they're implicated in
-  the spin).
-- **Event bisection levers** (env, inherited so a named event resolves to the same type in
-  every process): `WINEMSYNC_NO_EVENT` (all events → server), `WINEMSYNC_NO_AUTOEVENT` (all
-  auto-reset events), and the finer `WINEMSYNC_NO_ANON_AUTOEVENT` / `WINEMSYNC_NO_NAMED_AUTOEVENT`
-  (anonymous process-local vs named cross-process auto-events). There are **no**
-  semaphore/mutex/manual-event levers — those types are unconditionally on msync. These
-  levers exist to bisect the spin; none is a confirmed fix. (This also explains why
-  `NO_ANON_AUTOEVENT` doesn't stop the spin: the busy-poll sits on a *manual* event, which
-  no auto-event lever touches.)
+- **Per-type scope.** Every type is now gateable: events via `event_uses_msync(type)`,
+  semaphores via `use_msync_semaphore()`, mutexes via `use_msync_mutex()`. When a gate
+  returns 0 the `Nt*` wrapper returns `STATUS_NOT_IMPLEMENTED` and falls through to the
+  wineserver path (same as server-only objects — no msync/server casting). All default
+  **on**; semaphores and mutexes are the game hot path and should stay on.
+- **Bisection levers** (env, inherited so a named object resolves to the same type in
+  every process). The full set that `dlls/ntdll/unix/msync.c` actually reads is:
+  `WINEMSYNC_NO_EVENT` (all events → server), `WINEMSYNC_NO_AUTOEVENT`,
+  `WINEMSYNC_NO_MANUALEVENT`, `WINEMSYNC_NO_SEMAPHORE`, `WINEMSYNC_NO_MUTEX`.
+  `event_uses_msync()` takes only the type — there is **no** anon/named distinction.
+  `NO_MANUALEVENT` is the one that fixed the spin; the rest are for bisecting.
+  > ⚠️ **`WINEMSYNC_NO_ANON_AUTOEVENT` / `WINEMSYNC_NO_NAMED_AUTOEVENT` do not exist.**
+  > Nothing in `msync.c` reads them (verified against `vendor/proton-wine` and every
+  > revision of patch `0008` in git). `Wine.swift` still sets `NO_ANON_AUTOEVENT=1` and
+  > `scripts/lib/common.sh`, `scripts/test-msync.sh`, `scripts/run-msync-close-test.sh`
+  > still set or unset it — all **inert**. Harmless, but do not reason from it, and do
+  > not read "unset NO_ANON_AUTOEVENT" in those scripts as "this run is full msync".
 
 **It is NOT a network / VPN / winsock problem** (verified during the investigation):
 - Steam downloads its update manifest directly (`client-update.steamstatic.com`,

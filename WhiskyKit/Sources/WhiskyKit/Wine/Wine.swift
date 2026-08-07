@@ -272,15 +272,13 @@ public class Wine {
             // full-msync 100%-CPU spin: steam.exe pins a core inside
             // msync_wait_multiple on a rapidly set/reset MANUAL event, and once the
             // update thread is spinning the login window never gets drawn.
-            // NO_ANON_AUTOEVENT alone did NOT fix it (busy-poll was on a manual
-            // event, which that lever doesn't touch). Reproduced and bisected with
+            // Reproduced and bisected with
             // scripts/msync-manualevent-spin-test.c: under plain msync the flapping
             // manual event burns ~13.6 CPU-s / 12.6M wakeups; NO_MANUALEVENT drops
             // it to the wineserver baseline (~6.2 CPU-s / 0.6M wakeups), matching
             // WINEMSYNC=0. Coarser lever if it ever regresses: WINEMSYNC_NO_EVENT=1
             // (all events -> server). Ignored when msync is off / lever absent.
-            "WINEMSYNC_NO_MANUALEVENT": "1",
-            "WINEMSYNC_NO_ANON_AUTOEVENT": "1"
+            "WINEMSYNC_NO_MANUALEVENT": "1"
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
         guard !environment.isEmpty else { return result }

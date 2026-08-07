@@ -74,7 +74,6 @@ apply_patches() {
 #   * PATH gains Wine/bin so wine64/wineserver are directly on PATH;
 #   * WINEPREFIX points at the bottle;
 #   * DYLD_FALLBACK_LIBRARY_PATH points at Wine/lib (dylib resolution);
-#   * WINEMSYNC_NO_ANON_AUTOEVENT=1 matches the shipping msync mask.
 # Deliberately does NOT emit WINEDLLOVERRIDES (the app no longer sets it — patch
 # 0017's builtin load order handles D3D/Vulkan) nor WINEMSYNC (the msync test
 # scripts drive WINEMSYNC=1 vs =0 themselves; the helper must not clobber that).
@@ -88,7 +87,6 @@ bottle_shellenv() {
     printf 'export PATH=%q\n' "$wine_dir/bin:$PATH"
     printf 'export WINEPREFIX=%q\n' "$bottle_dir"
     printf 'export DYLD_FALLBACK_LIBRARY_PATH=%q\n' "$wine_dir/lib"
-    printf 'export WINEMSYNC_NO_ANON_AUTOEVENT=1\n'
 }
 
 # whisky_ncpu — parallelism for make/ninja (physical CPU count). A function, not

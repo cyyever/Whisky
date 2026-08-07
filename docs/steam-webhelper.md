@@ -1,6 +1,38 @@
 # Steam webhelper: CEF flags via Proton + update-stuck proxy fix
 
-Two Steam-under-Wine problems and how Whisky solves them.
+Three Steam-under-Wine problems and how Whisky solves them. §0 and §1 both present as a
+black window and are easy to confuse — §0's vanishes, §1's stays.
+
+## 0. Black window that then *vanishes* — the DXMT child-HWND abort (root cause, fixed 2026-08-06)
+
+Distinct from §1's permanently-black window: this one paints black for a few seconds
+and then the window disappears, taking the GPU process with it. It hit Steam's CEF,
+GOG Galaxy (Qt WebEngine) **and** plain upstream Chromium in the same bottle — but never
+a game.
+
+Cause was ours, in `patches/proton-wine/0009`. Its winemac Metal-view shim hand-rolled a
+view with `macdrv_create_view()` and only attached it when `data->cocoa_window` was set —
+true for a toplevel window, never for a **child HWND**, which has no Cocoa window of its
+own. DXMT reads the resulting NULL view as a broken Wine: `d3d11_swapchain.cpp:138` logs
+*"your Wine has no exported symbols needed by DXMT"* and calls `abort()`. Browsers
+composite into child HWNDs; games render into their toplevel. Hence "only browsers".
+
+Fixed by rewriting `0009` (`fc088f9e` → `845bd4d4` → `77a47e98`) onto
+`macdrv_client_surface_create()` + `add_window_client_surface()`, exporting two scalar
+functions instead of a struct-shaped ABI — details in `docs/proton-migration.md` under
+`0009`. Regression test: `tests/dxmt-child-swapchain-test.c`.
+
+**Diagnosing this one:** the DXMT log line above is the tell. If you instead see feature
+level 9_3 in `tests/d3d11-featurelevel-test.c`, that is the *other* DXMT bug — `make proton`
+clobbering DXMT with wined3d, §1 below.
+
+**Status after the fix:** steam.exe survives 7+ minutes (it used to die inside 45 s) and
+steamwebhelper no longer hits "Quit message loop" (it used to, at 12–21 s). The login
+window is **still not visible**, but for a reason upstream of the window system: the CEF
+window `Chrome_WidgetWin_0` exists at 1102x659, position 0,33, with `WS_VISIBLE` **unset**
+— Steam never calls `ShowWindow`. Open leads are `YldCheckForClientUpdate: timed out
+waiting for update check` and `gldriverquery.exe` exiting `3221225781`
+(`STATUS_DLL_NOT_FOUND`).
 
 ## 1. Black window (CEF GPU sandbox)
 

@@ -84,7 +84,7 @@ echo ""
 # combined stdout+stderr to $outfile and returns wine's exit code (= the
 # number of failed assertions in the Wine test framework).
 #
-# For the msync (WINEMSYNC=1) run we also UNSET WINEMSYNC_NO_ANON_AUTOEVENT so
+# For the msync (WINEMSYNC=1) run we UNSET the event masks so the run is FULL msync
 # the FULL msync path is exercised — the shipping bottle sets that mask to route
 # anonymous auto-reset events back to wineserver sync, which would hide msync
 # bugs on exactly those objects and weaken the conformance signal.
@@ -99,7 +99,6 @@ run_one() {
     (
         eval "$(bottle_shellenv "$BOTTLE")"
         export WINEDEBUG="-all"
-        unset WINEMSYNC_NO_ANON_AUTOEVENT
         if [ "$GUARD_MALLOC" = "1" ]; then
             # Guard Malloc guards the tail of each allocation (overflow trap); it
             # DYLD_INSERTs ahead of the shellenv-provided DYLD_FALLBACK_LIBRARY_PATH.
