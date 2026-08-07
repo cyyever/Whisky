@@ -22,6 +22,12 @@ INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Librarie
 X86_BREW_HOME="$PROJECT_DIR/vendor/homebrew-x86"
 X86_BREW="$X86_BREW_HOME/bin/brew"
 
+# Branch maintenance (scripts/proton-branch.sh): when a vendored tree is checked
+# out on WHISKY_PATCH_BRANCH, the patch series is committed one commit per patch
+# file on top of WHISKY_PATCH_BASE, and apply_patches() steps aside.
+WHISKY_PATCH_BRANCH="whisky/patches"
+WHISKY_PATCH_BASE="whisky/base"
+
 # USTC mirrors for Homebrew (git remotes + bottle/api domains). Call before any
 # x86_64 `brew` invocation that may fetch from the network.
 export_homebrew_mirrors() {
@@ -35,16 +41,36 @@ export_homebrew_mirrors() {
 #
 # Idempotently apply patch_dir/*.patch to the git worktree at src_dir: skip
 # already-applied patches (reverse-check), apply pending ones, and hard-fail on
-# a conflict or partial apply. A no-op if patch_dir does not exist. Pass a
-# non-empty 4th argument to `git checkout -- .` first, giving a deterministic
-# clean base (discards uncommitted working-tree edits in src_dir).
+# a conflict or partial apply. A no-op if patch_dir does not exist, or if
+# src_dir is checked out on WHISKY_PATCH_BRANCH (see below). Pass a non-empty
+# 4th argument to `git checkout -- .` first, giving a deterministic clean base
+# (discards uncommitted working-tree edits in src_dir).
 apply_patches() {
     local src_dir="$1" patch_dir="$2" label="$3" reset="${4:-}"
     [ -d "$patch_dir" ] || return 0
+
+    # A branch-maintained tree already has the whole series applied, as commits,
+    # so there is nothing to do -- and the loop below could not do it anyway. Its
+    # "is this applied?" test reverse-checks one patch against the working tree,
+    # which cannot hold once a later patch edits a file an earlier one CREATES:
+    # 0008 creates dlls/ntdll/unix/msync_*.c, 0010 adds the MRING tracer to them,
+    # so 0008's new-file section never matches what is on disk. That test only
+    # ever held because `reset` guaranteed an unpatched base, and reset is itself
+    # a no-op here -- the patched state is committed, not a working-tree edit.
+    if [ "$(git -C "$src_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$WHISKY_PATCH_BRANCH" ]; then
+        local n dirty
+        n="$(git -C "$src_dir" rev-list --count "$WHISKY_PATCH_BASE..HEAD" 2>/dev/null || echo '?')"
+        echo "=== $label: branch-maintained ($WHISKY_PATCH_BRANCH, $n commits); not applying $(basename "$patch_dir")/ ==="
+        dirty="$(git -C "$src_dir" status --porcelain | wc -l | tr -d ' ')"
+        [ "$dirty" = 0 ] || echo "    NOTE: $dirty uncommitted file(s) -- building them, but they" \
+                                 "reach $(basename "$patch_dir")/ only via commit + proton-branch.sh export"
+        return 0
+    fi
+
     if [ -n "$reset" ]; then
         git -C "$src_dir" checkout -- .
         # checkout -- . only reverts tracked files; untracked files created by add-file
-        # patches (e.g. msync.c/.h, server/msync.c) linger and make a re-apply hit
+        # patches (e.g. msync_*.c/.h, server/msync.c) linger and make a re-apply hit
         # "already exists" and hard-fail. `git clean -fdq` removes untracked NON-ignored
         # files (patch leftovers + generated inputs + stray dirs) for a deterministic base.
         # Deliberately no -x, so gitignored paths survive — notably an out-of-tree build/
@@ -192,6 +218,13 @@ wine_configure() {
         SDL2_CFLAGS="-I$x86_prefix/include/SDL2 -D_THREAD_SAFE" \
         SDL2_LIBS="-L$x86_prefix/lib -lSDL2" \
         LDFLAGS="-L$x86_prefix/lib -L$x86_prefix/opt/molten-vk/lib" \
+        `# NOTE: no -O here, so the unix side (ntdll.so, winemac.drv.so, ...) builds` \
+        `# unoptimised: setting CFLAGS at all suppresses autoconf's default -g -O2,` \
+        `# and nothing puts it back. The PE side still gets -O2 from Wine's own` \
+        `# configure. Left as-is on purpose while the msync hang is being chased --` \
+        `# an optimised build makes sample(1) stacks much harder to read. Add -O2` \
+        `# once that closes, and re-run scripts/test-msync.sh afterwards, since -O2` \
+        `# changes atomics scheduling and can shake out races -O0 hides.` \
         CFLAGS="-I$x86_prefix/include -I$x86_prefix/opt/freetype/include/freetype2 -I$x86_prefix/opt/molten-vk/include" \
         CPPFLAGS="-I$x86_prefix/include -I$x86_prefix/opt/freetype/include/freetype2 -I$x86_prefix/opt/molten-vk/include" \
         ../configure \
