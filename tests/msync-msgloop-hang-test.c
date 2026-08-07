@@ -67,6 +67,8 @@
 struct scenario
 {
     int    n_events;
+    int    timeout_ms;     /* 0 = INFINITE; >0 exercises the timeout-return path */
+    volatile LONG stale_timeouts;  /* waits that timed out with a message pending */
     int    alertable;      /* pump waits alertably; workers queue APCs and
                             * block in cross-thread SendMessage (see run_case) */
     HANDLE events[MAX_EVENTS];
@@ -146,7 +148,21 @@ static DWORD WINAPI pump_thread( void *arg )
             if (r == WAIT_IO_COMPLETION) continue;
         }
         else r = MsgWaitForMultipleObjects( s->n_events, s->events, FALSE,
-                                            INFINITE, QS_ALLINPUT );
+                                            s->timeout_ms ? (DWORD)s->timeout_ms : INFINITE,
+                                            QS_ALLINPUT );
+
+        /* The defect this test exists for, as measured on a stuck Steam session:
+         * the wait returns WAIT_TIMEOUT while the queue HAS a message. Under
+         * msync the queue's readiness word stays 0, so the wait never reports
+         * "queue signaled", the loop never drains, and a posted WM_CLOSE is
+         * simply never processed. A correct wait reports the queue rather than
+         * timing out when something is already queued. */
+        if (r == WAIT_TIMEOUT)
+        {
+            MSG peek;
+            if (PeekMessageW( &peek, NULL, 0, 0, PM_NOREMOVE ))
+                InterlockedIncrement( &s->stale_timeouts );
+        }
 
         if (r == (DWORD)(WAIT_OBJECT_0 + s->n_events))
         {
@@ -213,7 +229,7 @@ static DWORD WINAPI worker_thread( void *arg )
 }
 
 /* Returns the number of stalls observed. */
-static int run_case( int n_events, int alertable, int seconds )
+static int run_case( int n_events, int alertable, int timeout_ms, int seconds )
 {
     struct scenario s = { 0 };
     HANDLE pump, workers[WORKERS];
@@ -222,7 +238,8 @@ static int run_case( int n_events, int alertable, int seconds )
     int i, probes = 0, stalls = 0;
 
     s.n_events  = n_events;
-    s.alertable = alertable;
+    s.alertable  = alertable;
+    s.timeout_ms = timeout_ms;
     printf( "--- %d event(s) + queue%s: %s\n", n_events,
             alertable ? ", alertable + APCs + blocking SendMessage" : "",
             n_events == 0 && !alertable
@@ -272,8 +289,15 @@ static int run_case( int n_events, int alertable, int seconds )
     }
     for (i = 0; i < WORKERS; i++) WaitForSingleObject( workers[i], 2000 );
 
-    printf( "  probes=%d stalls=%d dispatched=%ld evt_wakes=%ld apcs=%ld sends=%ld\n",
-            probes, stalls, s.dispatched, s.evt_wakes, s.apcs, s.sends );
+    printf( "  probes=%d stalls=%d dispatched=%ld evt_wakes=%ld apcs=%ld sends=%ld"
+            " stale_timeouts=%ld\n",
+            probes, stalls, s.dispatched, s.evt_wakes, s.apcs, s.sends, s.stale_timeouts );
+    if (s.stale_timeouts)
+    {
+        printf( "  FAIL: %ld wait(s) timed out with a message already queued --"
+                " the queue was never reported ready\n", s.stale_timeouts );
+        stalls++;
+    }
 
     for (i = 0; i < n_events; i++) CloseHandle( s.events[i] );
     CloseHandle( s.ready );
@@ -290,9 +314,14 @@ int main( int argc, char **argv )
     if (seconds <= 0) seconds = 15;
     printf( "=== msync msgloop hang test (%d s per case) ===\n", seconds );
 
-    stalls += run_case( 0, 0, seconds );  /* the path the stuck Steam thread is on */
-    stalls += run_case( 2, 0, seconds );
-    stalls += run_case( 2, 1, seconds );  /* closest to CEF's actual pump */
+    stalls += run_case( 0, 0, 0, seconds );   /* queue only, infinite wait */
+    stalls += run_case( 2, 0, 0, seconds );   /* events + queue, infinite wait */
+    stalls += run_case( 2, 1, 0, seconds );   /* + APCs and blocking SendMessage */
+    /* Finite timeout: the shape the stuck Steam thread is actually in. An
+     * INFINITE wait can never return WAIT_TIMEOUT, so the three cases above are
+     * structurally incapable of catching the defect described at the pump. */
+    stalls += run_case( 0, 0, 50, seconds );
+    stalls += run_case( 2, 1, 50, seconds );
 
     printf( "=== total stalls: %d ===\n", stalls );
     printf( "RESULT: %s\n", stalls ? "FAIL - message pump stalled" : "ok" );

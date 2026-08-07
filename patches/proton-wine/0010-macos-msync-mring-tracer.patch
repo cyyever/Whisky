@@ -12,10 +12,23 @@ Kept as its own patch rather than folded into 0008 so it can be dropped in one
 move when the investigation it serves is finished.
 
 diff --git a/dlls/ntdll/unix/msync_obj.c b/dlls/ntdll/unix/msync_obj.c
-index e98f50178b9..8ec0468352f 100644
+index e98f50178b9..4ab85c72a33 100644
 --- a/dlls/ntdll/unix/msync_obj.c
 +++ b/dlls/ntdll/unix/msync_obj.c
-@@ -325,6 +325,8 @@ static inline void signal_all( struct msync *obj )
+@@ -151,7 +151,11 @@ NTSTATUS msync_get_object( HANDLE handle, struct msync **obj )
+      * route a real msync object onto server_wait, whose no_add_queue sync
+      * answers STATUS_OBJECT_TYPE_MISMATCH in a busy-return storm -- the failure
+      * the SERVER_ONLY invalidation below exists to prevent. */
+-    if (!(*obj = add_to_list( handle, type, shm_idx, ~0u ))) return STATUS_NO_MEMORY;
++    if (!(*obj = add_to_list( handle, type, shm_idx, ~0u )))
++    {
++        if (msync_mring_on) msync_mrec( MEV_CACHE_FULL, shm_idx, type, 0, 0 );
++        return STATUS_NO_MEMORY;
++    }
+     return ret;
+ }
+ 
+@@ -325,6 +329,8 @@ static inline void signal_all( struct msync *obj )
      /* Thread-local, unlike the server's single copy: any thread can signal. */
      __thread static mach_msg_header_t send_header;
  
@@ -24,7 +37,7 @@ index e98f50178b9..8ec0468352f 100644
      if (!msync_signal_wake( &send_header, obj->shm_idx, obj->shm, msync_server_port ))
          return;
  
-@@ -416,6 +418,11 @@ NTSTATUS msync_set_event( HANDLE handle, LONG *prev )
+@@ -416,6 +422,11 @@ NTSTATUS msync_set_event( HANDLE handle, LONG *prev )
  
      if ((ret = get_event_object( handle, &obj, &event ))) return ret;
  
@@ -37,16 +50,28 @@ index e98f50178b9..8ec0468352f 100644
          signal_all( obj );
  
 diff --git a/dlls/ntdll/unix/msync_private.h b/dlls/ntdll/unix/msync_private.h
-index ac78e2b2804..61c4a5c67fa 100644
+index ac78e2b2804..5578881bcaf 100644
 --- a/dlls/ntdll/unix/msync_private.h
 +++ b/dlls/ntdll/unix/msync_private.h
-@@ -371,6 +371,12 @@ extern semaphore_t *msync_semaphore_pool_alloc(void);
+@@ -371,6 +371,24 @@ extern semaphore_t *msync_semaphore_pool_alloc(void);
  extern void msync_semaphore_pool_free( semaphore_t *sem );
  extern mach_port_t msync_server_port;
  
 +/* MRING: lock-free wait-path tracer, enabled by WINE_MRING=1. Callers guard the
 + * call with `if (msync_mring_on)` so a disabled ring costs one predictable branch. */
-+enum { MEV_WAIT = 1, MEV_WOKE = 2, MEV_SET = 3, MEV_SIGNAL = 4 };
++/* 1-4 are the wait/signal path. 10+ mark the branches added by the 2026-08-07
++ * msync work, each of which is silent in production (WINEDEBUG=-all kills ERR)
++ * and any of which could explain the Steam webhelper regression: they fire only
++ * in cases the conformance suite does not reach. Recorded rather than reasoned
++ * about, so a live Steam session says which -- if any -- is actually taken. */
++enum {
++    MEV_WAIT = 1, MEV_WOKE = 2, MEV_SET = 3, MEV_SIGNAL = 4,
++    MEV_APC_DOWNGRADE = 10,  /* alertable wait demoted: no APC index from server */
++    MEV_NO_APC_SINGLE = 11,  /* msync_do_single_wait saw a NULL apc_addr */
++    MEV_CACHE_FULL    = 12,  /* add_to_list failed -> STATUS_NO_MEMORY */
++    MEV_SIGWAIT_SRV   = 13,  /* signal_and_wait fell through to server_wait_for_object */
++    MEV_SIGWAIT_RET   = 14,  /* ...and what that returned (a = status) */
++};
 +extern int msync_mring_on;
 +extern void msync_mrec( int ev, unsigned int shm_idx, int type, int a, int b );
 +
@@ -54,7 +79,7 @@ index ac78e2b2804..61c4a5c67fa 100644
  extern NTSTATUS msync_get_object( HANDLE handle, struct msync **obj );
  /* Unprefixed, unlike its neighbours: SERVER_START_REQ( create_msync ) builds the
 diff --git a/dlls/ntdll/unix/msync_select.c b/dlls/ntdll/unix/msync_select.c
-index bbcdbb4b804..72883bd90b7 100644
+index bbcdbb4b804..051fae69ed1 100644
 --- a/dlls/ntdll/unix/msync_select.c
 +++ b/dlls/ntdll/unix/msync_select.c
 @@ -356,8 +356,19 @@ static NTSTATUS msync_wait_any(
@@ -77,6 +102,26 @@ index bbcdbb4b804..72883bd90b7 100644
          if (ret == STATUS_TIMEOUT)
          {
              TRACE("Wait timed out.\n");
+@@ -523,6 +534,7 @@ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
+              * no_add_queue and busy-returns STATUS_OBJECT_TYPE_MISMATCH. */
+             static int warned;
+             if (!warned++) ERR("no msync APC index; waiting non-alertably\n");
++            if (msync_mring_on) msync_mrec( MEV_APC_DOWNGRADE, 0, 0, (int)count, 0 );
+             alertable = FALSE;
+         }
+     }
+@@ -690,7 +702,11 @@ NTSTATUS msync_signal_and_wait( HANDLE signal, HANDLE wait, BOOLEAN alertable,
+      * happened. Do the server half of the wait ourselves: it is the only part
+      * of this the server can do. */
+     if (ret == STATUS_NOT_IMPLEMENTED)
++    {
++        if (msync_mring_on) msync_mrec( MEV_SIGWAIT_SRV, obj->shm_idx, obj->type, 0, 0 );
+         ret = server_wait_for_object( wait, alertable, timeout );
++        if (msync_mring_on) msync_mrec( MEV_SIGWAIT_RET, obj->shm_idx, obj->type, (int)ret, 0 );
++    }
+ 
+     return ret;
+ }
 diff --git a/dlls/ntdll/unix/msync_shm.c b/dlls/ntdll/unix/msync_shm.c
 index a6f18f60d40..beb889d17c0 100644
 --- a/dlls/ntdll/unix/msync_shm.c
@@ -185,3 +230,171 @@ index a6f18f60d40..beb889d17c0 100644
 +        }
 +    }
  }
+diff --git a/dlls/ntdll/unix/msync_wait.c b/dlls/ntdll/unix/msync_wait.c
+index 2db166b8dec..1be5951838a 100644
+--- a/dlls/ntdll/unix/msync_wait.c
++++ b/dlls/ntdll/unix/msync_wait.c
+@@ -384,6 +384,9 @@ NTSTATUS msync_do_single_wait( struct msync *obj, ULONGLONG *end, BOOLEAN alerta
+     /* A NULL apc_addr means the server would not hand this thread an APC index
+      * and __msync_wait_objects() downgraded the wait; hold that here too, so a
+      * caller arriving by another route cannot dereference it. */
++    if (alertable && !thread_data->msync_apc_addr && msync_mring_on)
++        msync_mrec( MEV_NO_APC_SINGLE, obj ? obj->shm_idx : 0, obj ? obj->type : 0, 0, 0 );
++
+     if (alertable && thread_data->msync_apc_addr)
+     {
+         struct msync apc_obj;
+diff --git a/server/msync.c b/server/msync.c
+index e63c6e32c5e..de6c03050b6 100644
+--- a/server/msync.c
++++ b/server/msync.c
+@@ -157,6 +157,8 @@ static struct sem_list mach_semaphore_map[MAX_INDEX];
+  * the bootstrap server -- anything in the session can send to it, so treat every
+  * field of a message as hostile. The check lives with the tables rather than at
+  * the message boundary so a future caller cannot forget it. 0 is "no shm". */
++/* in msync.h: shared with queue.c */
++
+ static inline int valid_shm_idx( unsigned int idx )
+ {
+     return idx && idx < MAX_INDEX;
+@@ -167,7 +169,7 @@ static inline void add_sem( unsigned int shm_idx, semaphore_t sem, int tid )
+     struct sem_node *new_node;
+     struct sem_list *list;
+ 
+-    if (!valid_shm_idx( shm_idx )) return;
++    if (!valid_shm_idx( shm_idx )) { msync_srv_note( "add_sem-bad-idx a=%u b=%u", shm_idx, 0 ); return; }
+ 
+     list = mach_semaphore_map + shm_idx;
+     new_node = pool_alloc();
+@@ -189,7 +191,7 @@ static inline void remove_sem( unsigned int shm_idx, int tid )
+     struct sem_node *current, *next, *prev = NULL;
+     struct sem_list *list;
+ 
+-    if (!valid_shm_idx( shm_idx )) return;
++    if (!valid_shm_idx( shm_idx )) { msync_srv_note( "remove_sem-bad-idx a=%u b=%u", shm_idx, 0 ); return; }
+ 
+     list = mach_semaphore_map + shm_idx;
+     current = list->head;
+@@ -221,13 +223,46 @@ static inline void *get_valid_shm( unsigned int idx )
+     return valid_shm_idx( idx ) ? get_shm( idx ) : NULL;
+ }
+ 
++/* Temporary, paired with the client's MRING (patches/proton-wine 0010).
++ *
++ * Every rejection added by the 2026-08-07 hardening is silent: the pump's
++ * fprintf()s are gated on debug_level, and Whisky launches with WINEDEBUG=-all,
++ * so a wait that gets dropped here looks identical to one that never arrived.
++ * If any of these fire during a Steam session they are the regression; if none
++ * do, the server half is cleared and the hunt moves to the client. Writes to
++ * /tmp/msync_srv_<pid>.log, armed by WINE_MRING like its client counterpart. */
++void msync_srv_note( const char *fmt, ... )
++{
++    static int armed = -1;
++    static FILE *f;
++    va_list ap;
++
++    if (armed == -1)
++    {
++        const char *e = getenv( "WINE_MRING" );
++        armed = e && *e != '0';
++        if (armed)
++        {
++            char path[64];
++            snprintf( path, sizeof(path), "/tmp/msync_srv_%d.log", (int)getpid() );
++            f = fopen( path, "w" );
++        }
++    }
++    if (!armed || !f) return;
++    va_start( ap, fmt );
++    vfprintf( f, fmt, ap );
++    va_end( ap );
++    fputc( '\n', f );
++    fflush( f );
++}
++
+ static inline void destroy_all_internal( unsigned int shm_idx )
+ {
+     struct sem_node *current, *temp;
+     struct sem_list *list;
+     int *shm;
+ 
+-    if (!valid_shm_idx( shm_idx )) return;
++    if (!valid_shm_idx( shm_idx )) { msync_srv_note( "destroy_all_internal-bad-idx a=%u b=%u", shm_idx, 0 ); return; }
+ 
+     list = mach_semaphore_map + shm_idx;
+     shm = get_shm( shm_idx );
+@@ -255,7 +290,7 @@ static inline void signal_all_internal( unsigned int shm_idx )
+     struct sem_node *current, *temp;
+     struct sem_list *list;
+ 
+-    if (!valid_shm_idx( shm_idx )) return;
++    if (!valid_shm_idx( shm_idx )) { msync_srv_note( "signal_all_internal-bad-idx a=%u b=%u", shm_idx, 0 ); return; }
+ 
+     list = mach_semaphore_map + shm_idx;
+     current = list->head;
+@@ -416,7 +451,11 @@ static void *mach_message_pump( void *args )
+         /* Indices are checked where they are used; count is not, and it decides
+          * how far into the body we read. It is 8 bits on the wire, so a hostile
+          * one is 4x the array. */
+-        if (count > ARRAY_SIZE(receive_message.shm_idx)) continue;
++        if (count > ARRAY_SIZE(receive_message.shm_idx))
++        {
++            msync_srv_note( "reject-count a=%u b=%u", count, (unsigned int)ARRAY_SIZE(receive_message.shm_idx) );
++            continue;
++        }
+ 
+         if (!MACH_MSGH_BITS_IS_COMPLEX(receive_message.header.msgh_bits))
+         {
+@@ -440,6 +479,7 @@ static void *mach_message_pump( void *args )
+ 
+             if (!(addr = (int *)get_valid_shm( idx )))
+             {
++                msync_srv_note( "register-bad-idx a=%u b=%u", idx, tid );
+                 /* Nothing at that index. Wake rather than skip the entry: the
+                  * sender is parked on `sem` and would never hear about an entry
+                  * we dropped silently, and the send right would leak with it. */
+diff --git a/server/msync.h b/server/msync.h
+index 186b85d7af9..58dea67897b 100644
+--- a/server/msync.h
++++ b/server/msync.h
+@@ -26,6 +26,11 @@ extern void msync_signal_all( unsigned int shm_idx );
+ extern void msync_clear_shm( unsigned int shm_idx );
+ extern void msync_destroy_semaphore( unsigned int shm_idx );
+ extern void msync_wake_up( struct object *obj );
++/* Temporary diagnostic sink, armed by WINE_MRING like the client's MRING.
++ * Writes /tmp/msync_srv_<pid>.log. Wine's own fprintf()s here are gated on
++ * debug_level, and Whisky launches with WINEDEBUG=-all, so anything logged
++ * through the normal channel during a real session is invisible. */
++extern void msync_srv_note( const char *fmt, ... ) __attribute__((format(printf,1,2)));
+ extern void msync_clear( struct object *obj );
+ extern int is_msg_queue( struct object *obj );
+ 
+diff --git a/server/queue.c b/server/queue.c
+index 754dc7f3e4c..7b25ba040cf 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -4416,8 +4416,22 @@ DECL_HANDLER(msync_msgwait)
+      * be signaled or the client blocks on a stale 0 forever -- a wake-before-wait
+      * race the slower server-sync path can't hit (it re-checks under the server
+      * lock). Mirror the set_queue_mask parity fix: re-assert the wake on entry. */
+-    if (do_msync() && req->in_msgwait && get_queue_status( queue ))
+-        msync_wake_up( &queue->obj );
++    if (do_msync() && req->in_msgwait)
++    {
++        /* TEMPORARY, with the client's MRING. The news window is stuck because
++         * this re-assert does not fire: the client loops wait -> STATUS_TIMEOUT
++         * on a queue whose msync word stays 0, so get_queue_status() must be
++         * returning 0 here. It is (wake_bits & wake_mask) || (changed_bits &
++         * changed_mask), so log all four plus the index and let one stuck
++         * session say whether the mask is wrong or the messages went to another
++         * queue -- instead of guessing between the two. */
++        int status = get_queue_status( queue );
++        msync_srv_note( "msgwait idx=%u status=%d wake_bits=%08x wake_mask=%08x "
++                        "changed_bits=%08x changed_mask=%08x",
++                        queue->msync_idx, status, queue_shm->wake_bits, queue_shm->wake_mask,
++                        queue_shm->changed_bits, queue_shm->changed_mask );
++        if (status) msync_wake_up( &queue->obj );
++    }
+ 
+     if (current->process->idle_event && !(queue_shm->wake_mask & QS_SMRESULT))
+         set_event( current->process->idle_event );

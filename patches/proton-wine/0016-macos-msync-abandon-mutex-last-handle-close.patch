@@ -40,7 +40,7 @@ the sync suites drops from 2 (sync.c:393, :397) to 0, with no other location
 regressing across repeated runs.
 
 diff --git a/dlls/ntdll/unix/msync_select.c b/dlls/ntdll/unix/msync_select.c
-index 72883bd90b7..8e5ce47df0d 100644
+index 051fae69ed1..b57a1c54dc4 100644
 --- a/dlls/ntdll/unix/msync_select.c
 +++ b/dlls/ntdll/unix/msync_select.c
 @@ -497,6 +497,8 @@ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
@@ -52,7 +52,7 @@ index 72883bd90b7..8e5ce47df0d 100644
      struct msync apc_obj;
      int has_msync = 0, has_server = 0;
      LONGLONG timeleft;
-@@ -574,6 +576,30 @@ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
+@@ -575,6 +577,30 @@ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
              return ret;
      }
  
@@ -84,10 +84,10 @@ index 72883bd90b7..8e5ce47df0d 100644
      {
          /* A wait set mixing msync and server objects cannot be handled by
 diff --git a/server/msync.c b/server/msync.c
-index e63c6e32c5e..23bc217f2f2 100644
+index de6c03050b6..15f8ff21773 100644
 --- a/server/msync.c
 +++ b/server/msync.c
-@@ -618,11 +618,17 @@ struct msync
+@@ -658,11 +658,17 @@ struct msync
      unsigned int   shm_idx;
      enum msync_type type;
      struct list     mutex_entry;
@@ -105,7 +105,7 @@ index e63c6e32c5e..23bc217f2f2 100644
  static void msync_destroy( struct object *obj );
  
  const struct object_ops msync_ops =
-@@ -647,7 +653,7 @@ const struct object_ops msync_ops =
+@@ -687,7 +693,7 @@ const struct object_ops msync_ops =
      default_unlink_name,       /* unlink_name */
      no_open_file,              /* open_file */
      no_kernel_obj_list,        /* get_kernel_obj_list */
@@ -114,7 +114,7 @@ index e63c6e32c5e..23bc217f2f2 100644
      msync_destroy              /* destroy */
  };
  
-@@ -780,6 +786,7 @@ struct msync *create_msync( struct object *root, const struct unicode_str *name,
+@@ -820,6 +826,7 @@ struct msync *create_msync( struct object *root, const struct unicode_str *name,
  
              msync->shm_idx = msync_alloc_shm( low, high );
              msync->type = type;
@@ -122,7 +122,7 @@ index e63c6e32c5e..23bc217f2f2 100644
              if (type == MSYNC_MUTEX)
                  list_add_tail( &mutex_list, &msync->mutex_entry );
          }
-@@ -951,9 +958,64 @@ struct mutex
+@@ -991,9 +998,64 @@ struct mutex
  C_ASSERT( sizeof(struct mutex) == 8 );
  C_ASSERT( offsetof(struct mutex, tid) == 0 );
  
@@ -188,7 +188,7 @@ index e63c6e32c5e..23bc217f2f2 100644
  
      LIST_FOR_EACH_ENTRY( msync, &mutex_list, struct msync, mutex_entry )
      {
-@@ -966,6 +1028,8 @@ void msync_abandon_mutexes( struct thread *thread )
+@@ -1006,6 +1068,8 @@ void msync_abandon_mutexes( struct thread *thread )
              mutex->tid = ~0;
              mutex->count = 0;
              signal_all ( msync->shm_idx, (int *)mutex );
