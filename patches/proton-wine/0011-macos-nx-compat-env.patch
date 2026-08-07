@@ -3,10 +3,10 @@ Subject: ntdll: WINE_NX_COMPAT env var to force DEP on legacy images (macOS/DXMT
 Ports Whisky wine patch 0002. Opts into keeping NX enabled so DXMT placed buffers do not turn games into a slideshow on macOS Tahoe (see 3Shain/dxmt#161).
 
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index eac888a..a8c1a71 100644
+index bbb448cc69d..9457ba494f1 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
-@@ -1679,9 +1679,20 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
+@@ -1680,9 +1680,20 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
  
      if (!(nt->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT))
      {

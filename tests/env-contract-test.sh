@@ -4,7 +4,7 @@
 # read by something we ship.
 #
 # WINEMSYNC_NO_ANON_AUTOEVENT was set in Wine.swift and in three scripts for
-# months. Nothing ever read it: msync.c gates on _NO_EVENT, _NO_AUTOEVENT,
+# months. Nothing ever read it: msync_obj.c gates on _NO_EVENT, _NO_AUTOEVENT,
 # _NO_MANUALEVENT, _NO_SEMAPHORE and _NO_MUTEX, and there is no anon/named
 # distinction to gate on. Setting it was harmless; believing in it was not —
 # test-msync.sh and run-msync-close-test.sh unset it to build their "full msync"

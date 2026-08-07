@@ -1,5 +1,4 @@
-From: cyy <cyyever@gmail.com>
-Subject: [PATCH] macOS: msync fast-sync (CrossOver port + macOS integration)
+Subject: macOS: msync fast-sync (CrossOver port + macOS integration)
 
 Consolidated msync subsystem patch. Merges what were separate patches
 (0008 core + 0016 msg_queue wake) plus the socket-async / system-APC
@@ -48,14 +47,17 @@ server/request_trace.h) regenerated from server/protocol.def, since only this
 patch modifies protocol.def -- so a fresh apply needs no make_requests step.
 
 diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
-index 38c865b3611..e0b2741f154 100644
+index 38c865b3611..462f6f8fc40 100644
 --- a/dlls/ntdll/Makefile.in
 +++ b/dlls/ntdll/Makefile.in
-@@ -51,6 +51,7 @@ SOURCES = \
+@@ -51,6 +51,10 @@ SOURCES = \
  	unix/env.c \
  	unix/file.c \
  	unix/fsync.c \
-+	unix/msync.c \
++	unix/msync_obj.c \
++	unix/msync_select.c \
++	unix/msync_shm.c \
++	unix/msync_wait.c \
  	unix/loader.c \
  	unix/loadorder.c \
  	unix/process.c \
@@ -109,12 +111,69 @@ index f67fa07d366..7c827ee2542 100644
      server_init_process_done();
  }
  
-diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
+diff --git a/dlls/ntdll/unix/msync.h b/dlls/ntdll/unix/msync.h
 new file mode 100644
-index 00000000000..9f3c4b03c72
+index 00000000000..ca92d32ad8d
 --- /dev/null
-+++ b/dlls/ntdll/unix/msync.c
-@@ -0,0 +1,2100 @@
++++ b/dlls/ntdll/unix/msync.h
+@@ -0,0 +1,51 @@
++/*
++ * mach semaphore-based synchronization objects
++ *
++ * Copyright (C) 2018 Zebediah Figura
++ * Copyright (C) 2023 Marc-Aurel Zent
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++extern int do_msync(void);
++extern void msync_init(void);
++extern NTSTATUS msync_close( HANDLE handle );
++extern BOOL msync_invalidate_server_only( HANDLE handle );
++
++extern NTSTATUS msync_create_semaphore(HANDLE *handle, ACCESS_MASK access,
++    const OBJECT_ATTRIBUTES *attr, LONG initial, LONG max);
++extern NTSTATUS msync_release_semaphore( HANDLE handle, ULONG count, ULONG *prev );
++extern NTSTATUS msync_open_semaphore( HANDLE *handle, ACCESS_MASK access,
++    const OBJECT_ATTRIBUTES *attr );
++extern NTSTATUS msync_query_semaphore( HANDLE handle, void *info, ULONG *ret_len );
++extern NTSTATUS msync_create_event( HANDLE *handle, ACCESS_MASK access,
++    const OBJECT_ATTRIBUTES *attr, EVENT_TYPE type, BOOLEAN initial );
++extern NTSTATUS msync_open_event( HANDLE *handle, ACCESS_MASK access,
++    const OBJECT_ATTRIBUTES *attr );
++extern NTSTATUS msync_set_event( HANDLE handle, LONG *prev );
++extern NTSTATUS msync_reset_event( HANDLE handle, LONG *prev );
++extern NTSTATUS msync_pulse_event( HANDLE handle, LONG *prev );
++extern NTSTATUS msync_query_event( HANDLE handle, void *info, ULONG *ret_len );
++extern NTSTATUS msync_create_mutex( HANDLE *handle, ACCESS_MASK access,
++    const OBJECT_ATTRIBUTES *attr, BOOLEAN initial );
++extern NTSTATUS msync_open_mutex( HANDLE *handle, ACCESS_MASK access,
++    const OBJECT_ATTRIBUTES *attr );
++extern NTSTATUS msync_release_mutex( HANDLE handle, LONG *prev );
++extern NTSTATUS msync_query_mutex( HANDLE handle, void *info, ULONG *ret_len );
++
++extern NTSTATUS msync_wait_objects( DWORD count, const HANDLE *handles, BOOLEAN wait_any,
++                                    BOOLEAN alertable, const LARGE_INTEGER *timeout );
++extern NTSTATUS msync_signal_and_wait( HANDLE signal, HANDLE wait,
++    BOOLEAN alertable, const LARGE_INTEGER *timeout );
+diff --git a/dlls/ntdll/unix/msync_obj.c b/dlls/ntdll/unix/msync_obj.c
+new file mode 100644
+index 00000000000..54fdee5437f
+--- /dev/null
++++ b/dlls/ntdll/unix/msync_obj.c
+@@ -0,0 +1,563 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -142,656 +201,20 @@ index 00000000000..9f3c4b03c72
 +
 +#include "config.h"
 +
-+#include <assert.h>
-+#include <errno.h>
-+#include <fcntl.h>
-+#include <limits.h>
-+#include <stdarg.h>
-+#include <stdio.h>
-+#include <stdlib.h>
-+#include <sys/mman.h>
-+#ifdef HAVE_SYS_STAT_H
-+# include <sys/stat.h>
-+#endif
-+#ifdef HAVE_SYS_SYSCALL_H
-+# include <sys/syscall.h>
-+#endif
-+#ifdef __APPLE__
-+# include <mach/mach_init.h>
-+# include <mach/mach_port.h>
-+# include <mach/message.h>
-+# include <mach/port.h>
-+# include <mach/task.h>
-+# include <mach/semaphore.h>
-+# include <mach/mach_error.h>
-+# include <servers/bootstrap.h>
-+# include <os/lock.h>
-+#endif
-+#include <dlfcn.h>
-+#include <sched.h>
-+#include <unistd.h>
-+#include <pthread.h>
-+
-+#include "ntstatus.h"
-+#define WIN32_NO_STATUS
-+#include "windef.h"
-+#include "winternl.h"
-+#include "wine/debug.h"
-+#include "wine/server.h"
-+
-+#include "unix_private.h"
-+#include "msync.h"
++#include "msync_private.h"
 +
 +WINE_DEFAULT_DEBUG_CHANNEL(msync);
-+
-+static LONGLONG update_timeout( ULONGLONG end )
-+{
-+    LARGE_INTEGER now;
-+    LONGLONG timeleft;
-+
-+    NtQuerySystemTime( &now );
-+    timeleft = end - now.QuadPart;
-+    if (timeleft < 0) timeleft = 0;
-+    return timeleft;
-+}
-+
-+static inline mach_timespec_t convert_to_mach_time( LONGLONG win32_time )
-+{
-+    mach_timespec_t ret;
-+
-+    ret.tv_sec = win32_time / (ULONGLONG)TICKSPERSEC;
-+    ret.tv_nsec = (win32_time % TICKSPERSEC) * 100;
-+    return ret;
-+}
-+
-+#define UL_COMPARE_AND_WAIT_SHARED  0x3
-+#define ULF_WAKE_ALL                0x00000100
-+#define ULF_NO_ERRNO                0x01000000
-+extern int __ulock_wake( uint32_t operation, void *addr, uint64_t wake_value );
-+/* __ulock_wait2 exists since macOS 11; we only target non-EOL macOS, so link it
-+ * directly rather than dlsym'ing it with a slow Mach-semaphore fallback. */
-+extern int __ulock_wait2( uint32_t operation, void *addr, uint64_t value,
-+                          uint64_t timeout_ns, uint64_t value2 );
-+
-+/*
-+ * Faster to directly do the syscall and inline everything, taken and slightly adapted
-+ * from xnu/libsyscall/mach/mach_msg.c
-+ */
-+
-+#define LIBMACH_OPTIONS64 (MACH_SEND_INTERRUPT|MACH_RCV_INTERRUPT)
-+#define MACH64_SEND_MQ_CALL 0x0000000400000000ull
-+
-+typedef mach_msg_return_t (*mach_msg2_trap_ptr_t)( void *data, uint64_t options,
-+    uint64_t msgh_bits_and_send_size, uint64_t msgh_remote_and_local_port,
-+    uint64_t msgh_voucher_and_id, uint64_t desc_count_and_rcv_name,
-+    uint64_t rcv_size_and_priority, uint64_t timeout );
-+
-+static mach_msg2_trap_ptr_t mach_msg2_trap;
-+
-+static inline mach_msg_return_t mach_msg2_internal( void *data, uint64_t option64, uint64_t msgh_bits_and_send_size,
-+    uint64_t msgh_remote_and_local_port, uint64_t msgh_voucher_and_id, uint64_t desc_count_and_rcv_name,
-+    uint64_t rcv_size_and_priority, uint64_t timeout)
-+{
-+    mach_msg_return_t mr;
-+
-+    mr = mach_msg2_trap( data, option64 & ~LIBMACH_OPTIONS64, msgh_bits_and_send_size,
-+             msgh_remote_and_local_port, msgh_voucher_and_id, desc_count_and_rcv_name,
-+             rcv_size_and_priority, timeout );
-+
-+    if (mr == MACH_MSG_SUCCESS)
-+        return MACH_MSG_SUCCESS;
-+
-+    while (mr == MACH_SEND_INTERRUPTED)
-+        mr = mach_msg2_trap( data, option64 & ~LIBMACH_OPTIONS64, msgh_bits_and_send_size,
-+                 msgh_remote_and_local_port, msgh_voucher_and_id, desc_count_and_rcv_name,
-+                 rcv_size_and_priority, timeout );
-+
-+    while (mr == MACH_RCV_INTERRUPTED)
-+        mr = mach_msg2_trap( data, option64 & ~LIBMACH_OPTIONS64, msgh_bits_and_send_size & 0xffffffffull,
-+                 msgh_remote_and_local_port, msgh_voucher_and_id, desc_count_and_rcv_name,
-+                 rcv_size_and_priority, timeout);
-+
-+    return mr;
-+}
-+
-+/* For older versions of macOS we need to provide fallback in case there is no mach_msg2... */
-+extern mach_msg_return_t mach_msg_trap( mach_msg_header_t *msg, mach_msg_option_t option,
-+        mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_name_t rcv_name, mach_msg_timeout_t timeout,
-+        mach_port_name_t notify );
-+
-+static inline mach_msg_return_t mach_msg2( mach_msg_header_t *data, uint64_t option64,
-+    mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_t rcv_name, uint64_t timeout,
-+    uint32_t priority)
-+{
-+    /* Route through the public mach_msg() rather than the raw mach_msg2_trap:
-+     * under Rosetta the dlsym'd raw trap is invoked through an untranslated
-+     * pointer and crashes. libSystem's mach_msg() is translated correctly.
-+     * (priority is always 0 here, so it maps to a NULL notify port.) */
-+    (void)priority;
-+    /* mach_msg() takes 32-bit option/timeout; assert no lossy narrowing. */
-+    assert( !(option64 >> 32) );
-+    assert( timeout <= 0xffffffff );
-+    return mach_msg( data, (mach_msg_option_t)option64, send_size, rcv_size,
-+                     rcv_name, (mach_msg_timeout_t)timeout, MACH_PORT_NULL );
-+}
-+
-+/* this is a lot, but running out cripples performance */
-+#define MAX_POOL_SEMAPHORES 1024
-+#define POOL_SHRINK_THRESHOLD 30
-+#define POOL_SHRINK_COUNT 10
-+
-+struct semaphore_memory_pool
-+{
-+    semaphore_t semaphores[MAX_POOL_SEMAPHORES];
-+    semaphore_t *free_semaphores[MAX_POOL_SEMAPHORES];
-+    unsigned int count;
-+    unsigned int total;
-+    os_unfair_lock lock;
-+};
-+
-+static struct semaphore_memory_pool *pool;
-+
-+static void semaphore_pool_init(void)
-+{
-+    unsigned int i;
-+
-+    pool = malloc( sizeof(struct semaphore_memory_pool) );
-+
-+    pool->lock = OS_UNFAIR_LOCK_INIT;
-+
-+    for (i = 0; i < MAX_POOL_SEMAPHORES; i++)
-+    {
-+        pool->free_semaphores[i] = &pool->semaphores[i];
-+    }
-+
-+    pool->count = 0;
-+    pool->total = 0;
-+}
-+
-+static inline semaphore_t *semaphore_pool_alloc(void)
-+{
-+    semaphore_t *new_semaphore;
-+    kern_return_t kr;
-+
-+    os_unfair_lock_lock(&pool->lock);
-+
-+    if (pool->count == 0)
-+    {
-+        if (pool->total < MAX_POOL_SEMAPHORES)
-+        {
-+            TRACE("Dynamically growing semaphore pool\n");
-+            kr = semaphore_create(mach_task_self(), &pool->semaphores[pool->total], SYNC_POLICY_FIFO, 0);
-+            if (kr != KERN_SUCCESS)
-+                ERR("Cannot create dynamic semaphore: %#x %s\n", kr, mach_error_string(kr));
-+
-+            new_semaphore = &pool->semaphores[pool->total];
-+            pool->total++;
-+
-+            os_unfair_lock_unlock(&pool->lock);
-+
-+            return new_semaphore;
-+        }
-+        else
-+        {
-+            os_unfair_lock_unlock(&pool->lock);
-+
-+            WARN("Semaphore pool exhausted, consider increasing MAX_POOL_SEMAPHORES\n");
-+            new_semaphore = malloc(sizeof(semaphore_t));
-+            kr = semaphore_create(mach_task_self(), new_semaphore, SYNC_POLICY_FIFO, 0);
-+            if (kr != KERN_SUCCESS)
-+                ERR("Cannot create dynamic semaphore: %#x %s\n", kr, mach_error_string(kr));
-+
-+            return new_semaphore;
-+        }
-+    }
-+
-+    new_semaphore = pool->free_semaphores[pool->count - 1];
-+    pool->count--;
-+
-+    os_unfair_lock_unlock(&pool->lock);
-+
-+    return new_semaphore;
-+}
-+
-+static inline void semaphore_pool_free(semaphore_t *sem)
-+{
-+    int i;
-+
-+    os_unfair_lock_lock(&pool->lock);
-+
-+    if (sem < pool->semaphores || sem >= pool->semaphores + MAX_POOL_SEMAPHORES)
-+    {
-+        os_unfair_lock_unlock(&pool->lock);
-+
-+        semaphore_destroy(mach_task_self(), *sem);
-+        free(sem);
-+
-+        return;
-+    }
-+
-+    if (pool->count >= POOL_SHRINK_THRESHOLD)
-+    {
-+        TRACE("Dynamically shrinking semaphore pool\n");
-+        for (i = 0; i < POOL_SHRINK_COUNT; i++)
-+        {
-+            semaphore_destroy(mach_task_self(), *sem);
-+            pool->total--;
-+        }
-+    }
-+    else
-+    {
-+        pool->free_semaphores[pool->count] = sem;
-+        pool->count++;
-+    }
-+
-+    os_unfair_lock_unlock(&pool->lock);
-+}
-+
-+struct msync
-+{
-+    void *shm;              /* pointer to shm section */
-+    enum msync_type type;
-+    unsigned int shm_idx;
-+    unsigned int access;    /* granted (possibly generic) access mask for this handle */
-+};
-+
-+typedef struct
-+{
-+    mach_msg_header_t header;
-+    mach_msg_body_t body;
-+    mach_msg_port_descriptor_t descriptor;
-+} mach_register_message_prolog_t;
-+
-+typedef struct
-+{
-+    mach_register_message_prolog_t prolog;
-+    unsigned int shm_idx[MAXIMUM_WAIT_OBJECTS + 1];
-+} mach_register_message_t;
-+
-+typedef struct
-+{
-+    mach_msg_header_t header;
-+    unsigned int shm_idx[MAXIMUM_WAIT_OBJECTS + 1];
-+} mach_unregister_message_t;
-+
-+static mach_port_t server_port;
-+
-+static const mach_msg_bits_t msgh_bits_complex_send = MACH_MSGH_BITS_SET(
-+                MACH_MSG_TYPE_COPY_SEND, 0, 0, MACH_MSGH_BITS_COMPLEX);
-+
-+static const mach_msg_bits_t msgh_bits_send = MACH_MSGH_BITS_REMOTE(MACH_MSG_TYPE_COPY_SEND);
-+
-+static inline mach_msg_return_t server_register_wait( semaphore_t sem, unsigned int msgh_id,
-+                                         struct msync **wait_objs, const int count )
-+{
-+    int i, is_mutex;
-+    mach_msg_return_t mr;
-+    __thread static mach_register_message_t message;
-+
-+    message.prolog.header.msgh_remote_port = server_port;
-+    message.prolog.header.msgh_bits = msgh_bits_complex_send;
-+    message.prolog.header.msgh_id = msgh_id;
-+
-+    message.prolog.body.msgh_descriptor_count = 1;
-+
-+    message.prolog.descriptor.name = sem;
-+    message.prolog.descriptor.disposition = MACH_MSG_TYPE_COPY_SEND;
-+    message.prolog.descriptor.type = MACH_MSG_PORT_DESCRIPTOR;
-+
-+    for (i = 0; i < count; i++)
-+    {
-+        is_mutex = wait_objs[i]->type == MSYNC_MUTEX ? 1 : 0;
-+        message.shm_idx[i] = wait_objs[i]->shm_idx | (is_mutex << 28);
-+        __atomic_add_fetch( (int *)(wait_objs[i]->shm) + 3, 1, __ATOMIC_SEQ_CST);
-+    }
-+
-+    message.prolog.header.msgh_size = sizeof(mach_register_message_prolog_t) +
-+                                      count * sizeof(unsigned int);
-+
-+    mr = mach_msg2( (mach_msg_header_t *)&message, MACH_SEND_MSG, message.prolog.header.msgh_size,
-+                     0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, 0 );
-+
-+    if (mr != MACH_MSG_SUCCESS)
-+        ERR("Failed to send server register wait: %#x\n", mr);
-+
-+    return mr;
-+}
-+
-+static inline void server_remove_wait( unsigned int msgh_id, struct msync **wait_objs, const int count )
-+{
-+    int i;
-+    mach_msg_return_t mr;
-+    __thread static mach_unregister_message_t message;
-+
-+    message.header.msgh_remote_port = server_port;
-+    message.header.msgh_bits = msgh_bits_send;
-+    message.header.msgh_id = msgh_id;
-+
-+    for (i = 0; i < count; i++)
-+    {
-+        int old_val, new_val;
-+        do
-+        {
-+            old_val = __atomic_load_n( (int *)(wait_objs[i]->shm) + 3, __ATOMIC_SEQ_CST );
-+            if (old_val <= 0) break;
-+            new_val = old_val - 1;
-+        } while (!__atomic_compare_exchange_n( (int *)(wait_objs[i]->shm) + 3, &old_val,
-+                                               new_val, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ));
-+
-+        message.shm_idx[i] = wait_objs[i]->shm_idx;
-+    }
-+
-+    message.header.msgh_size = sizeof(mach_msg_header_t) +
-+                               count * sizeof(unsigned int);
-+
-+    mr = mach_msg2( (mach_msg_header_t *)&message, MACH_SEND_MSG, message.header.msgh_size,
-+                     0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, 0 );
-+
-+    if (mr != MACH_MSG_SUCCESS)
-+        ERR("Failed to send server remove wait: %#x\n", mr);
-+}
-+
-+static NTSTATUS destroyed_wait( ULONGLONG *end )
-+{
-+    if (end)
-+    {
-+        usleep( update_timeout( *end ) / 10 );
-+        return STATUS_TIMEOUT;
-+    }
-+    pause();
-+    return STATUS_PENDING;
-+}
-+
-+static inline int is_destroyed( struct msync **objs, int count)
-+{
-+    int i;
-+
-+    for (i = 0; i < count; i++)
-+        if (__atomic_load_n( (int *)objs[i]->shm + 2, __ATOMIC_RELAXED ))
-+            return 0;
-+
-+    return 1;
-+}
-+
-+/* A system APC (e.g. APC_ASYNC_IO from a socket/file async completion) is
-+ * delivered by SIGUSR1, which interrupts a msync fast-wait (-EINTR/KERN_ABORTED).
-+ * The fast path can't see it (only user APCs get an shm event), so without this it
-+ * loops on the spurious wakeup and the APC never runs -- the async never finalizes
-+ * and the awaited object is never signaled (Steam socket I/O hangs; WINEMSYNC=0
-+ * works because server_select does run system APCs). A zero-timeout interruptible
-+ * server_wait runs any pending system APC, which then signals the awaited object. */
-+static inline void msync_run_system_apcs(void)
-+{
-+    static const LARGE_INTEGER zero = {0};
-+    server_wait( NULL, 0, SELECT_INTERRUPTIBLE, &zero );
-+}
-+
-+static inline NTSTATUS msync_wait_single( struct msync *wait_obj,
-+                                          ULONGLONG *end, int tid )
-+{
-+    int ret, val = 0;
-+    void *addr = wait_obj->shm;
-+    ULONGLONG ns_timeleft = 0;
-+
-+    do
-+    {
-+        if (wait_obj->type == MSYNC_MUTEX)
-+        {
-+            val = __atomic_load_n( (int *)addr, __ATOMIC_ACQUIRE );
-+            if (!val || val == ~0)
-+                val = tid;
-+        }
-+
-+        if (__atomic_load_n( (int *)addr, __ATOMIC_ACQUIRE ) != val)
-+            return STATUS_PENDING;
-+
-+        if (end)
-+        {
-+            ns_timeleft = update_timeout( *end ) * 100;
-+            if (!ns_timeleft) return STATUS_TIMEOUT;
-+        }
-+        ret = __ulock_wait2( UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, addr, val, ns_timeleft, 0 );
-+        if (ret == -EINTR) msync_run_system_apcs();
-+    } while (ret == -EINTR);
-+
-+    if (ret == -ETIMEDOUT)
-+        return STATUS_TIMEOUT;
-+
-+    if (is_destroyed( &wait_obj, 1 ))
-+        return destroyed_wait( end );
-+
-+    return STATUS_SUCCESS;
-+}
-+
-+static inline int resize_wait_objs( struct msync **wait_objs, struct msync **objs, int count )
-+{
-+    int read_index, write_index = 0;
-+
-+    for (read_index = 0; read_index < count; read_index++)
-+    {
-+        if (wait_objs[read_index] &&
-+            __atomic_load_n( (int *)wait_objs[read_index]->shm + 2, __ATOMIC_RELAXED ))
-+        {
-+            objs[write_index] = wait_objs[read_index];
-+            write_index++;
-+        }
-+    }
-+
-+    return write_index;
-+}
-+
-+static inline int check_shm_contention( struct msync **wait_objs,
-+                                        int count, int tid )
-+{
-+    int i, val;
-+
-+    for (i = 0; i < count; i++)
-+    {
-+        val = __atomic_load_n((int *)wait_objs[i]->shm, __ATOMIC_SEQ_CST);
-+        if (wait_objs[i]->type == MSYNC_MUTEX)
-+        {
-+            if (val == 0 || val == ~0 || val == tid) return 1;
-+        }
-+        else
-+        {
-+            if (val != 0)  return 1;
-+        }
-+    }
-+    return 0;
-+}
-+
-+static NTSTATUS msync_wait_multiple( struct msync **wait_objs,
-+                                     int count, ULONGLONG *end, int tid )
-+{
-+    semaphore_t *sem;
-+    kern_return_t kr;
-+    mach_msg_return_t mr;
-+    unsigned int msgh_id;
-+    __thread static struct msync *objs[MAXIMUM_WAIT_OBJECTS + 1];
-+
-+    count = resize_wait_objs( wait_objs, objs, count );
-+
-+    if (count == 1) return msync_wait_single( objs[0], end, tid );
-+    if (!count) return destroyed_wait( end );
-+
-+    if (check_shm_contention( objs, count, tid ))
-+        return STATUS_PENDING;
-+
-+    sem = semaphore_pool_alloc();
-+    msgh_id = (tid << 8) | count;
-+    mr = server_register_wait( *sem, msgh_id, objs, count );
-+
-+    if (mr != MACH_MSG_SUCCESS)
-+    {
-+        /* The os failed to send the mach message, which is either because
-+         * we lost the wineserver process or the semaphore from semaphore_pool_alloc
-+         * is not valid...
-+         * To avoid pooling in a dead port, recreate it here.
-+         * Worst case, this will behave effectively like a spinlock. */
-+        semaphore_destroy( mach_task_self(), *sem) ;
-+        kr = semaphore_create( mach_task_self(), sem, SYNC_POLICY_FIFO, 0 );
-+
-+        if (kr != KERN_SUCCESS)
-+        {
-+            ERR("Cannot create semaphore: %#x %s\n", kr, mach_error_string(kr));
-+            semaphore_pool_free( sem );
-+            return STATUS_PENDING;
-+        }
-+
-+        mr = server_register_wait( *sem, msgh_id, objs, count );
-+
-+        if (mr != MACH_MSG_SUCCESS)
-+        {
-+            semaphore_pool_free( sem );
-+            return STATUS_PENDING;
-+        }
-+    }
-+
-+    /* Close the register/signal race: an object can be signaled between the
-+     * check_shm_contention() above and server_register_wait() taking effect.
-+     * signal_all() only wakes registered waiters (it skips the wakeup mach msg
-+     * when obj->shm[3] == 0) and that msg can also race our registration on the
-+     * wineserver's port -- but signal_all() sets the shm signaled-state
-+     * synchronously (shared memory) *before* sending it. So re-check the shm now
-+     * that we are registered; if a signal already landed, bail to re-poll rather
-+     * than block forever on a wakeup that already fired. */
-+    if (check_shm_contention( objs, count, tid ))
-+    {
-+        server_remove_wait( msgh_id, objs, count );
-+        semaphore_pool_free( sem );
-+        return STATUS_PENDING;
-+    }
-+
-+    do
-+    {
-+        if (end)
-+            kr = semaphore_timedwait( *sem,
-+                        convert_to_mach_time( update_timeout( *end ) ) );
-+        else
-+            kr = semaphore_wait( *sem );
-+        if (kr == KERN_ABORTED) msync_run_system_apcs();
-+    } while (kr == KERN_ABORTED);
-+
-+    semaphore_pool_free( sem );
-+
-+    if (is_destroyed( objs, count ))
-+        return destroyed_wait( end );
-+
-+    server_remove_wait( msgh_id, objs, count );
-+
-+    switch (kr) {
-+        case KERN_SUCCESS:
-+            return STATUS_SUCCESS;
-+        case KERN_OPERATION_TIMED_OUT:
-+            if (check_shm_contention( objs, count, tid ))
-+                return STATUS_PENDING;
-+            return STATUS_TIMEOUT;
-+        case KERN_TERMINATED:
-+            return destroyed_wait( end );
-+        default:
-+            ERR("Unexpected kernel return code: %#x %s\n", kr, mach_error_string( kr ));
-+            return STATUS_PENDING;
-+    }
-+}
-+
-+int do_msync(void)
-+{
-+#ifdef __APPLE__
-+    /* msync (__ulock) is the default fast-sync on macOS; the wineserver fallback
-+     * is slower/less reliable, so default on. WINEMSYNC=0 forces it off (debug). */
-+    static int cached = -1;
-+    if (cached == -1)
-+    {
-+        const char *env = getenv( "WINEMSYNC" );
-+        cached = env ? atoi( env ) : 1;
-+    }
-+    return cached;
-+#else
-+    static int once;
-+    if (!once++)
-+        FIXME("mach semaphores not supported on this platform.\n");
-+    return 0;
-+#endif
-+}
-+
-+struct semaphore
-+{
-+    int count;
-+    int max;
-+};
-+C_ASSERT(sizeof(struct semaphore) == 8);
-+
-+struct event
-+{
-+    int signaled;
-+    int unused;
-+};
-+C_ASSERT(sizeof(struct event) == 8);
-+
-+struct mutex
-+{
-+    int tid;
-+    int count;  /* recursion count */
-+};
-+C_ASSERT(sizeof(struct mutex) == 8);
-+
-+static char shm_name[29];
-+static int shm_fd;
-+static void **shm_addrs;
-+static int shm_addrs_size;  /* length of the allocated shm_addrs array */
-+static long pagesize;
-+
-+static os_unfair_lock shm_addrs_lock = OS_UNFAIR_LOCK_INIT;
-+
-+static void *get_shm( unsigned int idx )
-+{
-+    int entry  = (idx * 16) / pagesize;
-+    int offset = (idx * 16) % pagesize;
-+    void *ret;
-+
-+    os_unfair_lock_lock( &shm_addrs_lock );
-+
-+    if (entry >= shm_addrs_size)
-+    {
-+        int new_size = max(shm_addrs_size * 2, entry + 1);
-+
-+        if (!(shm_addrs = realloc( shm_addrs, new_size * sizeof(shm_addrs[0]) )))
-+            ERR("Failed to grow shm_addrs array to size %d.\n", shm_addrs_size);
-+        memset( shm_addrs + shm_addrs_size, 0, (new_size - shm_addrs_size) * sizeof(shm_addrs[0]) );
-+        shm_addrs_size = new_size;
-+    }
-+
-+    if (!shm_addrs[entry])
-+    {
-+        void *addr = mmap( NULL, pagesize, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, entry * pagesize );
-+        if (addr == (void *)-1)
-+            ERR("Failed to map page %d (offset %#lx).\n", entry, entry * pagesize);
-+
-+        TRACE("Mapping page %d at %p.\n", entry, addr);
-+
-+        if (__sync_val_compare_and_swap( &shm_addrs[entry], 0, addr ))
-+            munmap( addr, pagesize ); /* someone beat us to it */
-+    }
-+
-+    ret = (void *)((unsigned long)shm_addrs[entry] + offset);
-+
-+    os_unfair_lock_unlock( &shm_addrs_lock );
-+
-+    return ret;
-+}
 +
 +/* We'd like lookup to be fast. To that end, we use a static list indexed by handle.
 + * This is copied and adapted from the fd cache code. */
 +
-+/* Not a real msync_type: a sentinel cached for handles the server reported as
-+ * having no msync shadow (server-only objects: pipes, sockets, processes, ...).
-+ * It lets get_object() skip the get_msync_idx round-trip on repeated waits --
-+ * without it, polling a mixed wait-set (e.g. Steam's IPC pipes) issues one
-+ * server round-trip per handle per poll, starving the reader. Cleared by
-+ * msync_close() on handle close like any entry, so handle reuse stays correct. */
-+#define MSYNC_SERVER_ONLY ((enum msync_type)0xff)
 +
-+#define MSYNC_LIST_BLOCK_SIZE  (65536 / sizeof(struct msync))
++/* A power of two on purpose: handle_to_index() divides and mods by this on every
++ * lookup, and struct msync is 24 bytes, so the natural 65536/sizeof() would be
++ * 2730 and cost two 64-bit divq per get_object() in an unoptimised build.
++ * 2048 * MSYNC_LIST_ENTRIES still covers 524288 handles. (fsync.c keeps the
++ * upstream form; this is a deliberate local divergence.) */
++#define MSYNC_LIST_BLOCK_SIZE  2048
 +#define MSYNC_LIST_ENTRIES     256
 +
 +static struct msync *msync_list[MSYNC_LIST_ENTRIES];
@@ -808,12 +231,12 @@ index 00000000000..9f3c4b03c72
 +                                  unsigned int access )
 +{
 +    UINT_PTR entry, idx = handle_to_index( handle, &entry );
-+    void *shm = (type == MSYNC_SERVER_ONLY) ? NULL : get_shm( shm_idx );
++    void *shm = (type == MSYNC_SERVER_ONLY) ? NULL : msync_get_shm( shm_idx );
 +
 +    if (entry >= MSYNC_LIST_ENTRIES)
 +    {
 +        FIXME( "too many allocated handles, not caching %p\n", handle );
-+        return FALSE;
++        return NULL;
 +    }
 +
 +    if (!msync_list[entry])  /* do we need to allocate a new block of entries? */
@@ -852,7 +275,7 @@ index 00000000000..9f3c4b03c72
 + * semaphore, etc. created using create_msync) or a generic synchronizable
 + * server-side object which the server will signal (e.g. a process, thread,
 + * message queue, etc.) */
-+static NTSTATUS get_object( HANDLE handle, struct msync **obj )
++NTSTATUS msync_get_object( HANDLE handle, struct msync **obj )
 +{
 +    NTSTATUS ret = STATUS_SUCCESS;
 +    unsigned int shm_idx = 0;
@@ -919,7 +342,7 @@ index 00000000000..9f3c4b03c72
 +    return STATUS_INVALID_HANDLE;
 +}
 +
-+/* Drop a stale "server-only" negative-cache entry so the next get_object()
++/* Drop a stale "server-only" negative-cache entry so the next msync_get_object()
 + * re-queries the server. A handle cached as MSYNC_SERVER_ONLY can go stale when
 + * the server-only object it named is closed server-side (bypassing msync_close)
 + * and its handle number is reused for an msync object; the stale entry then
@@ -939,7 +362,7 @@ index 00000000000..9f3c4b03c72
 +                                         (int)MSYNC_SERVER_ONLY, 0 );
 +}
 +
-+static NTSTATUS create_msync( enum msync_type type, HANDLE *handle,
++NTSTATUS create_msync( enum msync_type type, HANDLE *handle,
 +    ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr, int low, int high )
 +{
 +    NTSTATUS ret;
@@ -1007,153 +430,43 @@ index 00000000000..9f3c4b03c72
 +    return ret;
 +}
 +
-+/* ---- MRING: lock-free client wait-path tracer (heisenbug-safe) -------------
-+ * Records, with no syscall/lock/fprintf on the hot path (one atomic fetch-add +
-+ * plain stores), the exact msync objects each thread is about to block on. A
-+ * background thread snapshots it to /tmp/mring_<pid>.log so we can read which
-+ * shm_idx+type a STUCK thread is parked on -- the fprintf probes add latency
-+ * that reorders the sub-microsecond race away. Enabled by WINE_MRING=1. Remove
-+ * after use. */
-+#define MRING_N 8192
-+enum { MEV_WAIT = 1, MEV_WOKE = 2, MEV_SET = 3, MEV_SIGNAL = 4 };
-+struct mring_ent { unsigned long long seq; unsigned int tid, shm_idx; int ev, type, a, b; };
-+static struct mring_ent mring[MRING_N];
-+static unsigned long long mring_pos;
-+static int mring_on;
-+
-+static inline void mrec( int ev, unsigned int shm_idx, int type, int a, int b )
++/* Fetch a handle's object together with its typed payload, refusing the handle
++ * unless it names the expected type. Windows and the wineserver both answer
++ * STATUS_OBJECT_TYPE_MISMATCH for a cross-type operation (NtReleaseSemaphore on
++ * a mutex, NtResetEvent on a semaphore, ...). Going through these means the
++ * payload is unreachable without the check, so a new entry point cannot forget
++ * it -- and forgetting it is not a wrong status but a wrong write: a mutex's
++ * owner tid and an event's signaled flag are the same four bytes. */
++static NTSTATUS get_semaphore_object( HANDLE handle, struct msync **obj, struct semaphore **out )
 +{
-+    unsigned long long s;
-+    unsigned int i;
-+    if (!mring_on) return;
-+    s = __atomic_fetch_add( &mring_pos, 1, __ATOMIC_RELAXED );
-+    i = (unsigned int)(s & (MRING_N - 1));
-+    mring[i].tid = GetCurrentThreadId();
-+    mring[i].shm_idx = shm_idx;
-+    mring[i].ev = ev;
-+    mring[i].type = type;
-+    mring[i].a = a;
-+    mring[i].b = b;
-+    __atomic_store_n( &mring[i].seq, s + 1, __ATOMIC_RELEASE ); /* seq = s+1 so 0 means empty */
++    NTSTATUS ret;
++
++    if ((ret = msync_get_object( handle, obj ))) return ret;
++    if (!msync_type_is_semaphore( (*obj)->type )) return STATUS_OBJECT_TYPE_MISMATCH;
++    *out = (*obj)->shm;
++    return STATUS_SUCCESS;
 +}
 +
-+static void *mring_dump_thread( void *arg )
++static NTSTATUS get_mutex_object( HANDLE handle, struct msync **obj, struct mutex **out )
 +{
-+    char path[64];
-+    snprintf( path, sizeof(path), "/tmp/mring_%d.log", (int)getpid() );
-+    for (;;)
-+    {
-+        FILE *f;
-+        unsigned long long pos, start, k;
-+        usleep( 300000 );
-+        pos = __atomic_load_n( &mring_pos, __ATOMIC_ACQUIRE );
-+        if (!pos || !(f = fopen( path, "w" ))) continue;
-+        start = pos > MRING_N ? pos - MRING_N : 0;
-+        for (k = start; k < pos; k++)
-+        {
-+            struct mring_ent *e = &mring[k & (MRING_N - 1)];
-+            int cur = -1;
-+            if (__atomic_load_n( &e->seq, __ATOMIC_ACQUIRE ) != k + 1) continue;
-+            /* current signaled value of the object NOW (dump-time): distinguishes a
-+             * lost wakeup (cur=1 but thread still parked) from a legit wait (cur=0). */
-+            if (e->ev == MEV_WAIT && e->shm_idx)
-+                cur = __atomic_load_n( (int *)get_shm( e->shm_idx ), __ATOMIC_ACQUIRE );
-+            fprintf( f, "%llu tid=%04x ev=%d idx=%u type=%d a=%d b=%d cur=%d\n",
-+                     k, e->tid, e->ev, e->shm_idx, e->type, e->a, e->b, cur );
-+        }
-+        fclose( f );
-+    }
-+    return NULL;
++    NTSTATUS ret;
++
++    if ((ret = msync_get_object( handle, obj ))) return ret;
++    if (!msync_type_is_mutex( (*obj)->type )) return STATUS_OBJECT_TYPE_MISMATCH;
++    *out = (*obj)->shm;
++    return STATUS_SUCCESS;
 +}
 +
-+void msync_init(void)
++/* Settable events only: the *_SERVER variants and the message queue share the
++ * payload layout but are not things NtSetEvent and friends may touch. */
++static NTSTATUS get_event_object( HANDLE handle, struct msync **obj, struct event **out )
 +{
-+    struct stat st;
-+    mach_port_t bootstrap_port;
-+    void *dlhandle = dlopen( NULL, RTLD_NOW );
++    NTSTATUS ret;
 +
-+    if (!do_msync())
-+    {
-+        /* make sure the server isn't running with WINEMSYNC */
-+        HANDLE handle;
-+        NTSTATUS ret;
-+
-+        ret = create_msync( 0, &handle, 0, NULL, 0, 0 );
-+        if (ret != STATUS_NOT_IMPLEMENTED)
-+        {
-+            ERR("Server is running with WINEMSYNC but this process is not, please enable WINEMSYNC or restart wineserver.\n");
-+            exit(1);
-+        }
-+
-+        dlclose( dlhandle );
-+        return;
-+    }
-+
-+    if (stat( config_dir, &st ) == -1)
-+        ERR("Cannot stat %s\n", config_dir);
-+
-+    if (st.st_ino != (unsigned long)st.st_ino)
-+        sprintf( shm_name, "/wine-%lx%08lx-msync", (unsigned long)((unsigned long long)st.st_ino >> 32), (unsigned long)st.st_ino );
-+    else
-+        sprintf( shm_name, "/wine-%lx-msync", (unsigned long)st.st_ino );
-+
-+    if ((shm_fd = shm_open( shm_name, O_RDWR, 0644 )) == -1)
-+    {
-+        /* probably the server isn't running with WINEMSYNC, tell the user and bail */
-+        if (errno == ENOENT)
-+            ERR("Failed to open msync shared memory file; make sure no stale wineserver instances are running without WINEMSYNC.\n");
-+        else
-+            ERR("Failed to initialize shared memory: %s\n", strerror( errno ));
-+        exit(1);
-+    }
-+
-+    pagesize = sysconf( _SC_PAGESIZE );
-+
-+    shm_addrs = calloc( 128, sizeof(shm_addrs[0]) );
-+    shm_addrs_size = 128;
-+
-+    semaphore_pool_init();
-+
-+    /* Bootstrap mach wineserver communication */
-+
-+    mach_msg2_trap = (mach_msg2_trap_ptr_t)dlsym( dlhandle, "mach_msg2_trap" );
-+    if (!mach_msg2_trap)
-+        WARN("Using mach_msg_overwrite instead of mach_msg2\n");
-+    dlclose( dlhandle );
-+
-+    if (task_get_special_port(mach_task_self(), TASK_BOOTSTRAP_PORT, &bootstrap_port) != KERN_SUCCESS)
-+    {
-+        ERR("Failed task_get_special_port\n");
-+        exit(1);
-+    }
-+
-+    if (bootstrap_look_up(bootstrap_port, shm_name + 1, &server_port) != KERN_SUCCESS)
-+    {
-+        ERR("Failed bootstrap_look_up for %s\n", shm_name + 1);
-+        exit(1);
-+    }
-+
-+    if (getenv( "WINE_MRING" ))
-+    {
-+        pthread_t t;
-+        mring_on = 1;
-+        if (!pthread_create( &t, NULL, mring_dump_thread, NULL )) pthread_detach( t );
-+    }
-+}
-+
-+/* Bisection levers (see event_uses_msync): route semaphores/mutexes to
-+ * server-sync to localize a race, keeping the rest on msync. Remove after use. */
-+static int use_msync_semaphore(void)
-+{
-+    static int c = -1;
-+    if (c == -1) { const char *e = getenv( "WINEMSYNC_NO_SEMAPHORE" ); c = !(e && *e != '0'); }
-+    return c;
-+}
-+static int use_msync_mutex(void)
-+{
-+    static int c = -1;
-+    if (c == -1) { const char *e = getenv( "WINEMSYNC_NO_MUTEX" ); c = !(e && *e != '0'); }
-+    return c;
++    if ((ret = msync_get_object( handle, obj ))) return ret;
++    if (!msync_type_is_settable_event( (*obj)->type )) return STATUS_OBJECT_TYPE_MISMATCH;
++    *out = (*obj)->shm;
++    return STATUS_SUCCESS;
 +}
 +
 +NTSTATUS msync_create_semaphore( HANDLE *handle, ACCESS_MASK access,
@@ -1162,7 +475,7 @@ index 00000000000..9f3c4b03c72
 +    TRACE("name %s, initial %d, max %d.\n",
 +        attr ? debugstr_us(attr->ObjectName) : "<no name>", initial, max);
 +
-+    if (!use_msync_semaphore()) return STATUS_NOT_IMPLEMENTED;
++    if (!msync_type_enabled( MSYNC_SEMAPHORE )) return STATUS_NOT_IMPLEMENTED;
 +
 +    return create_msync( MSYNC_SEMAPHORE, handle, access, attr, initial, max );
 +}
@@ -1181,19 +494,11 @@ index 00000000000..9f3c4b03c72
 +
 +static inline void signal_all( struct msync *obj )
 +{
++    /* Thread-local, unlike the server's single copy: any thread can signal. */
 +    __thread static mach_msg_header_t send_header;
 +
-+    if (mring_on) mrec( MEV_SIGNAL, obj->shm_idx, obj->type, 0, 0 );
-+
-+    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, obj->shm, 0 );
-+
-+    if (!__atomic_load_n( (int *)obj->shm + 3, __ATOMIC_ACQUIRE ))
++    if (!msync_signal_wake( &send_header, obj->shm_idx, obj->shm, msync_server_port ))
 +        return;
-+
-+    send_header.msgh_bits = msgh_bits_send;
-+    send_header.msgh_id = obj->shm_idx;
-+    send_header.msgh_size = sizeof(send_header);
-+    send_header.msgh_remote_port = server_port;
 +
 +    mach_msg2( &send_header, MACH_SEND_MSG, send_header.msgh_size, 0,
 +               MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, 0 );
@@ -1208,8 +513,7 @@ index 00000000000..9f3c4b03c72
 +
 +    TRACE("%p, %d, %p.\n", handle, count, prev);
 +
-+    if ((ret = get_object( handle, &obj ))) return ret;
-+    semaphore = obj->shm;
++    if ((ret = get_semaphore_object( handle, &obj, &semaphore ))) return ret;
 +
 +    do
 +    {
@@ -1234,8 +538,7 @@ index 00000000000..9f3c4b03c72
 +
 +    TRACE("handle %p, info %p, ret_len %p.\n", handle, info, ret_len);
 +
-+    if ((ret = get_object( handle, &obj ))) return ret;
-+    semaphore = obj->shm;
++    if ((ret = get_semaphore_object( handle, &obj, &semaphore ))) return ret;
 +
 +    out->CurrentCount = semaphore->count;
 +    out->MaximumCount = semaphore->max;
@@ -1244,31 +547,12 @@ index 00000000000..9f3c4b03c72
 +    return STATUS_SUCCESS;
 +}
 +
-+/* Bisection lever: route some EVENT types to server-sync while mutexes/semaphores
-+ * (the game hot-path) stay on msync. WINEMSYNC_NO_EVENT=1 disables ALL events;
-+ * WINEMSYNC_NO_AUTOEVENT=1 disables only auto-reset events (the type whose
-+ * consume races in the mixed-wait poll). Env is inherited so named events resolve
-+ * to the same type in every process. Returning NOT_IMPLEMENTED makes the Nt*Event
-+ * wrappers fall through to the server path, exactly like inproc_* / server-only
-+ * objects already do -- no new msync/server casting. Remove after localizing. */
-+static int event_uses_msync( enum msync_type type )
-+{
-+    static int no_all = -1, no_auto = -1, no_manual = -1;
-+    if (no_all == -1)    { const char *e = getenv( "WINEMSYNC_NO_EVENT" );       no_all    = (e && *e != '0'); }
-+    if (no_auto == -1)   { const char *e = getenv( "WINEMSYNC_NO_AUTOEVENT" );   no_auto   = (e && *e != '0'); }
-+    if (no_manual == -1) { const char *e = getenv( "WINEMSYNC_NO_MANUALEVENT" ); no_manual = (e && *e != '0'); }
-+    if (no_all) return 0;
-+    if (no_auto   && type == MSYNC_AUTO_EVENT)   return 0;
-+    if (no_manual && type == MSYNC_MANUAL_EVENT) return 0;
-+    return 1;
-+}
-+
 +NTSTATUS msync_create_event( HANDLE *handle, ACCESS_MASK access,
 +    const OBJECT_ATTRIBUTES *attr, EVENT_TYPE event_type, BOOLEAN initial )
 +{
 +    enum msync_type type = (event_type == SynchronizationEvent ? MSYNC_AUTO_EVENT : MSYNC_MANUAL_EVENT);
 +
-+    if (!event_uses_msync( type )) return STATUS_NOT_IMPLEMENTED;
++    if (!msync_type_enabled( type )) return STATUS_NOT_IMPLEMENTED;
 +
 +    TRACE("name %s, %s-reset, initial %d.\n",
 +        attr ? debugstr_us(attr->ObjectName) : "<no name>",
@@ -1302,16 +586,7 @@ index 00000000000..9f3c4b03c72
 +
 +    TRACE("%p.\n", handle);
 +
-+    if ((ret = get_object( handle, &obj ))) return ret;
-+    event = obj->shm;
-+
-+    if (obj->type != MSYNC_MANUAL_EVENT && obj->type != MSYNC_AUTO_EVENT)
-+        return STATUS_OBJECT_TYPE_MISMATCH;
-+
-+    /* MRING signal-side trace: record EVERY SetEvent (a=prev signaled state) so a
-+     * missing signal for a stuck waiter is visible by its absence. */
-+    if (mring_on) mrec( MEV_SET, obj->shm_idx, obj->type,
-+                        (int)__atomic_load_n( &event->signaled, __ATOMIC_ACQUIRE ), 0 );
++    if ((ret = get_event_object( handle, &obj, &event ))) return ret;
 +
 +    if (!(current = __atomic_exchange_n( &event->signaled, 1, __ATOMIC_SEQ_CST )))
 +        signal_all( obj );
@@ -1330,8 +605,7 @@ index 00000000000..9f3c4b03c72
 +
 +    TRACE("%p.\n", handle);
 +
-+    if ((ret = get_object( handle, &obj ))) return ret;
-+    event = obj->shm;
++    if ((ret = get_event_object( handle, &obj, &event ))) return ret;
 +
 +    current = __atomic_exchange_n( &event->signaled, 0, __ATOMIC_SEQ_CST );
 +
@@ -1344,6 +618,7 @@ index 00000000000..9f3c4b03c72
 +{
 +    struct event *event;
 +    struct msync *obj;
++    NTSTATUS ret;
 +    LONG current;
 +
 +    TRACE("%p.\n", handle);
@@ -1353,13 +628,10 @@ index 00000000000..9f3c4b03c72
 +     * that get_msync_idx demands), fall through to the server so it can apply the
 +     * correct per-op semantics -- NtPulseEvent on a non-event must yield
 +     * STATUS_OBJECT_TYPE_MISMATCH, not the raw STATUS_ACCESS_DENIED msync would
-+     * otherwise surface (ntdll sync test:338). */
-+    if (get_object( handle, &obj )) return STATUS_NOT_IMPLEMENTED;
-+    event = obj->shm;
-+
-+    /* Reject non-event msync objects like msync_set_event does. */
-+    if (obj->type != MSYNC_MANUAL_EVENT && obj->type != MSYNC_AUTO_EVENT)
-+        return STATUS_OBJECT_TYPE_MISMATCH;
++     * otherwise surface (ntdll sync test:338). A wrong *type*, though, is a
++     * mismatch that msync can answer itself. */
++    if ((ret = get_event_object( handle, &obj, &event )))
++        return ret == STATUS_OBJECT_TYPE_MISMATCH ? ret : STATUS_NOT_IMPLEMENTED;
 +
 +    /* This isn't really correct; an application could miss the write.
 +     * Unfortunately we can't really do much better. Fortunately this is rarely
@@ -1387,8 +659,7 @@ index 00000000000..9f3c4b03c72
 +
 +    TRACE("handle %p, info %p, ret_len %p.\n", handle, info, ret_len);
 +
-+    if ((ret = get_object( handle, &obj ))) return ret;
-+    event = obj->shm;
++    if ((ret = get_event_object( handle, &obj, &event ))) return ret;
 +
 +    out->EventState = event->signaled;
 +    out->EventType = (obj->type == MSYNC_AUTO_EVENT ? SynchronizationEvent : NotificationEvent);
@@ -1403,7 +674,7 @@ index 00000000000..9f3c4b03c72
 +    TRACE("name %s, initial %d.\n",
 +        attr ? debugstr_us(attr->ObjectName) : "<no name>", initial);
 +
-+    if (!use_msync_mutex()) return STATUS_NOT_IMPLEMENTED;
++    if (!msync_type_enabled( MSYNC_MUTEX )) return STATUS_NOT_IMPLEMENTED;
 +
 +    return create_msync( MSYNC_MUTEX, handle, access, attr,
 +        initial ? GetCurrentThreadId() : 0, initial ? 1 : 0 );
@@ -1429,8 +700,7 @@ index 00000000000..9f3c4b03c72
 +
 +    TRACE("%p, %p.\n", handle, prev);
 +
-+    if ((ret = get_object( handle, &obj ))) return ret;
-+    mutex = obj->shm;
++    if ((ret = get_mutex_object( handle, &obj, &mutex ))) return ret;
 +
 +    if (mutex->tid != GetCurrentThreadId()) return STATUS_MUTANT_NOT_OWNED;
 +
@@ -1458,8 +728,7 @@ index 00000000000..9f3c4b03c72
 +
 +    TRACE("handle %p, info %p, ret_len %p.\n", handle, info, ret_len);
 +
-+    if ((ret = get_object( handle, &obj ))) return ret;
-+    mutex = obj->shm;
++    if ((ret = get_mutex_object( handle, &obj, &mutex ))) return ret;
 +
 +    out->CurrentCount = 1 - mutex->count;
 +    out->OwnedByCaller = (mutex->tid == GetCurrentThreadId());
@@ -1468,39 +737,436 @@ index 00000000000..9f3c4b03c72
 +
 +    return STATUS_SUCCESS;
 +}
+diff --git a/dlls/ntdll/unix/msync_private.h b/dlls/ntdll/unix/msync_private.h
+new file mode 100644
+index 00000000000..ac78e2b2804
+--- /dev/null
++++ b/dlls/ntdll/unix/msync_private.h
+@@ -0,0 +1,388 @@
++/*
++ * mach semaphore-based synchronization objects
++ *
++ * Copyright (C) 2018 Zebediah Figura
++ * Copyright (C) 2023 Marc-Aurel Zent
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
 +
-+static NTSTATUS do_single_wait( struct msync *obj, ULONGLONG *end, BOOLEAN alertable, int tid )
++
++#ifndef __WINE_NTDLL_MSYNC_PRIVATE_H
++#define __WINE_NTDLL_MSYNC_PRIVATE_H
++
++/* Internals shared by the msync implementation files:
++ *
++ *   msync_shm.c     shared-memory mapping, the mach semaphore pool, init
++ *   msync_obj.c     the per-handle object cache and the typed Nt* entry points
++ *   msync_wait.c    the blocking primitives (__ulock and mach-semaphore waits)
++ *   msync_select.c  the wait-set strategies built on top of them
++ *
++ * msync.h is the interface ntdll's sync.c uses; this is the one the four files
++ * above share with each other. It is self-contained apart from config.h, which
++ * has to come first in the .c file.
++ */
++
++#include <assert.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/mman.h>
++#ifdef HAVE_SYS_STAT_H
++# include <sys/stat.h>
++#endif
++#ifdef HAVE_SYS_SYSCALL_H
++# include <sys/syscall.h>
++#endif
++#ifdef __APPLE__
++# include <mach/mach_init.h>
++# include <mach/mach_port.h>
++# include <mach/message.h>
++# include <mach/port.h>
++# include <mach/task.h>
++# include <mach/semaphore.h>
++# include <mach/mach_error.h>
++# include <servers/bootstrap.h>
++# include <os/lock.h>
++#endif
++#include <sched.h>
++#include <unistd.h>
++#include <pthread.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winternl.h"
++#include "wine/debug.h"
++#include "wine/server.h"
++
++#include "unix_private.h"
++#include "msync.h"
++/* shm name/layout/mapping and the wake protocol, shared with server/msync.c */
++#include "wine/msync_abi.h"
++
++#define ULF_NO_ERRNO                0x01000000
++
++/* __ulock_wait2 exists since macOS 11; we only target non-EOL macOS, so link it
++ * directly rather than dlsym'ing it with a slow Mach-semaphore fallback. */
++extern int __ulock_wait2( uint32_t operation, void *addr, uint64_t value,
++                          uint64_t timeout_ns, uint64_t value2 );
++
++/*
++ * Faster to directly do the syscall and inline everything, taken and slightly adapted
++ * from xnu/libsyscall/mach/mach_msg.c
++ */
++
++static inline mach_msg_return_t mach_msg2( mach_msg_header_t *data, uint64_t option64,
++    mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_t rcv_name, uint64_t timeout,
++    uint32_t priority)
 +{
-+    NTSTATUS status;
-+    struct msync *wait_objs[2];
-+
-+    wait_objs[0] = obj;
-+
-+    if (alertable)
-+    {
-+        struct msync apc_obj;
-+        int *apc_addr = ntdll_get_thread_data()->msync_apc_addr;
-+
-+        apc_obj.type = MSYNC_AUTO_EVENT;
-+        apc_obj.shm = (void *)apc_addr;
-+        apc_obj.shm_idx = ntdll_get_thread_data()->msync_apc_idx;
-+
-+        if (__atomic_load_n( apc_addr, __ATOMIC_SEQ_CST ))
-+            return STATUS_USER_APC;
-+
-+        wait_objs[1] = &apc_obj;
-+
-+        status = msync_wait_multiple( wait_objs, 2, end, tid );
-+
-+        if (__atomic_load_n( apc_addr, __ATOMIC_SEQ_CST ))
-+            return STATUS_USER_APC;
-+    }
-+    else
-+    {
-+        status = msync_wait_multiple( wait_objs, 1, end, tid );
-+    }
-+    return status;
++    /* Route through the public mach_msg() rather than the raw mach_msg2_trap:
++     * under Rosetta the dlsym'd raw trap is invoked through an untranslated
++     * pointer and crashes. libSystem's mach_msg() is translated correctly.
++     * (priority is always 0 here, so it maps to a NULL notify port.) */
++    (void)priority;
++    /* mach_msg() takes 32-bit option/timeout; assert no lossy narrowing. */
++    assert( !(option64 >> 32) );
++    assert( timeout <= 0xffffffff );
++    return mach_msg( data, (mach_msg_option_t)option64, send_size, rcv_size,
++                     rcv_name, (mach_msg_timeout_t)timeout, MACH_PORT_NULL );
 +}
++
++/* this is a lot, but running out cripples performance */
++struct msync
++{
++    void *shm;              /* pointer to shm section */
++    enum msync_type type;
++    unsigned int shm_idx;
++    unsigned int access;    /* granted (possibly generic) access mask for this handle */
++};
++
++/* Not a real msync_type: a sentinel cached for handles the server reported as
++ * having no msync shadow (server-only objects: pipes, sockets, processes, ...).
++ * It lets msync_get_object() skip the get_msync_idx round-trip on repeated waits --
++ * without it, polling a mixed wait-set (e.g. Steam's IPC pipes) issues one
++ * server round-trip per handle per poll, starving the reader. Cleared by
++ * msync_close() on handle close like any entry, so handle reuse stays correct. */
++#define MSYNC_SERVER_ONLY ((enum msync_type)0xff)
++/* It shares ->type with the real types, so it must not collide with one. Zero is
++ * the third reserved value: msync_close() zeroes ->type, and ->type doubles as
++ * the atomic claim word for a cache slot (see add_to_list). */
++C_ASSERT( MSYNC_QUEUE < 0xff );
++
++/* The shm payload of each object type. */
++struct semaphore
++{
++    int count;
++    int max;
++};
++C_ASSERT(sizeof(struct semaphore) == 8);
++
++struct event
++{
++    int signaled;
++    int unused;
++};
++C_ASSERT(sizeof(struct event) == 8);
++
++struct mutex
++{
++    int tid;
++    int count;  /* recursion count */
++};
++C_ASSERT(sizeof(struct mutex) == 8);
++
++/* The readiness word is at offset 0 in every payload. msync_ready() reads it as
++ * a bare int without knowing the type, msync_wait_single() hands the same
++ * address to __ulock_wait2(), and the wineserver's registration re-check reads
++ * it the same way -- so this is a cross-process ABI invariant, not a local
++ * convenience. Check it rather than trusting the field order above. */
++C_ASSERT( offsetof(struct semaphore, count)    == 0 );
++C_ASSERT( offsetof(struct event,     signaled) == 0 );
++C_ASSERT( offsetof(struct mutex,     tid)      == 0 );
++
++/* ---- type safety ----------------------------------------------------------
++ *
++ * obj->shm is a void * whose real type is decided by obj->type, and nothing in
++ * the type system connects the two: every payload is 8 bytes, so casting one to
++ * another is silent. A cross-type operation must answer
++ * STATUS_OBJECT_TYPE_MISMATCH, the way Windows and the wineserver path do -- not
++ * read the wrong fields, and certainly not write them (a mutex's owner tid and
++ * an event's signaled flag are the same 4 bytes). Route every cast through
++ * these predicates, and check the type at every entry point that takes a HANDLE.
++ *
++ * There is deliberately no asserting accessor to go with them. obj->type lives
++ * in the shared per-handle cache, so re-reading it to assert after the caller
++ * has branched on it just adds a window in which a concurrent close-and-reuse
++ * turns a returned status into an abort() of the whole process. The callers
++ * below each read it once and cast. */
++
++static inline int msync_type_is_semaphore( enum msync_type type )
++{
++    return type == MSYNC_SEMAPHORE;
++}
++
++static inline int msync_type_is_mutex( enum msync_type type )
++{
++    return type == MSYNC_MUTEX;
++}
++
++/* The two types a caller can create and set/reset/pulse. Narrower than
++ * msync_type_is_event(): the *_SERVER variants and the message queue are
++ * event-shaped but are not user-settable events. */
++static inline int msync_type_is_settable_event( enum msync_type type )
++{
++    return type == MSYNC_AUTO_EVENT || type == MSYNC_MANUAL_EVENT;
++}
++
++/* The rest of the shm slot, addressed from an object rather than from a bare
++ * shm pointer; the layout itself is in wine/msync_abi.h. */
++static inline int *msync_alive( const struct msync *obj )    { return msync_shm_alive( obj->shm ); }
++static inline int *msync_regcount( const struct msync *obj ) { return msync_shm_regcount( obj->shm ); }
++
++/* ---- readiness / consume / put-back: one definition per object type --------
++ *
++ * These, together with msync_wait_value() above, are the only place the
++ * semantics of an object type are encoded ON THIS SIDE, and every client wait
++ * path goes through them. There is exactly one more encoding, and it is across
++ * the process boundary so no header can share it: the wineserver's registration
++ * TOCTTOU re-check (server/msync.c, the registration branch of
++ * mach_message_pump) open-codes msync_ready() fused with !msync_alive(). Change
++ * mutex readiness here -- how `~0` abandoned is treated, say -- and that must
++ * change too, or the server registers a waiter for an object this side already
++ * considers ready, which is a lost wakeup. Keep it that way: a lost wakeup IS a
++ * disagreement between "the signaler thinks it woke everyone" and "the waiter
++ * thinks it is not ready", so a second encoding of "ready" is a second chance
++ * to disagree. */
++
++/* The value __ulock_wait2() parks on: it sleeps while the readiness word still
++ * equals this. Zero for everything level-triggered; for a mutex it is the
++ * current owner, or this thread's id when the mutex is free or abandoned --
++ * which makes the caller's pre-wait compare fail, so it re-scans and grabs the
++ * mutex instead of parking on it. */
++static inline int msync_wait_value( const struct msync *obj, int tid )
++{
++    int val;
++
++    if (obj->type != MSYNC_MUTEX) return 0;
++    val = __atomic_load_n( (const int *)obj->shm, __ATOMIC_ACQUIRE );
++    return (!val || val == ~0) ? tid : val;
++}
++
++/* The thread's pending-APC flag, dressed as an auto-event so it can join a wait
++ * set. msync_apc_addr points at that event's ->signaled, which is the event's
++ * own address -- the offsetof C_ASSERT above, not luck. */
++static inline void msync_init_apc_obj( struct msync *obj, struct ntdll_thread_data *data )
++{
++    obj->type    = MSYNC_AUTO_EVENT;
++    obj->shm     = (void *)data->msync_apc_addr;
++    obj->shm_idx = data->msync_apc_idx;
++}
++
++/* Peek: is this object ready for `tid` right now? No side effects. */
++static inline int msync_ready( const struct msync *obj, int tid )
++{
++    int val = __atomic_load_n( (const int *)obj->shm, __ATOMIC_SEQ_CST );
++
++    if (obj->type == MSYNC_MUTEX)
++        return val == 0 || val == ~0 || val == tid;
++
++    return val != 0;
++}
++
++/* Consume: try to take ownership / one count, atomically. The switch below is
++ * itself the type check, so the payload casts here are bare -- the asserting
++ * accessors are for the handle-taking entry points, which have no such proof.
++ *   STATUS_SUCCESS   - taken
++ *   STATUS_ABANDONED - taken, previous owner died without releasing (mutex only)
++ *   STATUS_PENDING   - not available
++ * Manual-reset events and the message queue are level-triggered, so "taking"
++ * them consumes nothing and leaves them signaled. */
++static inline NTSTATUS msync_try_grab( struct msync *obj, int tid )
++{
++    switch (obj->type)
++    {
++    case MSYNC_SEMAPHORE:
++    {
++        struct semaphore *semaphore = obj->shm;
++        int current = __atomic_load_n( &semaphore->count, __ATOMIC_ACQUIRE );
++
++        if (current && __atomic_compare_exchange_n( &semaphore->count, &current,
++                current - 1, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED ))
++            return STATUS_SUCCESS;
++        return STATUS_PENDING;
++    }
++    case MSYNC_MUTEX:
++    {
++        struct mutex *mutex = obj->shm;
++        int owner = 0;
++
++        if (__atomic_load_n( &mutex->tid, __ATOMIC_ACQUIRE ) == tid)
++        {
++            mutex->count++;
++            return STATUS_SUCCESS;
++        }
++        if (__atomic_compare_exchange_n( &mutex->tid, &owner, tid, 0,
++                __ATOMIC_ACQ_REL, __ATOMIC_RELAXED ))
++        {
++            mutex->count = 1;
++            return STATUS_SUCCESS;
++        }
++        /* the failed CAS left the observed owner in `owner` */
++        if (owner == ~0 && __atomic_compare_exchange_n( &mutex->tid, &owner, tid, 0,
++                __ATOMIC_ACQ_REL, __ATOMIC_RELAXED ))
++        {
++            mutex->count = 1;
++            return STATUS_ABANDONED;
++        }
++        return STATUS_PENDING;
++    }
++    case MSYNC_AUTO_EVENT:
++    case MSYNC_AUTO_SERVER:
++    {
++        struct event *event = obj->shm;
++        int signaled = 1;
++
++        if (__atomic_compare_exchange_n( &event->signaled, &signaled, 0, 0,
++                __ATOMIC_ACQ_REL, __ATOMIC_RELAXED ))
++            return STATUS_SUCCESS;
++        return STATUS_PENDING;
++    }
++    case MSYNC_MANUAL_EVENT:
++    case MSYNC_MANUAL_SERVER:
++    case MSYNC_QUEUE:
++    {
++        struct event *event = obj->shm;
++
++        if (__atomic_load_n( &event->signaled, __ATOMIC_ACQUIRE ))
++            return STATUS_SUCCESS;
++        return STATUS_PENDING;
++    }
++    default:
++        /* Not a type we know how to consume. Distinct from STATUS_PENDING so a
++         * caller that has the handle around can report it; the mixed-wait scan
++         * just treats it as "not ready", which is what it did before. */
++        return STATUS_OBJECT_TYPE_MISMATCH;
++    }
++}
++
++/* Put back exactly what msync_try_grab() took, for the wait-all path when a
++ * later object in the set turns out not to be available after all. */
++static inline void msync_ungrab( struct msync *obj )
++{
++    switch (obj->type)
++    {
++    case MSYNC_MUTEX:
++    {
++        struct mutex *mutex = obj->shm;
++
++        /* A recursive acquire only bumped the count; a fresh one took ownership.
++         * HACK: an abandoned mutex is not restored to the abandoned state, but
++         * fixing that is probably more trouble than it's worth. */
++        if (mutex->count > 1)
++            mutex->count--;
++        else
++        {
++            mutex->count = 0;
++            __atomic_store_n( &mutex->tid, 0, __ATOMIC_SEQ_CST );
++        }
++        break;
++    }
++    case MSYNC_SEMAPHORE:
++    {
++        struct semaphore *semaphore = obj->shm;
++        __atomic_fetch_add( &semaphore->count, 1, __ATOMIC_SEQ_CST );
++        break;
++    }
++    case MSYNC_AUTO_EVENT:
++    case MSYNC_AUTO_SERVER:
++    {
++        struct event *event = obj->shm;
++        __atomic_store_n( &event->signaled, 1, __ATOMIC_SEQ_CST );
++        break;
++    }
++    default:
++        break;  /* level-triggered: nothing was consumed */
++    }
++}
++
++
++static const mach_msg_bits_t msgh_bits_send = MACH_MSGH_BITS_REMOTE(MACH_MSG_TYPE_COPY_SEND);
++
++/* ---- msync_shm.c ---------------------------------------------------------- */
++extern void *msync_get_shm( unsigned int idx );
++extern int msync_type_enabled( enum msync_type type );
++extern semaphore_t *msync_semaphore_pool_alloc(void);
++extern void msync_semaphore_pool_free( semaphore_t *sem );
++extern mach_port_t msync_server_port;
++
++/* ---- msync_obj.c ---------------------------------------------------------- */
++extern NTSTATUS msync_get_object( HANDLE handle, struct msync **obj );
++/* Unprefixed, unlike its neighbours: SERVER_START_REQ( create_msync ) builds the
++ * request/reply struct names from this identifier. */
++extern NTSTATUS create_msync( enum msync_type type, HANDLE *handle, ACCESS_MASK access,
++                              const OBJECT_ATTRIBUTES *attr, int low, int high );
++
++/* ---- msync_wait.c --------------------------------------------------------- */
++extern NTSTATUS msync_run_apcs( BOOLEAN alertable );
++extern NTSTATUS msync_wait_multiple( struct msync **wait_objs, int count,
++                                     ULONGLONG *end, int tid );
++extern NTSTATUS msync_do_single_wait( struct msync *obj, ULONGLONG *end,
++                                BOOLEAN alertable, int tid );
++
++#endif /* __WINE_NTDLL_MSYNC_PRIVATE_H */
+diff --git a/dlls/ntdll/unix/msync_select.c b/dlls/ntdll/unix/msync_select.c
+new file mode 100644
+index 00000000000..47234e78a88
+--- /dev/null
++++ b/dlls/ntdll/unix/msync_select.c
+@@ -0,0 +1,671 @@
++/*
++ * mach semaphore-based synchronization objects
++ *
++ * Copyright (C) 2018 Zebediah Figura
++ * Copyright (C) 2023 Marc-Aurel Zent
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include "msync_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(msync);
 +
 +/* Poll interval (100ns units) for a wait set that mixes msync and server
 + * objects. Only mixed waits take this path (never a game hot path), so a small
@@ -1523,15 +1189,15 @@ index 00000000000..9f3c4b03c72
 + * Instead we poll: repeatedly grab any ready msync object in userspace (fast),
 + * and between checks do a short server_wait() on just the server subset so the
 + * server can wake us when one of those signals. `objs[i]==NULL` marks a server
-+ * object (get_object() left it NULL); non-NULL marks an msync object. */
++ * object (msync_get_object() left it NULL); non-NULL marks an msync object. */
 +static NTSTATUS msync_wait_mixed_any( DWORD count, const HANDLE *handles,
-+    struct msync **objs, BOOLEAN alertable, const LARGE_INTEGER *timeout, ULONGLONG end )
++    struct msync **objs, BOOLEAN alertable, const LARGE_INTEGER *timeout, ULONGLONG end,
++    int current_tid )
 +{
-+    static const LARGE_INTEGER zero = {0};
 +    union select_op select_op;
 +    unsigned int server_map[MAXIMUM_WAIT_OBJECTS];
 +    unsigned int server_count = 0, flags, i;
-+    int current_tid = GetCurrentThreadId();
++    int *apc_addr;
 +    LONGLONG interval = MSYNC_MIXED_POLL_INTERVAL;
 +    LARGE_INTEGER diag_start = {0};
 +    NTSTATUS ret;
@@ -1549,69 +1215,28 @@ index 00000000000..9f3c4b03c72
 +        }
 +    }
 +
++    /* ntdll_get_thread_data() is an out-of-line call on the unix side
++     * (NtCurrentTeb() -> pthread_getspecific), and it is `pure`, not `const`, so
++     * the compiler cannot hoist it past this loop's atomics. Resolve it once. */
++    apc_addr = alertable ? ntdll_get_thread_data()->msync_apc_addr : NULL;
++
 +    while (1)
 +    {
 +        LARGE_INTEGER poll;
-+        int *apc_addr = ntdll_get_thread_data()->msync_apc_addr;
 +        LONGLONG left = interval;
 +
-+        if (alertable && apc_addr && __atomic_load_n( apc_addr, __ATOMIC_SEQ_CST ))
-+        {
-+            ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero );
-+            if (ret == STATUS_TIMEOUT) ret = STATUS_USER_APC;
-+            return ret;
-+        }
++        if (apc_addr && __atomic_load_n( apc_addr, __ATOMIC_SEQ_CST ))
++            return msync_run_apcs( TRUE );
 +
 +        /* 1. Try to grab any ready msync object (userspace, fast). */
 +        for (i = 0; i < count; i++)
 +        {
-+            struct msync *obj = objs[i];
++            NTSTATUS status;
 +
-+            if (!obj) continue;
-+            switch (obj->type)
-+            {
-+            case MSYNC_SEMAPHORE:
-+            {
-+                struct semaphore *semaphore = obj->shm;
-+                int current = __atomic_load_n( &semaphore->count, __ATOMIC_ACQUIRE );
-+                if (current && __atomic_compare_exchange_n( &semaphore->count, &current,
-+                        current - 1, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED ))
-+                    return i;
-+                break;
-+            }
-+            case MSYNC_MUTEX:
-+            {
-+                struct mutex *mutex = obj->shm;
-+                int tid = 0;
-+                if (mutex->tid == current_tid) { mutex->count++; return i; }
-+                if (__atomic_compare_exchange_n( &mutex->tid, &tid, current_tid, 0,
-+                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED )) { mutex->count = 1; return i; }
-+                else if (tid == ~0 && __atomic_compare_exchange_n( &mutex->tid, &tid, current_tid, 0,
-+                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED )) { mutex->count = 1; return STATUS_ABANDONED_WAIT_0 + i; }
-+                break;
-+            }
-+            case MSYNC_AUTO_EVENT:
-+            case MSYNC_AUTO_SERVER:
-+            {
-+                struct event *event = obj->shm;
-+                int signaled = 1;
-+                if (__atomic_compare_exchange_n( &event->signaled, &signaled, 0, 0,
-+                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED ))
-+                    return i;
-+                break;
-+            }
-+            case MSYNC_MANUAL_EVENT:
-+            case MSYNC_MANUAL_SERVER:
-+            case MSYNC_QUEUE:
-+            {
-+                struct event *event = obj->shm;
-+                if (__atomic_load_n( &event->signaled, __ATOMIC_ACQUIRE ))
-+                    return i;
-+                break;
-+            }
-+            default:
-+                break;
-+            }
++            if (!objs[i]) continue;  /* server object, handled by the poll below */
++            status = msync_try_grab( objs[i], current_tid );
++            if (status == STATUS_SUCCESS) return i;
++            if (status == STATUS_ABANDONED) return STATUS_ABANDONED_WAIT_0 + i;
 +        }
 +
 +        /* 2. Bound the poll interval by the overall deadline. */
@@ -1668,6 +1293,117 @@ index 00000000000..9f3c4b03c72
 +    }
 +}
 +
++/* Wait-all over a set that mixes msync objects with pure-server objects.
++ *
++ * The wait-any sibling above can take objects one at a time and return; wait-all
++ * has to end up holding everything or nothing, across two mechanisms that cannot
++ * be committed together. Only one ordering works: acquire the msync side first,
++ * because msync_ungrab() can put it back, and the server side last with a single
++ * zero-timeout SELECT_WAIT_ALL, which the server treats as all-or-nothing and so
++ * can never leave it half-consumed. If that probe reports nothing ready we
++ * release the msync objects and go round again.
++ *
++ * Without this the set fell into the pure-msync wait-all loop, whose `if (!obj)
++ * continue` skips every server object -- so a wait-all over an event and a named
++ * pipe returned SUCCESS with the pipe unsignaled.
++ *
++ * The sleep between rounds deliberately passes no handles: a SELECT_WAIT over the
++ * server subset would consume one (an auto-reset event, a semaphore) that we then
++ * could not give back if the msync side was not also ready. So this path trades
++ * up to MSYNC_MIXED_POLL_MAX of latency for that safety -- bWaitAll over a mixed
++ * set is rare enough that this is the right trade.
++ *
++ * It makes the same temporary-acquisition bargain the pure-msync wait-all already
++ * documents: another thread can briefly fail to take an object we are holding and
++ * about to give back. */
++static NTSTATUS msync_wait_mixed_all( DWORD count, const HANDLE *handles,
++    struct msync **objs, BOOLEAN alertable, ULONGLONG *end, int current_tid )
++{
++    static const LARGE_INTEGER zero = {0};
++    union select_op select_op;
++    unsigned int server_count = 0, flags, i;
++    LONGLONG interval = MSYNC_MIXED_POLL_INTERVAL;
++    int *apc_addr;
++    NTSTATUS ret;
++
++    flags = SELECT_INTERRUPTIBLE | (alertable ? SELECT_ALERTABLE : 0);
++
++    select_op.wait.op = SELECT_WAIT_ALL;
++    for (i = 0; i < count; i++)
++        if (!objs[i]) select_op.wait.handles[server_count++] = wine_server_obj_handle( handles[i] );
++
++    apc_addr = alertable ? ntdll_get_thread_data()->msync_apc_addr : NULL;
++
++    while (1)
++    {
++        LARGE_INTEGER poll;
++        LONGLONG left = interval;
++        BOOL abandoned = FALSE;
++
++        if (apc_addr && __atomic_load_n( apc_addr, __ATOMIC_SEQ_CST ))
++            return msync_run_apcs( TRUE );
++
++        /* 1. Peek: are all the msync objects ready? No side effects, so there is
++         *    nothing to undo if one is not. */
++        for (i = 0; i < count; i++)
++            if (objs[i] && !msync_ready( objs[i], current_tid )) break;
++
++        if (i == count)
++        {
++            /* 2. Take the msync side. This is the rollbackable half. */
++            for (i = 0; i < count; i++)
++            {
++                NTSTATUS grabbed;
++
++                if (!objs[i]) continue;
++                grabbed = msync_try_grab( objs[i], current_tid );
++                if (grabbed == STATUS_ABANDONED) abandoned = TRUE;
++                else if (grabbed != STATUS_SUCCESS) break;
++            }
++
++            if (i == count)
++            {
++                /* 3. Then the server side, all-or-nothing and non-blocking. */
++                ret = server_wait( &select_op,
++                    offsetof( union select_op, wait.handles[server_count] ), flags, &zero );
++
++                if (ret == STATUS_SUCCESS)
++                    return abandoned ? STATUS_ABANDONED : STATUS_SUCCESS;
++                if (ret == STATUS_ABANDONED)
++                    return STATUS_ABANDONED;
++                if (ret != STATUS_TIMEOUT)
++                {
++                    /* A real error or an APC: give the msync side back first. */
++                    for (i = 0; i < count; i++)
++                        if (objs[i]) msync_ungrab( objs[i] );
++                    return ret;
++                }
++            }
++
++            /* Could not complete: put back exactly what we took. */
++            while (i--)
++                if (objs[i]) msync_ungrab( objs[i] );
++        }
++
++        /* 4. Sleep, bounded by the overall deadline. */
++        if (end)
++        {
++            LARGE_INTEGER now;
++
++            NtQuerySystemTime( &now );
++            left = *end - now.QuadPart;
++            if (left <= 0) return STATUS_TIMEOUT;
++            if (left > interval) left = interval;
++        }
++        poll.QuadPart = -left;
++
++        ret = server_wait( NULL, 0, flags, &poll );
++        if (ret != STATUS_TIMEOUT) return ret;
++
++        if (interval < MSYNC_MIXED_POLL_MAX) interval *= 2;
++    }
++}
++
 +/* Does this (possibly generic) access mask grant SYNCHRONIZE, i.e. the right to
 + * wait on the object? Mirrors the server generic mapping (msync_map_access):
 + * SYNCHRONIZE is conferred by the explicit SYNCHRONIZE bit (also present in every
@@ -1677,26 +1413,230 @@ index 00000000000..9f3c4b03c72
 +    return (access & (SYNCHRONIZE | GENERIC_EXECUTE | GENERIC_ALL | MAXIMUM_ALLOWED)) != 0;
 +}
 +
++/* Woken by a user APC rather than by anything in the wait set. */
++static NTSTATUS msync_wait_user_apc(void)
++{
++    TRACE("Woken up by user APC.\n");
++
++    /* msync_run_apcs() maps the zero-timeout TIMEOUT to STATUS_USER_APC, which
++     * is also the right answer when a system APC woke the APC fd before SIGUSR1
++     * arrived and poll() therefore did not report EINTR. */
++    return msync_run_apcs( TRUE );
++}
++
++/* Wait-any over a pure-msync set: scan for anything ready, otherwise block on
++ * the whole set and scan again. */
++static NTSTATUS msync_wait_any(
++    DWORD count, const HANDLE *handles, struct msync **objs, struct msync *apc_obj,
++    BOOLEAN alertable, const LARGE_INTEGER *timeout, ULONGLONG end, int current_tid )
++{
++    DWORD waitcount;
++    int i, ret;
++
++    while (1)
++    {
++        /* Try to grab anything. */
++
++        if (alertable)
++        {
++            /* We must check this first! The server may set an event that
++             * we're waiting on, but we need to return STATUS_USER_APC. */
++            if (__atomic_load_n( (int *)apc_obj->shm, __ATOMIC_SEQ_CST ))
++                return msync_wait_user_apc();
++        }
++
++        for (i = 0; i < count; i++)
++        {
++            struct msync *obj = objs[i];
++            NTSTATUS status;
++
++            if (!obj) continue;
++
++            if (!obj->type)
++            {
++                /* Someone probably closed an object while waiting on it. */
++                WARN("Handle %p has type 0; was it closed?\n", handles[i]);
++                return STATUS_INVALID_HANDLE;
++            }
++
++            status = msync_try_grab( obj, current_tid );
++            if (status == STATUS_SUCCESS)
++            {
++                TRACE("Woken up by handle %p [%d].\n", handles[i], i);
++                return i;
++            }
++            if (status == STATUS_ABANDONED)
++            {
++                TRACE("Woken up by abandoned mutex %p [%d].\n", handles[i], i);
++                return STATUS_ABANDONED_WAIT_0 + i;
++            }
++            if (status == STATUS_OBJECT_TYPE_MISMATCH)
++            {
++                ERR("Invalid type %#x for handle %p.\n", obj->type, handles[i]);
++                assert(0);
++            }
++        }
++
++        if (alertable)
++        {
++            /* We already checked if it was signaled; don't bother doing it again. */
++            objs[i] = apc_obj;
++            i++;
++        }
++        waitcount = i;
++
++        /* Looks like everything is contended, so wait. */
++
++        if (timeout && !timeout->QuadPart)
++        {
++            /* Unlike esync, we already know that we've timed out, so we
++             * can avoid a syscall. */
++            TRACE("Wait timed out.\n");
++            return STATUS_TIMEOUT;
++        }
++
++        ret = msync_wait_multiple( objs, waitcount, timeout ? &end : NULL, current_tid );
++
++        if (ret == STATUS_TIMEOUT)
++        {
++            TRACE("Wait timed out.\n");
++            return STATUS_TIMEOUT;
++        }
++    } /* while (1) */
++}
++
++/* Wait-all over a pure-msync set. Trickier, and fortunately less common: wait
++ * in sequence on every object, then try to grab them all in a tight loop; if
++ * that fails, put back whatever was taken and start over. */
++static NTSTATUS msync_wait_all(
++    DWORD count, const HANDLE *handles, struct msync **objs, struct msync *apc_obj,
++    BOOLEAN alertable, const LARGE_INTEGER *timeout, ULONGLONG end, int current_tid )
++{
++    int i;
++
++    /* Wait-all is a little trickier to implement correctly. Fortunately,
++     * it's not as common.
++     *
++     * The idea is basically just to wait in sequence on every object in the
++     * set. Then when we're done, try to grab them all in a tight loop. If
++     * that fails, release any resources we've grabbed (and yes, we can
++     * reliably do this—it's just mutexes and semaphores that we have to
++     * put back, and in both cases we just put back 1), and if any of that
++     * fails we start over.
++     *
++     * What makes this inherently bad is that we might temporarily grab a
++     * resource incorrectly. Hopefully it'll be quick (and hey, it won't
++     * block on wineserver) so nobody will notice. Besides, consider: if
++     * object A becomes signaled but someone grabs it before we can grab it
++     * and everything else, then they could just as well have grabbed it
++     * before it became signaled. Similarly if object A was signaled and we
++     * were blocking on object B, then B becomes available and someone grabs
++     * A before we can, then they might have grabbed A before B became
++     * signaled. In either case anyone who tries to wait on A or B will be
++     * waiting for an instant while we put things back. */
++
++    while (1)
++    {
++        BOOL abandoned = FALSE;
++
++        /* First step: try to wait on each object in sequence. */
++
++        for (i = 0; i < count; i++)
++        {
++            struct msync *obj = objs[i];
++            NTSTATUS status = STATUS_SUCCESS;
++
++            if (!obj) continue;
++
++            if (!obj->type)
++            {
++                /* Closed while we were assembling the set. Fail it here, as
++                 * the wait-any branch does: msync_try_grab() would report a
++                 * type mismatch, and the grab loop would retry forever. */
++                WARN("Handle %p has type 0; was it closed?\n", handles[i]);
++                return STATUS_INVALID_HANDLE;
++            }
++
++            /* msync_ready() covers every type, including an abandoned mutex
++             * (tid == ~0), which is ready: msync_do_single_wait() returns
++             * STATUS_PENDING for one immediately, so treating it as not-ready
++             * here would spin. */
++            while (!msync_ready( obj, current_tid ))
++            {
++                status = msync_do_single_wait( obj, timeout ? &end : NULL, alertable, current_tid );
++                if (status != STATUS_PENDING)
++                    break;
++            }
++
++            if (status == STATUS_TIMEOUT)
++            {
++                TRACE("Wait timed out.\n");
++                return STATUS_TIMEOUT;
++            }
++            else if (status == STATUS_USER_APC)
++                return msync_wait_user_apc();
++        }
++
++        /* If we got here and we haven't timed out, that means all of the
++         * handles were signaled. Check to make sure they still are. */
++        for (i = 0; i < count; i++)
++            if (objs[i] && !msync_ready( objs[i], current_tid )) break;
++        if (i < count) continue;   /* one went away again -- start over */
++
++        /* Yep, still signaled. Now quick, grab everything. */
++        for (i = 0; i < count; i++)
++        {
++            struct msync *obj = objs[i];
++            NTSTATUS grabbed;
++
++            if (!obj) continue;
++            /* This re-tests manual-reset events and the queue too:
++             * msync_try_grab() consumes nothing for those, but it does report
++             * STATUS_PENDING if one was reset since the check above, and a
++             * wait-all must not return with an unsignaled object in the set.
++             * Retrying is what the "still signaled" loop above would answer,
++             * just with a tighter window. */
++            grabbed = msync_try_grab( obj, current_tid );
++            if (grabbed == STATUS_ABANDONED)
++                abandoned = TRUE;
++            else if (grabbed != STATUS_SUCCESS)
++                break;
++        }
++
++        if (i < count)   /* too slow -- put back what we took and start over */
++        {
++            while (i--)
++                if (objs[i]) msync_ungrab( objs[i] );
++            continue;
++        }
++
++        if (abandoned)
++        {
++            TRACE("Wait successful, but some object(s) were abandoned.\n");
++            return STATUS_ABANDONED;
++        }
++        TRACE("Wait successful.\n");
++        return STATUS_SUCCESS;
++    } /* while (1) */
++}
++
 +static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
 +    BOOLEAN wait_any, BOOLEAN alertable, const LARGE_INTEGER *timeout )
 +{
-+    static const LARGE_INTEGER zero = {0};
-+
 +    __thread static int current_tid = 0;
 +    __thread static struct msync *objs[MAXIMUM_WAIT_OBJECTS + 1];
 +    struct msync apc_obj;
 +    int has_msync = 0, has_server = 0;
-+    BOOL msgwait = FALSE;
 +    LONGLONG timeleft;
-+    LARGE_INTEGER now;
-+    DWORD waitcount;
 +    ULONGLONG end;
 +    int i, ret;
++    /* One resolution for the whole call: see the note in msync_wait_mixed_any(). */
++    struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
 +
-+    current_tid = current_tid ? current_tid : GetCurrentThreadId();
++    if (!current_tid) current_tid = GetCurrentThreadId();
 +
 +    /* Grab the APC idx if we don't already have it. */
-+    if (alertable && !ntdll_get_thread_data()->msync_apc_addr)
++    if (alertable && !thread_data->msync_apc_addr)
 +    {
 +        unsigned int idx = 0;
 +        SERVER_START_REQ( get_msync_apc_idx )
@@ -1708,13 +1648,12 @@ index 00000000000..9f3c4b03c72
 +
 +        if (idx)
 +        {
-+            struct event *apc_event = get_shm( idx );
-+            ntdll_get_thread_data()->msync_apc_addr = &apc_event->signaled;
-+            ntdll_get_thread_data()->msync_apc_idx = idx;
++            struct event *apc_event = msync_get_shm( idx );
++            thread_data->msync_apc_addr = &apc_event->signaled;
++            thread_data->msync_apc_idx = idx;
 +        }
 +    }
 +
-+    NtQuerySystemTime( &now );
 +    if (timeout)
 +    {
 +        if (timeout->QuadPart == TIMEOUT_INFINITE)
@@ -1722,12 +1661,16 @@ index 00000000000..9f3c4b03c72
 +        else if (timeout->QuadPart > 0)
 +            end = timeout->QuadPart;
 +        else
++        {
++            LARGE_INTEGER now;
++            NtQuerySystemTime( &now );
 +            end = now.QuadPart - timeout->QuadPart;
++        }
 +    }
 +
 +    for (i = 0; i < count; i++)
 +    {
-+        ret = get_object( handles[i], &objs[i] );
++        ret = msync_get_object( handles[i], &objs[i] );
 +        if (ret == STATUS_SUCCESS)
 +        {
 +            has_msync = 1;
@@ -1747,20 +1690,17 @@ index 00000000000..9f3c4b03c72
 +            return ret;
 +    }
 +
-+    if (count && objs[count - 1] && objs[count - 1]->type == MSYNC_QUEUE)
-+        msgwait = TRUE;
-+
 +    if (has_msync && has_server)
 +    {
 +        /* A wait set mixing msync and server objects cannot be handled by
 +         * either mechanism alone; poll both. (A mixed set always has count >= 2,
 +         * so it is a wait-any unless the caller asked for wait-all.) */
 +        if (wait_any || count <= 1)
-+        {
 +            return msync_wait_mixed_any( count, handles, objs, alertable,
-+                                         timeout, timeout ? end : 0 );
-+        }
-+        FIXME("Can't wait-all on msync and server objects at the same time!\n");
++                                         timeout, timeout ? end : 0, current_tid );
++
++        return msync_wait_mixed_all( count, handles, objs, alertable,
++                                     timeout ? &end : NULL, current_tid );
 +    }
 +    else if (has_server)
 +        return STATUS_NOT_IMPLEMENTED;
@@ -1771,7 +1711,7 @@ index 00000000000..9f3c4b03c72
 +        for (i = 0; i < count; i++)
 +            TRACE(" %p", handles[i]);
 +
-+        if (msgwait)
++        if (count && objs[count - 1] && objs[count - 1]->type == MSYNC_QUEUE)
 +            TRACE(" or driver events");
 +        if (alertable)
 +            TRACE(", alertable");
@@ -1786,364 +1726,17 @@ index 00000000000..9f3c4b03c72
 +        }
 +    }
 +
-+    if (wait_any || count <= 1)
++    if (alertable)
 +    {
-+        while (1)
-+        {
-+            /* Try to grab anything. */
-+
-+            if (alertable)
-+            {
-+                apc_obj.type = MSYNC_AUTO_EVENT;
-+                /* We must check this first! The server may set an event that
-+                 * we're waiting on, but we need to return STATUS_USER_APC. */
-+                if (__atomic_load_n( ntdll_get_thread_data()->msync_apc_addr, __ATOMIC_SEQ_CST ))
-+                    goto userapc;
-+            }
-+
-+            for (i = 0; i < count; i++)
-+            {
-+                struct msync *obj = objs[i];
-+
-+                if (obj)
-+                {
-+                    if (!obj->type) /* gcc complains if we put this in the switch */
-+                    {
-+                        /* Someone probably closed an object while waiting on it. */
-+                        WARN("Handle %p has type 0; was it closed?\n", handles[i]);
-+                        return STATUS_INVALID_HANDLE;
-+                    }
-+
-+                    switch (obj->type)
-+                    {
-+                    case MSYNC_SEMAPHORE:
-+                    {
-+                        struct semaphore *semaphore = obj->shm;
-+                        int current;
-+
-+                        current = __atomic_load_n(&semaphore->count, __ATOMIC_ACQUIRE);
-+                        if (current && __atomic_compare_exchange_n(&semaphore->count, &current, current - 1, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED))
-+                        {
-+                            TRACE("Woken up by handle %p [%d].\n", handles[i], i);
-+                            return i;
-+                        }
-+                        break;
-+                    }
-+                    case MSYNC_MUTEX:
-+                    {
-+                        struct mutex *mutex = obj->shm;
-+                        int tid;
-+
-+                        if (mutex->tid == current_tid)
-+                        {
-+                            TRACE("Woken up by handle %p [%d].\n", handles[i], i);
-+                            mutex->count++;
-+                            return i;
-+                        }
-+
-+                        tid = 0;
-+                        if (__atomic_compare_exchange_n(&mutex->tid, &tid, current_tid, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
-+                        {
-+                            TRACE("Woken up by handle %p [%d].\n", handles[i], i);
-+                            mutex->count = 1;
-+                            return i;
-+                        }
-+                        else if (tid == ~0 && __atomic_compare_exchange_n(&mutex->tid, &tid, current_tid, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
-+                        {
-+                            TRACE("Woken up by abandoned mutex %p [%d].\n", handles[i], i);
-+                            mutex->count = 1;
-+                            return STATUS_ABANDONED_WAIT_0 + i;
-+                        }
-+
-+                        break;
-+                    }
-+                    case MSYNC_AUTO_EVENT:
-+                    case MSYNC_AUTO_SERVER:
-+                    {
-+                        struct event *event = obj->shm;
-+                        int signaled = 1;
-+
-+                        if (__atomic_compare_exchange_n(&event->signaled, &signaled, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
-+                        {
-+                            TRACE("Woken up by handle %p [%d].\n", handles[i], i);
-+                            return i;
-+                        }
-+
-+                        break;
-+                    }
-+                    case MSYNC_MANUAL_EVENT:
-+                    case MSYNC_MANUAL_SERVER:
-+                    case MSYNC_QUEUE:
-+                    {
-+                        struct event *event = obj->shm;
-+
-+                        if (__atomic_load_n(&event->signaled, __ATOMIC_ACQUIRE))
-+                        {
-+                            TRACE("Woken up by handle %p [%d].\n", handles[i], i);
-+                            return i;
-+                        }
-+                        break;
-+                    }
-+                    default:
-+                        ERR("Invalid type %#x for handle %p.\n", obj->type, handles[i]);
-+                        assert(0);
-+                    }
-+                }
-+            }
-+
-+            if (alertable)
-+            {
-+                /* We already checked if it was signaled; don't bother doing it again. */
-+                apc_obj.shm = (void *)ntdll_get_thread_data()->msync_apc_addr;
-+                apc_obj.shm_idx = ntdll_get_thread_data()->msync_apc_idx;
-+                objs[i] = &apc_obj;
-+                i++;
-+            }
-+            waitcount = i;
-+
-+            /* Looks like everything is contended, so wait. */
-+
-+            if (timeout && !timeout->QuadPart)
-+            {
-+                /* Unlike esync, we already know that we've timed out, so we
-+                 * can avoid a syscall. */
-+                TRACE("Wait timed out.\n");
-+                return STATUS_TIMEOUT;
-+            }
-+
-+            if (mring_on)   /* MRING: record the exact set we're about to block on */
-+            {
-+                unsigned int mj;
-+                for (mj = 0; mj < waitcount; mj++)
-+                    if (objs[mj]) mrec( MEV_WAIT, objs[mj]->shm_idx, objs[mj]->type,
-+                                        __atomic_load_n( (int *)objs[mj]->shm, __ATOMIC_ACQUIRE ),
-+                                        (int)waitcount );
-+            }
-+
-+            ret = msync_wait_multiple( objs, waitcount, timeout ? &end : NULL, current_tid );
-+
-+            if (mring_on) mrec( MEV_WOKE, 0, 0, (int)ret, 0 );
-+
-+            if (ret == STATUS_TIMEOUT)
-+            {
-+                TRACE("Wait timed out.\n");
-+                return STATUS_TIMEOUT;
-+            }
-+        } /* while (1) */
++        msync_init_apc_obj( &apc_obj, thread_data );
 +    }
-+    else
-+    {
-+        /* Wait-all is a little trickier to implement correctly. Fortunately,
-+         * it's not as common.
-+         *
-+         * The idea is basically just to wait in sequence on every object in the
-+         * set. Then when we're done, try to grab them all in a tight loop. If
-+         * that fails, release any resources we've grabbed (and yes, we can
-+         * reliably do this—it's just mutexes and semaphores that we have to
-+         * put back, and in both cases we just put back 1), and if any of that
-+         * fails we start over.
-+         *
-+         * What makes this inherently bad is that we might temporarily grab a
-+         * resource incorrectly. Hopefully it'll be quick (and hey, it won't
-+         * block on wineserver) so nobody will notice. Besides, consider: if
-+         * object A becomes signaled but someone grabs it before we can grab it
-+         * and everything else, then they could just as well have grabbed it
-+         * before it became signaled. Similarly if object A was signaled and we
-+         * were blocking on object B, then B becomes available and someone grabs
-+         * A before we can, then they might have grabbed A before B became
-+         * signaled. In either case anyone who tries to wait on A or B will be
-+         * waiting for an instant while we put things back. */
 +
-+        NTSTATUS status = STATUS_SUCCESS;
++    if (wait_any || count <= 1)
++        return msync_wait_any( count, handles, objs, &apc_obj, alertable, timeout,
++                               timeout ? end : 0, current_tid );
 +
-+        while (1)
-+        {
-+            BOOL abandoned;
-+
-+tryagain:
-+            abandoned = FALSE;
-+
-+            /* First step: try to wait on each object in sequence. */
-+
-+            for (i = 0; i < count; i++)
-+            {
-+                struct msync *obj = objs[i];
-+
-+                if (obj && obj->type == MSYNC_MUTEX)
-+                {
-+                    struct mutex *mutex = obj->shm;
-+
-+                    if (mutex->tid == current_tid)
-+                        continue;
-+
-+                    while (__atomic_load_n( &mutex->tid, __ATOMIC_SEQ_CST ))
-+                    {
-+                        status = do_single_wait( obj, timeout ? &end : NULL, alertable, current_tid );
-+                        if (status != STATUS_PENDING)
-+                            break;
-+                    }
-+                }
-+                else if (obj)
-+                {
-+                    /* this works for semaphores too */
-+                    struct event *event = obj->shm;
-+
-+                    while (!__atomic_load_n( &event->signaled, __ATOMIC_SEQ_CST ))
-+                    {
-+                        status = do_single_wait( obj, timeout ? &end : NULL, alertable, current_tid );
-+                        if (status != STATUS_PENDING)
-+                            break;
-+                    }
-+                }
-+
-+                if (status == STATUS_TIMEOUT)
-+                {
-+                    TRACE("Wait timed out.\n");
-+                    return STATUS_TIMEOUT;
-+                }
-+                else if (status == STATUS_USER_APC)
-+                    goto userapc;
-+            }
-+
-+            /* If we got here and we haven't timed out, that means all of the
-+             * handles were signaled. Check to make sure they still are. */
-+            for (i = 0; i < count; i++)
-+            {
-+                struct msync *obj = objs[i];
-+
-+                if (obj && obj->type == MSYNC_MUTEX)
-+                {
-+                    struct mutex *mutex = obj->shm;
-+                    int tid = __atomic_load_n( &mutex->tid, __ATOMIC_SEQ_CST );
-+
-+                    if (tid && tid != ~0 && tid != current_tid)
-+                        goto tryagain;
-+                }
-+                else if (obj)
-+                {
-+                    struct event *event = obj->shm;
-+
-+                    if (!__atomic_load_n( &event->signaled, __ATOMIC_SEQ_CST ))
-+                        goto tryagain;
-+                }
-+            }
-+
-+            /* Yep, still signaled. Now quick, grab everything. */
-+            for (i = 0; i < count; i++)
-+            {
-+                struct msync *obj = objs[i];
-+                if (!obj) continue;
-+                switch (obj->type)
-+                {
-+                case MSYNC_MUTEX:
-+                {
-+                    struct mutex *mutex = obj->shm;
-+                    int tid = __atomic_load_n( &mutex->tid, __ATOMIC_SEQ_CST );
-+                    if (tid == current_tid)
-+                        break;
-+                    if (tid && tid != ~0)
-+                        goto tooslow;
-+                    if (__sync_val_compare_and_swap( &mutex->tid, tid, current_tid ) != tid)
-+                        goto tooslow;
-+                    if (tid == ~0)
-+                        abandoned = TRUE;
-+                    break;
-+                }
-+                case MSYNC_SEMAPHORE:
-+                {
-+                    struct semaphore *semaphore = obj->shm;
-+                    int current;
-+
-+                    if (!(current = __atomic_load_n( &semaphore->count, __ATOMIC_SEQ_CST ))
-+                            || __sync_val_compare_and_swap( &semaphore->count, current, current - 1 ) != current)
-+                        goto tooslow;
-+                    break;
-+                }
-+                case MSYNC_AUTO_EVENT:
-+                case MSYNC_AUTO_SERVER:
-+                {
-+                    struct event *event = obj->shm;
-+                    if (!__sync_val_compare_and_swap( &event->signaled, 1, 0 ))
-+                        goto tooslow;
-+                    break;
-+                }
-+                default:
-+                    /* If a manual-reset event changed between there and
-+                     * here, it's shouldn't be a problem. */
-+                    break;
-+                }
-+            }
-+
-+            /* If we got here, we successfully waited on every object.
-+             * Make sure to let ourselves know that we grabbed the mutexes. */
-+            for (i = 0; i < count; i++)
-+            {
-+                if (objs[i] && objs[i]->type == MSYNC_MUTEX)
-+                {
-+                    struct mutex *mutex = objs[i]->shm;
-+                    mutex->count++;
-+                }
-+            }
-+
-+            if (abandoned)
-+            {
-+                TRACE("Wait successful, but some object(s) were abandoned.\n");
-+                return STATUS_ABANDONED;
-+            }
-+            TRACE("Wait successful.\n");
-+            return STATUS_SUCCESS;
-+
-+tooslow:
-+            for (--i; i >= 0; i--)
-+            {
-+                struct msync *obj = objs[i];
-+                if (!obj) continue;
-+                switch (obj->type)
-+                {
-+                case MSYNC_MUTEX:
-+                {
-+                    struct mutex *mutex = obj->shm;
-+                    /* HACK: This won't do the right thing with abandoned
-+                     * mutexes, but fixing it is probably more trouble than
-+                     * it's worth. */
-+                    __atomic_store_n( &mutex->tid, 0, __ATOMIC_SEQ_CST );
-+                    break;
-+                }
-+                case MSYNC_SEMAPHORE:
-+                {
-+                    struct semaphore *semaphore = obj->shm;
-+                    __sync_fetch_and_add( &semaphore->count, 1 );
-+                    break;
-+                }
-+                case MSYNC_AUTO_EVENT:
-+                case MSYNC_AUTO_SERVER:
-+                {
-+                    struct event *event = obj->shm;
-+                    __atomic_store_n( &event->signaled, 1, __ATOMIC_SEQ_CST );
-+                    break;
-+                }
-+                default:
-+                    /* doesn't need to be put back */
-+                    break;
-+                }
-+            }
-+        } /* while (1) */
-+    } /* else (wait-all) */
-+
-+    assert(0);  /* shouldn't reach here... */
-+
-+userapc:
-+    TRACE("Woken up by user APC.\n");
-+
-+    /* We have to make a server call anyway to get the APC to execute, so just
-+     * delegate down to server_wait(). */
-+    ret = server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &zero );
-+
-+    /* This can happen if we received a system APC, and the APC fd was woken up
-+     * before we got SIGUSR1. poll() doesn't return EINTR in that case. The
-+     * right thing to do seems to be to return STATUS_USER_APC anyway. */
-+    if (ret == STATUS_TIMEOUT) ret = STATUS_USER_APC;
-+    return ret;
++    return msync_wait_all( count, handles, objs, &apc_obj, alertable, timeout,
++                           timeout ? end : 0, current_tid );
 +}
 +
 +/* Like esync, we need to let the server know when we are doing a message wait,
@@ -2174,7 +1767,7 @@ index 00000000000..9f3c4b03c72
 +    struct msync *obj;
 +    NTSTATUS ret;
 +
-+    if (count && !get_object( handles[count - 1], &obj ) && obj->type == MSYNC_QUEUE)
++    if (count && !msync_get_object( handles[count - 1], &obj ) && obj->type == MSYNC_QUEUE)
 +    {
 +        msgwait = TRUE;
 +        server_set_msgwait( 1 );
@@ -2194,7 +1787,7 @@ index 00000000000..9f3c4b03c72
 +    struct msync *obj;
 +    NTSTATUS ret;
 +
-+    if ((ret = get_object( signal, &obj ))) return ret;
++    if ((ret = msync_get_object( signal, &obj ))) return ret;
 +
 +    switch (obj->type)
 +    {
@@ -2215,12 +1808,12 @@ index 00000000000..9f3c4b03c72
 +
 +    return msync_wait_objects( 1, &wait, TRUE, alertable, timeout );
 +}
-diff --git a/dlls/ntdll/unix/msync.h b/dlls/ntdll/unix/msync.h
+diff --git a/dlls/ntdll/unix/msync_shm.c b/dlls/ntdll/unix/msync_shm.c
 new file mode 100644
-index 00000000000..ca92d32ad8d
+index 00000000000..a6f18f60d40
 --- /dev/null
-+++ b/dlls/ntdll/unix/msync.h
-@@ -0,0 +1,51 @@
++++ b/dlls/ntdll/unix/msync_shm.c
+@@ -0,0 +1,295 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -2242,38 +1835,692 @@ index 00000000000..ca92d32ad8d
 + * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
 + */
 +
-+extern int do_msync(void);
-+extern void msync_init(void);
-+extern NTSTATUS msync_close( HANDLE handle );
-+extern BOOL msync_invalidate_server_only( HANDLE handle );
++#if 0
++#pragma makedep unix
++#endif
 +
-+extern NTSTATUS msync_create_semaphore(HANDLE *handle, ACCESS_MASK access,
-+    const OBJECT_ATTRIBUTES *attr, LONG initial, LONG max);
-+extern NTSTATUS msync_release_semaphore( HANDLE handle, ULONG count, ULONG *prev );
-+extern NTSTATUS msync_open_semaphore( HANDLE *handle, ACCESS_MASK access,
-+    const OBJECT_ATTRIBUTES *attr );
-+extern NTSTATUS msync_query_semaphore( HANDLE handle, void *info, ULONG *ret_len );
-+extern NTSTATUS msync_create_event( HANDLE *handle, ACCESS_MASK access,
-+    const OBJECT_ATTRIBUTES *attr, EVENT_TYPE type, BOOLEAN initial );
-+extern NTSTATUS msync_open_event( HANDLE *handle, ACCESS_MASK access,
-+    const OBJECT_ATTRIBUTES *attr );
-+extern NTSTATUS msync_set_event( HANDLE handle, LONG *prev );
-+extern NTSTATUS msync_reset_event( HANDLE handle, LONG *prev );
-+extern NTSTATUS msync_pulse_event( HANDLE handle, LONG *prev );
-+extern NTSTATUS msync_query_event( HANDLE handle, void *info, ULONG *ret_len );
-+extern NTSTATUS msync_create_mutex( HANDLE *handle, ACCESS_MASK access,
-+    const OBJECT_ATTRIBUTES *attr, BOOLEAN initial );
-+extern NTSTATUS msync_open_mutex( HANDLE *handle, ACCESS_MASK access,
-+    const OBJECT_ATTRIBUTES *attr );
-+extern NTSTATUS msync_release_mutex( HANDLE handle, LONG *prev );
-+extern NTSTATUS msync_query_mutex( HANDLE handle, void *info, ULONG *ret_len );
++#include "config.h"
 +
-+extern NTSTATUS msync_wait_objects( DWORD count, const HANDLE *handles, BOOLEAN wait_any,
-+                                    BOOLEAN alertable, const LARGE_INTEGER *timeout );
-+extern NTSTATUS msync_signal_and_wait( HANDLE signal, HANDLE wait,
-+    BOOLEAN alertable, const LARGE_INTEGER *timeout );
++#include "msync_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(msync);
++
++#define MAX_POOL_SEMAPHORES 1024
++
++struct semaphore_memory_pool
++{
++    semaphore_t semaphores[MAX_POOL_SEMAPHORES];
++    semaphore_t *free_semaphores[MAX_POOL_SEMAPHORES];
++    unsigned int count;
++    unsigned int total;
++    os_unfair_lock lock;
++};
++
++static struct semaphore_memory_pool *pool;
++
++static void semaphore_pool_init(void)
++{
++    unsigned int i;
++
++    pool = malloc( sizeof(struct semaphore_memory_pool) );
++
++    pool->lock = OS_UNFAIR_LOCK_INIT;
++
++    for (i = 0; i < MAX_POOL_SEMAPHORES; i++)
++    {
++        pool->free_semaphores[i] = &pool->semaphores[i];
++    }
++
++    pool->count = 0;
++    pool->total = 0;
++}
++
++semaphore_t *msync_semaphore_pool_alloc(void)
++{
++    semaphore_t *new_semaphore;
++    kern_return_t kr;
++
++    os_unfair_lock_lock(&pool->lock);
++
++    if (pool->count == 0)
++    {
++        if (pool->total < MAX_POOL_SEMAPHORES)
++        {
++            TRACE("Dynamically growing semaphore pool\n");
++            kr = semaphore_create(mach_task_self(), &pool->semaphores[pool->total], SYNC_POLICY_FIFO, 0);
++            if (kr != KERN_SUCCESS)
++                ERR("Cannot create dynamic semaphore: %#x %s\n", kr, mach_error_string(kr));
++
++            new_semaphore = &pool->semaphores[pool->total];
++            pool->total++;
++
++            os_unfair_lock_unlock(&pool->lock);
++
++            return new_semaphore;
++        }
++        else
++        {
++            os_unfair_lock_unlock(&pool->lock);
++
++            WARN("Semaphore pool exhausted, consider increasing MAX_POOL_SEMAPHORES\n");
++            new_semaphore = malloc(sizeof(semaphore_t));
++            kr = semaphore_create(mach_task_self(), new_semaphore, SYNC_POLICY_FIFO, 0);
++            if (kr != KERN_SUCCESS)
++                ERR("Cannot create dynamic semaphore: %#x %s\n", kr, mach_error_string(kr));
++
++            return new_semaphore;
++        }
++    }
++
++    new_semaphore = pool->free_semaphores[pool->count - 1];
++    pool->count--;
++
++    os_unfair_lock_unlock(&pool->lock);
++
++    return new_semaphore;
++}
++
++void msync_semaphore_pool_free(semaphore_t *sem)
++{
++    os_unfair_lock_lock(&pool->lock);
++
++    if (sem < pool->semaphores || sem >= pool->semaphores + MAX_POOL_SEMAPHORES)
++    {
++        os_unfair_lock_unlock(&pool->lock);
++
++        semaphore_destroy(mach_task_self(), *sem);
++        free(sem);
++
++        return;
++    }
++
++    /* The pool never shrinks, deliberately. ->total is a high-water mark into a
++     * FIXED array: alloc hands out &semaphores[total] and increments it, so
++     * decrementing it does not release anything -- it re-points the next alloc at
++     * a slot that is still in use. semaphore_create() then overwrites that slot's
++     * port name while a waiter holds a pointer to it, and since the waiter re-reads
++     * *sem at semaphore_wait() -- after server_register_wait() already handed the
++     * old port to the wineserver -- the signal goes to the old port and the waiter
++     * blocks forever.
++     *
++     * (A shrink that only ever destroyed the top-most slots, and only when they
++     * were all free, could work; the ports are the bounded resource and there are
++     * at most MAX_POOL_SEMAPHORES of them, so it is not worth the risk.) */
++    pool->free_semaphores[pool->count] = sem;
++    pool->count++;
++
++    os_unfair_lock_unlock(&pool->lock);
++}
++
++int do_msync(void)
++{
++#ifdef __APPLE__
++    /* msync (__ulock) is the default fast-sync on macOS; the wineserver fallback
++     * is slower/less reliable, so default on. WINEMSYNC=0 forces it off (debug). */
++    static int cached = -1;
++    if (cached == -1)
++    {
++        const char *env = getenv( "WINEMSYNC" );
++        cached = env ? atoi( env ) : 1;
++    }
++    return cached;
++#else
++    static int once;
++    if (!once++)
++        FIXME("mach semaphores not supported on this platform.\n");
++    return 0;
++#endif
++}
++
++/* Per-type routing: which object classes use msync, and which fall through to the
++ * wineserver. This is the inner refinement of do_msync() above -- sync.c gates
++ * every entry point on that first -- so both live here, next to each other.
++ *
++ * Read once, at init, rather than lazily: a setenv() from another thread would
++ * otherwise be able to change the answer mid-process, and two processes that
++ * disagree about a named object's type cannot share it.
++ *
++ * DO NOT delete these as leftover debugging. WINEMSYNC_NO_MANUALEVENT=1 is set
++ * unconditionally for every bottle (WhiskyKit/.../Wine/Wine.swift) as the shipped
++ * workaround for the manual-event spin; removing that gate regresses Steam to a
++ * 100%-CPU spin. The other gates really are bisection levers.
++ *
++ * A gate is NOT a way to identify which object class owns a bug: routing a class
++ * to the server makes any wait set that mixes it with the message queue take the
++ * polling path in msync_select.c, and a polling loop cannot hang no matter what
++ * the underlying defect is. A gate that "fixes" a hang has only shown that the
++ * pure-msync blocking path is involved. */
++static int type_disabled[MSYNC_QUEUE + 1];
++
++static void read_type_gates(void)
++{
++    static const struct { enum msync_type type; const char *name; } gates[] =
++    {
++        { MSYNC_SEMAPHORE,    "WINEMSYNC_NO_SEMAPHORE" },
++        { MSYNC_MUTEX,        "WINEMSYNC_NO_MUTEX" },
++        { MSYNC_AUTO_EVENT,   "WINEMSYNC_NO_AUTOEVENT" },
++        { MSYNC_MANUAL_EVENT, "WINEMSYNC_NO_MANUALEVENT" },
++    };
++    unsigned int i;
++    const char *e;
++
++    for (i = 0; i < sizeof(gates) / sizeof(gates[0]); i++)
++    {
++        e = getenv( gates[i].name );
++        type_disabled[gates[i].type] = (e && *e != '0');
++    }
++
++    if ((e = getenv( "WINEMSYNC_NO_EVENT" )) && *e != '0')
++        type_disabled[MSYNC_AUTO_EVENT] = type_disabled[MSYNC_MANUAL_EVENT] = 1;
++}
++
++int msync_type_enabled( enum msync_type type )
++{
++    return type <= MSYNC_QUEUE ? !type_disabled[type] : 1;
++}
++
++static char shm_name[MSYNC_SHM_NAME_LEN];
++/* zero_new_pages stays clear: the wineserver creates the file and owns the
++ * contents of a page; a client must not clear one it happens to map first. */
++static struct msync_shm_map shm_map;
++mach_port_t msync_server_port;
++
++/* msync_shm_slot() is not internally synchronised and any thread can land here. */
++static os_unfair_lock shm_addrs_lock = OS_UNFAIR_LOCK_INIT;
++
++void *msync_get_shm( unsigned int idx )
++{
++    struct msync_shm_map_info info;
++    void *ret;
++
++    os_unfair_lock_lock( &shm_addrs_lock );
++
++    ret = msync_shm_slot( &shm_map, idx, &info );
++
++    if (info.grow_failed)
++        ERR("Failed to grow shm_addrs array to size %d.\n", info.new_size);
++    else if (info.mmap_failed)
++        ERR("Failed to map page %d (offset %#lx).\n", info.entry, info.entry * shm_map.pagesize);
++    else if (info.mapped)
++        TRACE("Mapping page %d at %p.\n", info.entry, info.mapped);
++
++    os_unfair_lock_unlock( &shm_addrs_lock );
++
++    return ret;
++}
++
++void msync_init(void)
++{
++    struct stat st;
++    mach_port_t bootstrap_port;
++
++    if (!do_msync())
++    {
++        /* make sure the server isn't running with WINEMSYNC */
++        HANDLE handle;
++        NTSTATUS ret;
++
++        ret = create_msync( 0, &handle, 0, NULL, 0, 0 );
++        if (ret != STATUS_NOT_IMPLEMENTED)
++        {
++            ERR("Server is running with WINEMSYNC but this process is not, please enable WINEMSYNC or restart wineserver.\n");
++            exit(1);
++        }
++
++        return;
++    }
++
++    if (stat( config_dir, &st ) == -1)
++        ERR("Cannot stat %s\n", config_dir);
++
++    msync_shm_name( shm_name, st.st_ino );
++
++    if ((shm_map.fd = shm_open( shm_name, O_RDWR, 0644 )) == -1)
++    {
++        /* probably the server isn't running with WINEMSYNC, tell the user and bail */
++        if (errno == ENOENT)
++            ERR("Failed to open msync shared memory file; make sure no stale wineserver instances are running without WINEMSYNC.\n");
++        else
++            ERR("Failed to initialize shared memory: %s\n", strerror( errno ));
++        exit(1);
++    }
++
++    shm_map.pagesize = sysconf( _SC_PAGESIZE );
++
++    shm_map.addrs = calloc( 128, sizeof(shm_map.addrs[0]) );
++    shm_map.addrs_size = 128;
++
++    read_type_gates();
++    semaphore_pool_init();
++
++    /* Bootstrap mach wineserver communication */
++
++    if (task_get_special_port(mach_task_self(), TASK_BOOTSTRAP_PORT, &bootstrap_port) != KERN_SUCCESS)
++    {
++        ERR("Failed task_get_special_port\n");
++        exit(1);
++    }
++
++    if (bootstrap_look_up(bootstrap_port, (char *)msync_bootstrap_name( shm_name ),
++                          &msync_server_port) != KERN_SUCCESS)
++    {
++        ERR("Failed bootstrap_look_up for %s\n", msync_bootstrap_name( shm_name ));
++        exit(1);
++    }
++
++}
+diff --git a/dlls/ntdll/unix/msync_wait.c b/dlls/ntdll/unix/msync_wait.c
+new file mode 100644
+index 00000000000..cf7c94b8a24
+--- /dev/null
++++ b/dlls/ntdll/unix/msync_wait.c
+@@ -0,0 +1,404 @@
++/*
++ * mach semaphore-based synchronization objects
++ *
++ * Copyright (C) 2018 Zebediah Figura
++ * Copyright (C) 2023 Marc-Aurel Zent
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include "msync_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(msync);
++
++
++static inline mach_timespec_t convert_to_mach_time( LONGLONG win32_time )
++{
++    mach_timespec_t ret;
++
++    ret.tv_sec = win32_time / (ULONGLONG)TICKSPERSEC;
++    ret.tv_nsec = (win32_time % TICKSPERSEC) * 100;
++    return ret;
++}
++
++typedef struct
++{
++    mach_msg_header_t header;
++    mach_msg_body_t body;
++    mach_msg_port_descriptor_t descriptor;
++} mach_register_message_prolog_t;
++
++typedef struct
++{
++    mach_register_message_prolog_t prolog;
++    unsigned int shm_idx[MAXIMUM_WAIT_OBJECTS + 1];
++} mach_register_message_t;
++
++typedef struct
++{
++    mach_msg_header_t header;
++    unsigned int shm_idx[MAXIMUM_WAIT_OBJECTS + 1];
++} mach_unregister_message_t;
++
++
++/* Only the wait registration sends a complex (port-carrying) message. */
++static const mach_msg_bits_t msgh_bits_complex_send = MACH_MSGH_BITS_SET(
++                MACH_MSG_TYPE_COPY_SEND, 0, 0, MACH_MSGH_BITS_COMPLEX);
++
++static inline mach_msg_return_t server_register_wait( semaphore_t sem, unsigned int msgh_id,
++                                         struct msync **wait_objs, const int count )
++{
++    int i, is_mutex;
++    mach_msg_return_t mr;
++    __thread static mach_register_message_t message;
++
++    message.prolog.header.msgh_remote_port = msync_server_port;
++    message.prolog.header.msgh_bits = msgh_bits_complex_send;
++    message.prolog.header.msgh_id = msgh_id;
++
++    message.prolog.body.msgh_descriptor_count = 1;
++
++    message.prolog.descriptor.name = sem;
++    message.prolog.descriptor.disposition = MACH_MSG_TYPE_COPY_SEND;
++    message.prolog.descriptor.type = MACH_MSG_PORT_DESCRIPTOR;
++
++    for (i = 0; i < count; i++)
++    {
++        is_mutex = wait_objs[i]->type == MSYNC_MUTEX ? 1 : 0;
++        message.shm_idx[i] = wait_objs[i]->shm_idx | (is_mutex << 28);
++        __atomic_add_fetch( msync_regcount( wait_objs[i] ), 1, __ATOMIC_SEQ_CST );
++    }
++
++    message.prolog.header.msgh_size = sizeof(mach_register_message_prolog_t) +
++                                      count * sizeof(unsigned int);
++
++    mr = mach_msg2( (mach_msg_header_t *)&message, MACH_SEND_MSG, message.prolog.header.msgh_size,
++                     0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, 0 );
++
++    if (mr != MACH_MSG_SUCCESS)
++        ERR("Failed to send server register wait: %#x\n", mr);
++
++    return mr;
++}
++
++/* Take one off an object's registered-waiter count, without going below zero. */
++static inline void drop_registration( struct msync *obj )
++{
++    int old_val, new_val;
++
++    do
++    {
++        old_val = __atomic_load_n( msync_regcount( obj ), __ATOMIC_SEQ_CST );
++        if (old_val <= 0) break;
++        new_val = old_val - 1;
++    } while (!__atomic_compare_exchange_n( msync_regcount( obj ), &old_val,
++                                           new_val, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST ));
++}
++
++/* Undo the counts server_register_wait() bumped, for the case where the
++ * registration message never reached the server -- server_remove_wait() would
++ * be wrong to send when nothing was ever registered. */
++static inline void release_registrations( struct msync **wait_objs, const int count )
++{
++    int i;
++
++    for (i = 0; i < count; i++)
++        drop_registration( wait_objs[i] );
++}
++
++static inline void server_remove_wait( unsigned int msgh_id, struct msync **wait_objs, const int count )
++{
++    int i;
++    mach_msg_return_t mr;
++    __thread static mach_unregister_message_t message;
++
++    message.header.msgh_remote_port = msync_server_port;
++    message.header.msgh_bits = msgh_bits_send;
++    message.header.msgh_id = msgh_id;
++
++    for (i = 0; i < count; i++)
++    {
++        drop_registration( wait_objs[i] );
++        message.shm_idx[i] = wait_objs[i]->shm_idx;
++    }
++
++    message.header.msgh_size = sizeof(mach_msg_header_t) +
++                               count * sizeof(unsigned int);
++
++    mr = mach_msg2( (mach_msg_header_t *)&message, MACH_SEND_MSG, message.header.msgh_size,
++                     0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, 0 );
++
++    if (mr != MACH_MSG_SUCCESS)
++        ERR("Failed to send server remove wait: %#x\n", mr);
++}
++
++static NTSTATUS destroyed_wait( ULONGLONG *end )
++{
++    if (end)
++    {
++        usleep( update_timeout( *end ) / 10 );
++        return STATUS_TIMEOUT;
++    }
++    pause();
++    return STATUS_PENDING;
++}
++
++static inline int is_destroyed( struct msync **objs, int count)
++{
++    int i;
++
++    for (i = 0; i < count; i++)
++        if (__atomic_load_n( msync_alive( objs[i] ), __ATOMIC_RELAXED ))
++            return 0;
++
++    return 1;
++}
++
++/* A system APC (e.g. APC_ASYNC_IO from a socket/file async completion) is
++ * delivered by SIGUSR1, which interrupts a msync fast-wait (-EINTR/KERN_ABORTED).
++ * The fast path can't see it (only user APCs get an shm event), so without this it
++ * loops on the spurious wakeup and the APC never runs -- the async never finalizes
++ * and the awaited object is never signaled (Steam socket I/O hangs; WINEMSYNC=0
++ * works because server_select does run system APCs). A zero-timeout interruptible
++ * server_wait runs any pending system APC, which then signals the awaited object. */
++NTSTATUS msync_run_apcs( BOOLEAN alertable )
++{
++    static const LARGE_INTEGER zero = {0};
++    NTSTATUS ret = server_wait( NULL, 0,
++                                SELECT_INTERRUPTIBLE | (alertable ? SELECT_ALERTABLE : 0), &zero );
++
++    /* A zero-timeout wait that ran a user APC still reports TIMEOUT; the caller
++     * needs to hear STATUS_USER_APC. Getting this fixup wrong at one site is a
++     * silently swallowed APC, which is why it lives here and not at each site. */
++    if (alertable && ret == STATUS_TIMEOUT) ret = STATUS_USER_APC;
++    return ret;
++}
++
++static inline NTSTATUS msync_wait_single( struct msync *wait_obj,
++                                          ULONGLONG *end, int tid )
++{
++    int ret, val;
++    void *addr = wait_obj->shm;
++    ULONGLONG ns_timeleft = 0;
++
++    do
++    {
++        val = msync_wait_value( wait_obj, tid );
++
++        if (__atomic_load_n( (int *)addr, __ATOMIC_ACQUIRE ) != val)
++            return STATUS_PENDING;
++
++        if (end)
++        {
++            ns_timeleft = update_timeout( *end ) * 100;
++            if (!ns_timeleft) return STATUS_TIMEOUT;
++        }
++        ret = __ulock_wait2( UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO, addr, val, ns_timeleft, 0 );
++        if (ret == -EINTR) msync_run_apcs( FALSE );
++    } while (ret == -EINTR);
++
++    if (ret == -ETIMEDOUT)
++        return STATUS_TIMEOUT;
++
++    if (is_destroyed( &wait_obj, 1 ))
++        return destroyed_wait( end );
++
++    return STATUS_SUCCESS;
++}
++
++static inline int resize_wait_objs( struct msync **wait_objs, struct msync **objs, int count )
++{
++    int read_index, write_index = 0;
++
++    for (read_index = 0; read_index < count; read_index++)
++    {
++        if (wait_objs[read_index] &&
++            __atomic_load_n( msync_alive( wait_objs[read_index] ), __ATOMIC_RELAXED ))
++        {
++            objs[write_index] = wait_objs[read_index];
++            write_index++;
++        }
++    }
++
++    return write_index;
++}
++
++static inline int check_shm_contention( struct msync **wait_objs,
++                                        int count, int tid )
++{
++    int i;
++
++    for (i = 0; i < count; i++)
++        if (msync_ready( wait_objs[i], tid )) return 1;
++
++    return 0;
++}
++
++NTSTATUS msync_wait_multiple( struct msync **wait_objs,
++                                     int count, ULONGLONG *end, int tid )
++{
++    semaphore_t *sem;
++    kern_return_t kr;
++    mach_msg_return_t mr;
++    unsigned int msgh_id;
++    __thread static struct msync *objs[MAXIMUM_WAIT_OBJECTS + 1];
++
++    count = resize_wait_objs( wait_objs, objs, count );
++
++    if (count == 1) return msync_wait_single( objs[0], end, tid );
++    if (!count) return destroyed_wait( end );
++
++    if (check_shm_contention( objs, count, tid ))
++        return STATUS_PENDING;
++
++    sem = msync_semaphore_pool_alloc();
++    /* msgh_id carries the object count in its low 8 bits (count <=
++     * MAXIMUM_WAIT_OBJECTS + 1) and the thread id in the remaining 24. That fits
++     * because the server hands out thread ids densely and recycles them
++     * (alloc_ptid() in server/process.c: id = (index + 8) * 4 over an array of
++     * live entries), so reaching 2^24 would take ~4M simultaneously live
++     * threads. If that ever changes the truncation is silent, and a tid that
++     * aliased another thread's would make remove_sem() unregister the wrong
++     * semaphore -- a lost wakeup -- so say so once rather than never. */
++    if (tid >> 24)
++    {
++        static int warned;
++        if (!warned) { warned = 1; ERR("thread id %#x exceeds 24 bits; msync waits may be lost\n", tid); }
++    }
++    msgh_id = (tid << 8) | count;
++    mr = server_register_wait( *sem, msgh_id, objs, count );
++
++    if (mr != MACH_MSG_SUCCESS)
++    {
++        /* The os failed to send the mach message, which is either because
++         * we lost the wineserver process or the semaphore from msync_semaphore_pool_alloc
++         * is not valid...
++         * To avoid pooling in a dead port, recreate it here.
++         * Worst case, this will behave effectively like a spinlock.
++         *
++         * server_register_wait() bumps each object's registered-waiter count
++         * before it sends, so a failed send has to be undone by hand -- nothing
++         * else ever brings the count back down. */
++        release_registrations( objs, count );
++        semaphore_destroy( mach_task_self(), *sem );
++
++        if ((kr = semaphore_create( mach_task_self(), sem, SYNC_POLICY_FIFO, 0 )) != KERN_SUCCESS)
++            ERR("Cannot create semaphore: %#x %s\n", kr, mach_error_string(kr));
++        else if ((mr = server_register_wait( *sem, msgh_id, objs, count )) != MACH_MSG_SUCCESS)
++            release_registrations( objs, count );
++
++        if (mr != MACH_MSG_SUCCESS)
++        {
++            msync_semaphore_pool_free( sem );
++            return STATUS_PENDING;
++        }
++    }
++
++    /* Close the register/signal race: an object can be signaled between the
++     * check_shm_contention() above and server_register_wait() taking effect.
++     * signal_all() only wakes registered waiters (it skips the wakeup mach msg
++     * when obj->shm[3] == 0) and that msg can also race our registration on the
++     * wineserver's port -- but signal_all() sets the shm signaled-state
++     * synchronously (shared memory) *before* sending it. So re-check the shm now
++     * that we are registered; if a signal already landed, bail to re-poll rather
++     * than block forever on a wakeup that already fired. */
++    if (check_shm_contention( objs, count, tid ))
++    {
++        server_remove_wait( msgh_id, objs, count );
++        msync_semaphore_pool_free( sem );
++        return STATUS_PENDING;
++    }
++
++    do
++    {
++        if (end)
++            kr = semaphore_timedwait( *sem,
++                        convert_to_mach_time( update_timeout( *end ) ) );
++        else
++            kr = semaphore_wait( *sem );
++        if (kr == KERN_ABORTED) msync_run_apcs( FALSE );
++    } while (kr == KERN_ABORTED);
++
++    if (is_destroyed( objs, count ))
++    {
++        /* destroy_all_internal() on the server already dropped every registration
++         * for these slots and zeroed their waiter counts, so there is nothing to
++         * unregister -- and doing it anyway would decrement a slot the server may
++         * have since recycled to a different object, silently costing its waiter
++         * the wakeup. Nothing holds send rights to `sem` either, so the pool is
++         * safe to return it to. */
++        msync_semaphore_pool_free( sem );
++        return destroyed_wait( end );
++    }
++
++    /* Unregister BEFORE returning the semaphore to the pool: until the server has
++     * processed this, it still holds send rights to `sem` for every object in the
++     * set, and a signal on any of them would bump the count of a semaphore that by
++     * then belongs to a different wait. */
++    server_remove_wait( msgh_id, objs, count );
++    msync_semaphore_pool_free( sem );
++
++    switch (kr) {
++        case KERN_SUCCESS:
++            return STATUS_SUCCESS;
++        case KERN_OPERATION_TIMED_OUT:
++            if (check_shm_contention( objs, count, tid ))
++                return STATUS_PENDING;
++            return STATUS_TIMEOUT;
++        case KERN_TERMINATED:
++            return destroyed_wait( end );
++        default:
++            ERR("Unexpected kernel return code: %#x %s\n", kr, mach_error_string( kr ));
++            return STATUS_PENDING;
++    }
++}
++
++NTSTATUS msync_do_single_wait( struct msync *obj, ULONGLONG *end, BOOLEAN alertable, int tid )
++{
++    NTSTATUS status;
++    struct msync *wait_objs[2];
++
++    wait_objs[0] = obj;
++
++    if (alertable)
++    {
++        struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
++        struct msync apc_obj;
++        int *apc_addr = thread_data->msync_apc_addr;
++
++        msync_init_apc_obj( &apc_obj, thread_data );
++
++        if (__atomic_load_n( apc_addr, __ATOMIC_SEQ_CST ))
++            return STATUS_USER_APC;
++
++        wait_objs[1] = &apc_obj;
++
++        status = msync_wait_multiple( wait_objs, 2, end, tid );
++
++        if (__atomic_load_n( apc_addr, __ATOMIC_SEQ_CST ))
++            return STATUS_USER_APC;
++    }
++    else
++    {
++        status = msync_wait_multiple( wait_objs, 1, end, tid );
++    }
++    return status;
++}
 diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
-index 112157b0dd7..310516b1e60 100644
+index 112157b0dd7..882ddeacb73 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
 @@ -79,6 +79,7 @@
@@ -2284,7 +2531,23 @@ index 112157b0dd7..310516b1e60 100644
  #include "ddk/wdm.h"
  
  #include "fsync.h"
-@@ -1975,6 +1976,9 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
+@@ -928,6 +929,7 @@ unsigned int server_queue_process_apc( HANDLE process, const union apc_call *cal
+ 
+             /* remove the handle from the cache, get_apc_result will close it for us */
+             close_inproc_sync( handle );
++            if (do_msync()) msync_close( handle );
+ 
+             SERVER_START_REQ( get_apc_result )
+             {
+@@ -1900,6 +1902,7 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+     {
+         fd = remove_fd_from_cache( source );
+         close_inproc_sync( source );
++        if (do_msync()) msync_close( source );
+     }
+ 
+     SERVER_START_REQ( dup_handle )
+@@ -1975,6 +1978,9 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
      fd = remove_fd_from_cache( handle );
      close_inproc_sync( handle );
  
@@ -2295,7 +2558,7 @@ index 112157b0dd7..310516b1e60 100644
      {
          req->handle = wine_server_obj_handle( handle );
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index 67ab945cef8..f3f2e491b84 100644
+index 67ab945cef8..c44c8481bfd 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
 @@ -61,7 +61,9 @@
@@ -2645,8 +2908,62 @@ index 67ab945cef8..f3f2e491b84 100644
          }
          /* Since server_wait will result in an unconditional implicit yield,
             we never return STATUS_NO_YIELD_PERFORMED */
+@@ -3606,25 +3777,7 @@ NTSTATUS WINAPI NtAlertThreadByThreadId( HANDLE tid )
+ 
+ 
+ #if defined(USE_FUTEX) || defined(HAVE_KQUEUE)
+-static LONGLONG get_absolute_timeout( const LARGE_INTEGER *timeout )
+-{
+-    LARGE_INTEGER now;
+-
+-    if (timeout->QuadPart >= 0) return timeout->QuadPart;
+-    NtQuerySystemTime( &now );
+-    return now.QuadPart - timeout->QuadPart;
+-}
+-
+-static LONGLONG update_timeout( ULONGLONG end )
+-{
+-    LARGE_INTEGER now;
+-    LONGLONG timeleft;
+ 
+-    NtQuerySystemTime( &now );
+-    timeleft = end - now.QuadPart;
+-    if (timeleft < 0) timeleft = 0;
+-    return timeleft;
+-}
+ #endif
+ 
+ 
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 9ee9239947f..3ebac233c77 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -75,6 +75,7 @@
+ #include "ddk/wdm.h"
+ #include "wine/server.h"
+ #include "wine/debug.h"
++#include "msync.h"
+ #include "unix_private.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(thread);
+@@ -1689,6 +1690,7 @@ NTSTATUS WINAPI NtSuspendThread( HANDLE handle, ULONG *ret_count )
+         NtWaitForSingleObject( wait_handle, FALSE, NULL );
+         /* remove the handle from the cache, get_thread_context will close it for us */
+         close_inproc_sync( wait_handle );
++        if (do_msync()) msync_close( wait_handle );
+ 
+         SERVER_START_REQ( suspend_thread )
+         {
+@@ -1890,6 +1892,7 @@ NTSTATUS get_thread_context( HANDLE handle, void *context, BOOL *self, USHORT ma
+ 
+         /* remove the handle from the cache, get_thread_context will close it for us */
+         close_inproc_sync( context_handle );
++        if (do_msync()) msync_close( context_handle );
+ 
+         SERVER_START_REQ( get_thread_context )
+         {
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
-index 2f649ca399e..78f1323104c 100644
+index 2f649ca399e..03114463172 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
 @@ -117,6 +117,8 @@ struct ntdll_thread_data
@@ -2658,6 +2975,36 @@ index 2f649ca399e..78f1323104c 100644
  };
  
  C_ASSERT( sizeof(struct ntdll_thread_data) <= sizeof(((TEB *)0)->GdiTebBatch) );
+@@ -724,4 +726,29 @@ static inline int is_gdt_sel( WORD sel )
+ 
+ #endif  /* defined(__i386__) || defined(__x86_64__) */
+ 
++/* Deadline helpers shared by every wait backend (server_select, futex/kqueue
++ * fast paths, msync). static inline in the header rather than exported from
++ * sync.c because sync.c's definitions sit inside
++ * `#if defined(USE_FUTEX) || defined(HAVE_KQUEUE)`, and a backend should not
++ * depend on another backend's build being configured in. */
++static inline LONGLONG get_absolute_timeout( const LARGE_INTEGER *timeout )
++{
++    LARGE_INTEGER now;
++
++    if (timeout->QuadPart >= 0) return timeout->QuadPart;
++    NtQuerySystemTime( &now );
++    return now.QuadPart - timeout->QuadPart;
++}
++
++static inline LONGLONG update_timeout( ULONGLONG end )
++{
++    LARGE_INTEGER now;
++    LONGLONG timeleft;
++
++    NtQuerySystemTime( &now );
++    timeleft = end - now.QuadPart;
++    if (timeleft < 0) timeleft = 0;
++    return timeleft;
++}
++
+ #endif /* __NTDLL_UNIX_PRIVATE_H */
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 index d5b93415c2a..c66b96ed592 100644
 --- a/dlls/ntdll/unix/virtual.c
@@ -2671,6 +3018,250 @@ index d5b93415c2a..c66b96ed592 100644
      thread_data->request_fd = -1;
      thread_data->reply_fd   = -1;
      thread_data->wait_fd[0] = -1;
+diff --git a/include/Makefile.in b/include/Makefile.in
+index 435158167fc..8a0c4b0f55e 100644
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -978,6 +978,7 @@ SOURCES = \
+ 	wine/irpcss.idl \
+ 	wine/itss.idl \
+ 	wine/list.h \
++	wine/msync_abi.h \
+ 	wine/mfinternal.idl \
+ 	wine/mmsystem16.h \
+ 	wine/mscvpdb.h \
+diff --git a/include/wine/msync_abi.h b/include/wine/msync_abi.h
+new file mode 100644
+index 00000000000..8736a2714fd
+--- /dev/null
++++ b/include/wine/msync_abi.h
+@@ -0,0 +1,226 @@
++/*
++ * msync definitions shared by the ntdll and wineserver halves
++ *
++ * Copyright (C) 2018 Zebediah Figura
++ * Copyright (C) 2023 Marc-Aurel Zent
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __WINE_MSYNC_ABI_H
++#define __WINE_MSYNC_ABI_H
++
++/* msync is implemented twice, in two binaries that have to meet in the middle:
++ * dlls/ntdll/unix/msync_*.c in every client process and server/msync.c in the
++ * wineserver. They share one shm file and one mach port, so the shm file's
++ * name, the layout of a slot in it, and the protocol for waking a waiter are
++ * agreements between processes -- an agreement encoded twice is an agreement
++ * that can drift. This header holds the parts both halves must spell the same
++ * way; everything is static inline, so it costs no link-time coupling.
++ *
++ * What deliberately stays on each side is policy rather than agreement: the
++ * client serialises its mapping table with a lock (many threads) while the
++ * server does not (one thread reaches this code), and each reports failures
++ * through its own channel -- ntdll's ERR() versus the server's perror().
++ */
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdio.h>
++#include <sys/mman.h>
++
++#ifdef __APPLE__
++# include <mach/message.h>
++# include <mach/port.h>
++#endif
++
++/* ---- the shm file's name --------------------------------------------------
++ *
++ * Keyed on the config directory's inode, so each prefix gets its own shm file
++ * and its own mach service, and two prefixes running at once cannot collide.
++ * The two halves reach that inode differently -- the client stat()s config_dir,
++ * the server fstat()s the fd it already holds -- but must derive a byte-identical
++ * name from it, since that name is how they find each other.
++ */
++
++/* "/wine-" + up to 16 hex digits of inode + "-msync" + NUL, exactly. */
++#define MSYNC_SHM_NAME_LEN 29
++
++static inline void msync_shm_name( char *name, unsigned long long ino )
++{
++    /* An inode too wide for a long is printed as two halves, so that the name
++     * stays inside MSYNC_SHM_NAME_LEN either way. */
++    if (ino != (unsigned long)ino)
++        snprintf( name, MSYNC_SHM_NAME_LEN, "/wine-%lx%08lx-msync",
++                  (unsigned long)(ino >> 32), (unsigned long)ino );
++    else
++        snprintf( name, MSYNC_SHM_NAME_LEN, "/wine-%lx-msync", (unsigned long)ino );
++}
++
++/* The same name serves as the mach service name, minus the leading slash:
++ * shm_open() wants the slash, bootstrap_register2()/bootstrap_look_up() reject
++ * it. Both halves must agree on which spelling goes where or the client looks
++ * up a service the server never registered. */
++static inline const char *msync_bootstrap_name( const char *shm_name )
++{
++    return shm_name + 1;
++}
++
++/* ---- the layout of a slot -------------------------------------------------
++ *
++ * One slot per object, 16 bytes: [0..1] the type-specific payload, whose first
++ * int is the readiness word every waiter parks on with __ulock_wait2(); [2] the
++ * alive flag; [3] the number of waiters currently registered with the server's
++ * mach message pump. The stride is how both halves turn an object index into a
++ * file offset, so it is as much a part of the ABI as the field order.
++ */
++#define MSYNC_SHM_SLOT_SIZE 16
++
++static inline int *msync_shm_alive( void *shm )    { return (int *)shm + 2; }
++static inline int *msync_shm_regcount( void *shm ) { return (int *)shm + 3; }
++
++/* ---- mapping the shm file -------------------------------------------------
++ *
++ * Both halves map the file one page at a time, on demand, and keep the mapped
++ * pages in a table indexed by page number. The table grows by doubling and is
++ * never shrunk: a mapping, once made, stays for the life of the process, so a
++ * pointer handed out by msync_shm_slot() remains valid.
++ */
++struct msync_shm_map
++{
++    void **addrs;           /* mapped page per entry, NULL until first touched */
++    int    addrs_size;      /* length of the addrs array */
++    long   pagesize;
++    int    fd;
++    int    zero_new_pages;  /* see below */
++};
++
++/* Everything about a msync_shm_slot() call its caller might want to report.
++ * The two halves log through different channels, so the diagnostics are left
++ * outside and only the mechanism is shared. */
++struct msync_shm_map_info
++{
++    int   entry;        /* page the slot lives in */
++    int   new_size;     /* size the table was grown to, 0 if it was not grown */
++    void *mapped;       /* page mapped by this call, NULL if already mapped */
++    int   grow_failed;
++    int   mmap_failed;
++};
++
++/* Address of slot `idx`, mapping its page if this is its first use. Returns
++ * NULL on failure, with the reason in *info.
++ *
++ * Not internally synchronised: a caller with more than one thread must hold its
++ * own lock across the call, since the table can be reallocated here.
++ */
++static inline void *msync_shm_slot( struct msync_shm_map *map, unsigned int idx,
++                                    struct msync_shm_map_info *info )
++{
++    int entry  = (idx * MSYNC_SHM_SLOT_SIZE) / map->pagesize;
++    int offset = (idx * MSYNC_SHM_SLOT_SIZE) % map->pagesize;
++
++    memset( info, 0, sizeof(*info) );
++    info->entry = entry;
++
++    if (entry >= map->addrs_size)
++    {
++        int new_size = map->addrs_size * 2 > entry + 1 ? map->addrs_size * 2 : entry + 1;
++
++        info->new_size = new_size;
++        if (!(map->addrs = realloc( map->addrs, new_size * sizeof(map->addrs[0]) )))
++        {
++            info->grow_failed = 1;
++            return NULL;
++        }
++        memset( map->addrs + map->addrs_size, 0,
++                (new_size - map->addrs_size) * sizeof(map->addrs[0]) );
++        map->addrs_size = new_size;
++    }
++
++    if (!map->addrs[entry])
++    {
++        void *addr = mmap( NULL, map->pagesize, PROT_READ | PROT_WRITE, MAP_SHARED,
++                           map->fd, entry * map->pagesize );
++
++        if (addr == MAP_FAILED)
++        {
++            info->mmap_failed = 1;
++            return NULL;
++        }
++        info->mapped = addr;
++
++        /* Publish with a CAS rather than a store: the caller's lock, where there
++         * is one, does not extend across processes, and the loser of the race
++         * must give back its own mapping rather than leak it. */
++        if (__sync_val_compare_and_swap( &map->addrs[entry], 0, addr ))
++            munmap( addr, map->pagesize );
++        else if (map->zero_new_pages)
++        {
++            /* Only the half that creates the file clears a page the first time
++             * it maps one; for anyone else the page is already in use by
++             * whoever allocated the indices on it. */
++            memset( addr, 0, map->pagesize );
++        }
++    }
++
++    return (char *)map->addrs[entry] + offset;
++}
++
++#ifdef __APPLE__
++
++/* ---- waking waiters -------------------------------------------------------
++ */
++
++#define UL_COMPARE_AND_WAIT_SHARED  0x3
++#define ULF_WAKE_ALL                0x00000100
++
++extern int __ulock_wake( uint32_t operation, void *addr, uint64_t wake_value );
++
++/* Wake everyone waiting on an object whose readiness word was just set.
++ *
++ * There are two kinds of waiter and a signaller must reach both. A thread
++ * waiting on this object alone parks on the readiness word itself and is woken
++ * by __ulock_wake(). A thread waiting on several objects at once cannot park on
++ * any one word, so it registers a mach semaphore with the server's message pump
++ * and is woken by a header-only message naming the index (the wire format is
++ * documented in server/msync.c). Slot [3] counts the registered ones, so zero
++ * means there is nobody the message would reach and it can be skipped -- which
++ * is the common case, and the reason this is worth a shared helper rather than
++ * an unconditional send.
++ *
++ * Fills `header` and returns 1 when the message is needed. The caller sends it
++ * itself, through its own port -- the client's send right to the server, the
++ * server's own receive port, which it posts to so that its own signals are
++ * ordered against client registrations -- and with its own mach_msg2() wrapper.
++ */
++static inline int msync_signal_wake( mach_msg_header_t *header, unsigned int shm_idx,
++                                     void *shm, mach_port_t port )
++{
++    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, shm, 0 );
++
++    if (!__atomic_load_n( msync_shm_regcount( shm ), __ATOMIC_ACQUIRE ))
++        return 0;
++
++    header->msgh_bits = MACH_MSGH_BITS_REMOTE( MACH_MSG_TYPE_COPY_SEND );
++    header->msgh_id = shm_idx;
++    header->msgh_size = sizeof(*header);
++    header->msgh_remote_port = port;
++    return 1;
++}
++
++#endif /* __APPLE__ */
++
++#endif /* __WINE_MSYNC_ABI_H */
 diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
 index d9087179099..24114ebf02b 100644
 --- a/include/wine/server_protocol.h
@@ -4093,10 +4684,10 @@ index 2b3ebd1826c..e29658bf58e 100644
      mapping_get_fd,              /* get_fd */
 diff --git a/server/msync.c b/server/msync.c
 new file mode 100644
-index 00000000000..dd66000d006
+index 00000000000..d323a1637d4
 --- /dev/null
 +++ b/server/msync.c
-@@ -0,0 +1,1042 @@
+@@ -0,0 +1,1027 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -4141,7 +4732,6 @@ index 00000000000..dd66000d006
 +# include <servers/bootstrap.h>
 +#endif
 +#include <sched.h>
-+#include <dlfcn.h>
 +#include <signal.h>
 +#include <pthread.h>
 +#include <unistd.h>
@@ -4154,6 +4744,8 @@ index 00000000000..dd66000d006
 +#include "handle.h"
 +#include "request.h"
 +#include "msync.h"
++/* shm name/layout/mapping and the wake protocol, shared with dlls/ntdll/unix/msync_*.c */
++#include "wine/msync_abi.h"
 +
 +/*
 + * We need to set the maximum allowed shared memory size early, since on
@@ -4163,11 +4755,6 @@ index 00000000000..dd66000d006
 +#define MAX_INDEX 0x100000
 +
 +#ifdef __APPLE__
-+
-+#define UL_COMPARE_AND_WAIT_SHARED  0x3
-+#define ULF_WAKE_ALL                0x00000100
-+extern int __ulock_wake( uint32_t operation, void *addr, uint64_t wake_value );
-+
 +
 +#define MACH_CHECK_ERROR(ret, operation) \
 +    if (ret != KERN_SUCCESS) \
@@ -4181,47 +4768,6 @@ index 00000000000..dd66000d006
 + * Faster to directly do the syscall and inline everything, taken and slightly adapted
 + * from xnu/libsyscall/mach/mach_msg.c
 + */
-+
-+#define LIBMACH_OPTIONS64 (MACH_SEND_INTERRUPT|MACH_RCV_INTERRUPT)
-+#define MACH64_SEND_MQ_CALL 0x0000000400000000ull
-+
-+typedef mach_msg_return_t (*mach_msg2_trap_ptr_t)( void *data, uint64_t options,
-+    uint64_t msgh_bits_and_send_size, uint64_t msgh_remote_and_local_port,
-+    uint64_t msgh_voucher_and_id, uint64_t desc_count_and_rcv_name,
-+    uint64_t rcv_size_and_priority, uint64_t timeout );
-+
-+static mach_msg2_trap_ptr_t mach_msg2_trap;
-+
-+static inline mach_msg_return_t mach_msg2_internal( void *data, uint64_t option64, uint64_t msgh_bits_and_send_size,
-+    uint64_t msgh_remote_and_local_port, uint64_t msgh_voucher_and_id, uint64_t desc_count_and_rcv_name,
-+    uint64_t rcv_size_and_priority, uint64_t timeout)
-+{
-+    mach_msg_return_t mr;
-+
-+    mr = mach_msg2_trap( data, option64 & ~LIBMACH_OPTIONS64, msgh_bits_and_send_size,
-+             msgh_remote_and_local_port, msgh_voucher_and_id, desc_count_and_rcv_name,
-+             rcv_size_and_priority, timeout );
-+
-+    if (mr == MACH_MSG_SUCCESS)
-+        return MACH_MSG_SUCCESS;
-+
-+    while (mr == MACH_SEND_INTERRUPTED)
-+        mr = mach_msg2_trap( data, option64 & ~LIBMACH_OPTIONS64, msgh_bits_and_send_size,
-+                 msgh_remote_and_local_port, msgh_voucher_and_id, desc_count_and_rcv_name,
-+                 rcv_size_and_priority, timeout );
-+
-+    while (mr == MACH_RCV_INTERRUPTED)
-+        mr = mach_msg2_trap( data, option64 & ~LIBMACH_OPTIONS64, msgh_bits_and_send_size & 0xffffffffull,
-+                 msgh_remote_and_local_port, msgh_voucher_and_id, desc_count_and_rcv_name,
-+                 rcv_size_and_priority, timeout);
-+
-+    return mr;
-+}
-+
-+/* For older versions of macOS we need to provide fallback in case there is no mach_msg2... */
-+extern mach_msg_return_t mach_msg_trap( mach_msg_header_t *msg, mach_msg_option_t option,
-+        mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_name_t rcv_name, mach_msg_timeout_t timeout,
-+        mach_port_name_t notify );
 +
 +static inline mach_msg_return_t mach_msg2( mach_msg_header_t *data, uint64_t option64,
 +    mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_t rcv_name, uint64_t timeout,
@@ -4308,29 +4854,39 @@ index 00000000000..dd66000d006
 +    list->head = new_node;
 +}
 +
++/* Drop every registration this thread holds on shm_idx, not just the first.
++ * A thread can only be inside one wait at a time, so one node is the normal
++ * case, but the client can name the same object twice in a single wait set and
++ * nothing rejects it. Removing all of them makes this idempotent, which is what
++ * keeps the tid match safe: a node left behind would be indistinguishable from
++ * the thread's next registration, and signalling it would wake the wrong wait. */
 +static inline void remove_sem( unsigned int shm_idx, int tid )
 +{
-+    struct sem_node *current, *prev = NULL;
++    struct sem_node *current, *next, *prev = NULL;
 +    struct sem_list *list = mach_semaphore_map + shm_idx;
 +
 +    current = list->head;
 +    while (current != NULL)
 +    {
++        next = current->next;
 +        if (current->tid == tid)
 +        {
 +            if (prev == NULL)
-+                list->head = current->next;
++                list->head = next;
 +            else
-+                prev->next = current->next;
++                prev->next = next;
 +            pool_free(current);
-+            break;
 +        }
-+        prev = current;
-+        current = current->next;
++        else prev = current;
++        current = next;
 +    }
 +}
 +
 +static void *get_shm( unsigned int idx );
++
++/* Local spellings of the shm slot accessors; the layout is in wine/msync_abi.h. */
++static inline int *msync_alive( void *shm )    { return msync_shm_alive( shm ); }
++static inline int *msync_regcount( void *shm ) { return msync_shm_regcount( shm ); }
 +
 +static inline void destroy_all_internal( unsigned int shm_idx )
 +{
@@ -4338,8 +4894,8 @@ index 00000000000..dd66000d006
 +    struct sem_list *list = mach_semaphore_map + shm_idx;
 +    int *shm = get_shm( shm_idx );
 +
-+    __atomic_store_n( shm + 2, 0, __ATOMIC_SEQ_CST );
-+    __atomic_store_n( shm + 3, 0, __ATOMIC_SEQ_CST );
++    __atomic_store_n( msync_alive( shm ), 0, __ATOMIC_SEQ_CST );
++    __atomic_store_n( msync_regcount( shm ), 0, __ATOMIC_SEQ_CST );
 +    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, (void *)shm, 0 );
 +    current = list->head;
 +    list->head = NULL;
@@ -4371,9 +4927,37 @@ index 00000000000..dd66000d006
 +    }
 +}
 +
-+/*
-+ * thread-safe sequentially consistent guarantees relative to register/unregister
-+ * client-side are made by the mach messaging queue
++/* ---- the mach wire format -------------------------------------------------
++ *
++ * Everything the pump receives is one of two message families, told apart by
++ * size, and msgh_id is packed differently in each. The client half of the
++ * encoding lives in dlls/ntdll/unix/msync_wait.c (register/unregister) and
++ * msync_obj.c (the header-only signal); both sides must agree.
++ *
++ * Header-only (msgh_size == sizeof(mach_msg_header_t)) -- signal or destroy an
++ * index. No body, the whole payload is the id:
++ *
++ *     msgh_id = shm_idx | (destroy ? 1 << 28 : 0)
++ *
++ * shm_idx is at most 28 bits (MAX_INDEX), which is what leaves bit 28 free.
++ * Encoded by signal_all() / destroy_all(), decoded by take_flag_bit28().
++ *
++ * Register / unregister -- a body of shm_idx entries follows the header, and a
++ * complex message additionally carries the waiting thread's mach semaphore send
++ * right (complex == register, plain == unregister):
++ *
++ *     msgh_id    = (tid << 8) | count
++ *     shm_idx[i] = index | (is_mutex ? 1 << 28 : 0)
++ *
++ * count is bounded by MAXIMUM_WAIT_OBJECTS + 1 so it fits in 8 bits. Decoded by
++ * decode_msgh_id(); the per-entry mutex bit, again by take_flag_bit28(), which
++ * is why that helper is called on two unrelated fields. The bit is needed
++ * because the message carries no type and the pump must redo the client's
++ * readiness check, which differs for a mutex.
++ *
++ * The server sends its own signal/destroy messages through the same port rather
++ * than touching mach_semaphore_map directly: the port's ordering is what gives
++ * them sequential consistency against client register/unregister.
 + */
 +static inline mach_msg_return_t destroy_all( unsigned int shm_idx )
 +{
@@ -4389,16 +4973,12 @@ index 00000000000..dd66000d006
 +
 +static inline mach_msg_return_t signal_all( unsigned int shm_idx, int *shm )
 +{
++    /* One shared copy, unlike the client's thread-local one: only the main
++     * server thread signals. */
 +    static mach_msg_header_t send_header;
 +
-+    __ulock_wake( UL_COMPARE_AND_WAIT_SHARED | ULF_WAKE_ALL, (void *)shm, 0 );
-+    if (!__atomic_load_n( shm + 3, __ATOMIC_ACQUIRE ))
++    if (!msync_signal_wake( &send_header, shm_idx, shm, receive_port ))
 +        return MACH_MSG_SUCCESS;
-+
-+    send_header.msgh_bits = MACH_MSGH_BITS_REMOTE(MACH_MSG_TYPE_COPY_SEND);
-+    send_header.msgh_id = shm_idx;
-+    send_header.msgh_size = sizeof(send_header);
-+    send_header.msgh_remote_port = receive_port;
 +
 +    return mach_msg2( &send_header, MACH_SEND_MSG, send_header.msgh_size,
 +                0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, 0 );
@@ -4432,11 +5012,14 @@ index 00000000000..dd66000d006
 +    *count = msgh_id & 0xFF;
 +}
 +
-+static inline unsigned int check_bit_29( unsigned int *shm_idx )
++/* Take the flag out of a packed field: return bit 28 and clear it in place,
++ * leaving the bare index behind. What the flag means depends on which field it
++ * came from -- see the wire format above. */
++static inline unsigned int take_flag_bit28( unsigned int *value )
 +{
-+    unsigned int bit_29 = (*shm_idx >> 28) & 1;
-+    *shm_idx &= ~(1 << 28);
-+    return bit_29;
++    unsigned int flag = (*value >> 28) & 1;
++    *value &= ~(1 << 28);
++    return flag;
 +}
 +
 +static void *mach_message_pump( void *args )
@@ -4463,14 +5046,12 @@ index 00000000000..dd66000d006
 +        }
 +
 +        /*
-+         * A message with no body is a signal_all or destroy_all operation where the shm_idx
-+         * is the msgh_id and the type of operation is decided by the 20th bit.
-+         * (The shared memory index is only a 28-bit integer at max)
-+         * See signal_all( unsigned int shm_idx ) and destroy_all( unsigned int shm_idx )above.
++         * A message with no body is a signal_all or destroy_all operation: the
++         * shm_idx is the msgh_id and bit 28 picks the operation.
 +         */
 +        if (receive_message.header.msgh_size == sizeof(mach_msg_header_t))
 +        {
-+            if (check_bit_29( (unsigned int *)&receive_message.header.msgh_id ))
++            if (take_flag_bit28( (unsigned int *)&receive_message.header.msgh_id ))
 +                destroy_all_internal( receive_message.header.msgh_id );
 +            else
 +                signal_all_internal( receive_message.header.msgh_id );
@@ -4497,11 +5078,11 @@ index 00000000000..dd66000d006
 +        sem = receive_message.descriptor.name;
 +        for (i = 0; i < count; i++)
 +        {
-+            is_mutex = check_bit_29( receive_message.shm_idx + i );
++            is_mutex = take_flag_bit28( receive_message.shm_idx + i );
 +            addr = (int *)get_shm( receive_message.shm_idx[i] );
 +            val = __atomic_load_n( addr, __ATOMIC_SEQ_CST );
 +            if ((is_mutex && (val == 0 || val == ~0 || val == tid)) || (!is_mutex && val != 0)
-+                || !__atomic_load_n( addr + 2, __ATOMIC_SEQ_CST ))
++                || !__atomic_load_n( msync_alive( addr ), __ATOMIC_SEQ_CST ))
 +            {
 +                /* The client had a TOCTTOU we need to fix */
 +                semaphore_signal( sem );
@@ -4520,7 +5101,7 @@ index 00000000000..dd66000d006
 +int do_msync(void)
 +{
 +#ifdef __APPLE__
-+    /* Default on to match the client-side do_msync (dlls/ntdll/unix/msync.c);
++    /* Default on to match the client-side do_msync (dlls/ntdll/unix/msync_shm.c);
 +     * WINEMSYNC=0 forces the (unreliable) server fallback for debugging. */
 +    static int cached = -1;
 +    if (cached == -1)
@@ -4534,19 +5115,18 @@ index 00000000000..dd66000d006
 +#endif
 +}
 +
-+static char shm_name[29];
-+static int shm_fd;
-+static const off_t shm_size = MAX_INDEX * 16;
-+static void **shm_addrs;
-+static int shm_addrs_size;  /* length of the allocated shm_addrs array */
-+static long pagesize;
++static char shm_name[MSYNC_SHM_NAME_LEN];
++static const off_t shm_size = MAX_INDEX * MSYNC_SHM_SLOT_SIZE;
++/* zero_new_pages: this side creates the file, so it starts each page from a
++ * known state; a client mapping the same page must leave it alone. */
++static struct msync_shm_map shm_map = { .zero_new_pages = 1 };
 +static pthread_t message_thread;
 +
 +static int is_msync_initialized;
 +
 +static void cleanup(void)
 +{
-+    close( shm_fd );
++    close( shm_map.fd );
 +    if (shm_unlink( shm_name ) == -1)
 +        perror( "shm_unlink" );
 +}
@@ -4593,44 +5173,35 @@ index 00000000000..dd66000d006
 +    struct stat st;
 +    mach_port_t bootstrap_port;
 +    mach_port_limits_t limits;
-+    void *dlhandle = dlopen( NULL, RTLD_NOW );
 +    int *shm;
 +
 +    if (fstat( config_dir_fd, &st ) == -1)
 +        fatal_error( "cannot stat config dir\n" );
 +
-+    if (st.st_ino != (unsigned long)st.st_ino)
-+        sprintf( shm_name, "/wine-%lx%08lx-msync", (unsigned long)((unsigned long long)st.st_ino >> 32), (unsigned long)st.st_ino );
-+    else
-+        sprintf( shm_name, "/wine-%lx-msync", (unsigned long)st.st_ino );
++    msync_shm_name( shm_name, st.st_ino );
 +
 +    if (!shm_unlink( shm_name ))
 +        fprintf( stderr, "msync: warning: a previous shm file %s was not properly removed\n", shm_name );
 +
-+    shm_fd = shm_open( shm_name, O_RDWR | O_CREAT | O_EXCL, 0644 );
-+    if (shm_fd == -1)
++    shm_map.fd = shm_open( shm_name, O_RDWR | O_CREAT | O_EXCL, 0644 );
++    if (shm_map.fd == -1)
 +        perror( "shm_open" );
 +
-+    pagesize = sysconf( _SC_PAGESIZE );
++    shm_map.pagesize = sysconf( _SC_PAGESIZE );
 +
-+    shm_addrs = calloc( 128, sizeof(shm_addrs[0]) );
-+    shm_addrs_size = 128;
++    shm_map.addrs = calloc( 128, sizeof(shm_map.addrs[0]) );
++    shm_map.addrs_size = 128;
 +
-+    if (ftruncate( shm_fd, shm_size ) == -1)
++    if (ftruncate( shm_map.fd, shm_size ) == -1)
 +    {
 +        perror( "ftruncate" );
 +        fatal_error( "could not initialize shared memory\n" );
 +    }
 +
 +    shm = get_shm( 0 );
-+    __atomic_store_n( shm + 2, 1, __ATOMIC_SEQ_CST );
++    __atomic_store_n( msync_alive( shm ), 1, __ATOMIC_SEQ_CST );
 +
 +    /* Bootstrap mach server message pump */
-+
-+    mach_msg2_trap = (mach_msg2_trap_ptr_t)dlsym( dlhandle, "mach_msg2_trap" );
-+    if (!mach_msg2_trap)
-+        fprintf( stderr, "msync: warning: using mach_msg_overwrite instead of mach_msg2\n");
-+    dlclose( dlhandle );
 +
 +    MACH_CHECK_ERROR(mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &receive_port), "mach_port_allocate");
 +
@@ -4646,7 +5217,8 @@ index 00000000000..dd66000d006
 +
 +    MACH_CHECK_ERROR(task_get_special_port(mach_task_self(), TASK_BOOTSTRAP_PORT, &bootstrap_port), "task_get_special_port");
 +
-+    MACH_CHECK_ERROR(bootstrap_register2(bootstrap_port, shm_name + 1, receive_port, 0), "bootstrap_register2");
++    MACH_CHECK_ERROR(bootstrap_register2(bootstrap_port, (char *)msync_bootstrap_name( shm_name ),
++                                         receive_port, 0), "bootstrap_register2");
 +
 +    pool_init();
 +
@@ -4658,7 +5230,7 @@ index 00000000000..dd66000d006
 +
 +    set_thread_policy_qos( pthread_mach_thread_np( message_thread )) ;
 +
-+    fprintf( stderr, "msync: bootstrapped mach port on %s.\n", shm_name + 1 );
++    fprintf( stderr, "msync: bootstrapped mach port on %s.\n", msync_bootstrap_name( shm_name ) );
 +
 +    is_msync_initialized = 1;
 +
@@ -4743,42 +5315,27 @@ index 00000000000..dd66000d006
 +#endif
 +}
 +
++/* Unlocked, unlike the client's msync_get_shm(), which takes a lock around the
++ * same helper: the request path is single-threaded, and the only other caller
++ * is the mach message pump, which touches indices the request path has already
++ * mapped. Adding a lock here would be a change of behaviour, not a cleanup. */
 +static void *get_shm( unsigned int idx )
 +{
-+    int entry  = (idx * 16) / pagesize;
-+    int offset = (idx * 16) % pagesize;
++    struct msync_shm_map_info info;
++    void *ret = msync_shm_slot( &shm_map, idx, &info );
 +
-+    if (entry >= shm_addrs_size)
++    if (info.grow_failed)
++        fprintf( stderr, "msync: couldn't expand shm_addrs array to size %d\n", info.new_size );
++    else if (info.mmap_failed)
 +    {
-+        int new_size = max(shm_addrs_size * 2, entry + 1);
-+
-+        if (!(shm_addrs = realloc( shm_addrs, new_size * sizeof(shm_addrs[0]) )))
-+            fprintf( stderr, "msync: couldn't expand shm_addrs array to size %d\n", entry + 1 );
-+
-+        memset( shm_addrs + shm_addrs_size, 0, (new_size - shm_addrs_size) * sizeof(shm_addrs[0]) );
-+
-+        shm_addrs_size = new_size;
++        fprintf( stderr, "msync: failed to map page %d (offset %#lx): ",
++                 info.entry, info.entry * shm_map.pagesize );
++        perror( "mmap" );
 +    }
++    else if (info.mapped && debug_level)
++        fprintf( stderr, "msync: Mapping page %d at %p.\n", info.entry, info.mapped );
 +
-+    if (!shm_addrs[entry])
-+    {
-+        void *addr = mmap( NULL, pagesize, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, entry * pagesize );
-+        if (addr == (void *)-1)
-+        {
-+            fprintf( stderr, "msync: failed to map page %d (offset %#lx): ", entry, entry * pagesize );
-+            perror( "mmap" );
-+        }
-+
-+        if (debug_level)
-+            fprintf( stderr, "msync: Mapping page %d at %p.\n", entry, addr );
-+
-+        if (__sync_val_compare_and_swap( &shm_addrs[entry], 0, addr ))
-+            munmap( addr, pagesize ); /* someone beat us to it */
-+        else
-+            memset( addr, 0, pagesize );
-+    }
-+
-+    return (void *)((unsigned long)shm_addrs[entry] + offset);
++    return ret;
 +}
 +
 +static unsigned int shm_idx_counter = 1;
@@ -4799,7 +5356,7 @@ index 00000000000..dd66000d006
 +    for(;;)
 +    {
 +        shm = get_shm( shm_idx );
-+        if (!__atomic_load_n( shm + 2, __ATOMIC_SEQ_CST ))
++        if (!__atomic_load_n( msync_alive( shm ), __ATOMIC_SEQ_CST ))
 +            break;
 +
 +        shm_idx = (shm_idx + 1) % MAX_INDEX;
@@ -4811,7 +5368,7 @@ index 00000000000..dd66000d006
 +            fatal_error( "too many msync objects\n" );
 +        }
 +    }
-+    __atomic_store_n( shm + 2, 1, __ATOMIC_SEQ_CST );
++    __atomic_store_n( msync_alive( shm ), 1, __ATOMIC_SEQ_CST );
 +    assert(mach_semaphore_map[shm_idx].head == NULL);
 +    shm_idx_counter = (shm_idx + 1) % MAX_INDEX;
 +
@@ -4882,6 +5439,16 @@ index 00000000000..dd66000d006
 +    int unused;
 +};
 +
++/* The payload occupies the first 8 bytes of a 16-byte slot (msync_alive() and
++ * msync_regcount() own the other two ints), and its readiness word is at offset
++ * 0: waiters park on the slot address itself with __ulock_wait2(), and the
++ * registration re-check in mach_message_pump() reads it as a bare int without
++ * knowing the type. Both are true of the client's mirror of these structs in
++ * dlls/ntdll/unix/msync_private.h, which carries the same assertions -- this is
++ * a cross-process ABI, so check it here rather than trusting the field order. */
++C_ASSERT( sizeof(struct msync_event) == 8 );
++C_ASSERT( offsetof(struct msync_event, signaled) == 0 );
++
 +void msync_signal_all( unsigned int shm_idx )
 +{
 +    struct msync_event *event;
@@ -4897,27 +5464,40 @@ index 00000000000..dd66000d006
 +        signal_all( shm_idx, (int *)event );
 +}
 +
++/* The shm index a client blocks on for a server-side object, or 0 if it has none.
++ *
++ * Two sources. Normally the object's inproc_sync shadow; that is the ntsync
++ * mechanism, stubbed out on macOS (get_obj_inproc_sync() is unconditionally -1
++ * there, see server/inproc_sync.c), so on this platform the fallback is what
++ * fires.
++ *
++ * The fallback is the object's own get_msync_idx, and it is admitted for exactly
++ * one object: the msg_queue. The queue is the one object with a real
++ * server-side sync -- hence no inproc shadow and no index from the branch above
++ * -- that ALSO owns a dedicated msync shm and hands it to clients (see the
++ * get_msync_idx handler). Its two paths are kept in step by queue.c signalling
++ * both (signal_sync/reset_sync for server waiters, msync_wake_up/msync_clear for
++ * msync waiters); without this fallback the msync half is dropped and a GUI
++ * message wait never wakes. It stays gated to the queue so that no other
++ * server-backed object's dormant msync path is touched. */
++static unsigned int object_msync_idx( struct object *obj )
++{
++    enum msync_type type;
++    int inproc_type, idx;
++
++    if ((idx = get_obj_inproc_sync( obj, &inproc_type )) > 0) return idx;
++    if (!is_msg_queue( obj )) return 0;
++    return obj->ops->get_msync_idx( obj, &type );
++}
++
 +void msync_wake_up( struct object *obj )
 +{
-+    int type, idx;
++    unsigned int idx;
 +
 +    if (debug_level)
 +        fprintf( stderr, "msync_wake_up: object %p\n", obj );
 +
-+    if ((idx = get_obj_inproc_sync( obj, &type )) > 0)
-+        msync_signal_all( idx );
-+    else if (is_msg_queue( obj ))
-+    {
-+        /* The msg_queue is the one object with a real server-side sync (so
-+         * get_obj_inproc_sync() returns -1 above on macOS, no inproc shadow) that
-+         * ALSO owns a dedicated msync shm via get_msync_idx and is handed to msync
-+         * clients (see the get_msync_idx handler). Signal that shm -- exactly the
-+         * index a GUI message wait blocks on -- or it never wakes. Gated to the
-+         * queue so no other server-backed object's dormant msync path is touched. */
-+        enum msync_type mtype;
-+        unsigned int midx = obj->ops->get_msync_idx( obj, &mtype );
-+        if (midx) msync_signal_all( midx );
-+    }
++    if ((idx = object_msync_idx( obj ))) msync_signal_all( idx );
 +}
 +
 +void msync_destroy_semaphore( unsigned int shm_idx )
@@ -4943,22 +5523,15 @@ index 00000000000..dd66000d006
 +
 +void msync_clear( struct object *obj )
 +{
-+    int type, idx;
++    unsigned int idx;
 +
 +    if (debug_level)
 +        fprintf( stderr, "msync_clear: object %p\n", obj );
 +
-+    if ((idx = get_obj_inproc_sync( obj, &type )) > 0)
-+        msync_clear_shm( idx );
-+    else if (is_msg_queue( obj ))
-+    {
-+        /* Symmetric with msync_wake_up(): clear the queue's own msync shm so a
-+         * level-triggered client wait sees it go unsignaled instead of spinning on
-+         * a stale signaled flag. Gated to the queue, as above. */
-+        enum msync_type mtype;
-+        unsigned int midx = obj->ops->get_msync_idx( obj, &mtype );
-+        if (midx) msync_clear_shm( midx );
-+    }
++    /* Symmetric with msync_wake_up(): the same index goes unsignaled, so a
++     * level-triggered client wait sees the transition instead of spinning on a
++     * stale signaled flag. */
++    if ((idx = object_msync_idx( obj ))) msync_clear_shm( idx );
 +}
 +
 +void msync_set_event( struct msync *msync )
@@ -5002,6 +5575,11 @@ index 00000000000..dd66000d006
 +    int tid;
 +    int count;  /* recursion count */
 +};
++
++/* Same invariant as struct msync_event above: 8-byte payload, readiness (here
++ * the owner tid) first. */
++C_ASSERT( sizeof(struct mutex) == 8 );
++C_ASSERT( offsetof(struct mutex, tid) == 0 );
 +
 +void msync_abandon_mutexes( struct thread *thread )
 +{
@@ -5095,26 +5673,25 @@ index 00000000000..dd66000d006
 +
 +    /* Hand the client an msync shm index for objects that cannot be waited
 +     * server-side -- i.e. pure msync primitives (events/mutexes/sems created via
-+     * create_msync), whose sync is the object itself with add_queue == no_add_queue
-+     * -- PLUS the msg_queue, which maintains its own dedicated msync shm through the
-+     * dual signal path in queue.c (signal_sync/reset_sync for server waiters AND
-+     * msync_wake_up/msync_clear for msync waiters). The queue was excluded before
-+     * because msync_wake_up() resolved the wake index via get_obj_inproc_sync(),
-+     * which returns -1 for the queue's server-backed sync on macOS -> its wakeups
-+     * were dropped and a GUI message wait hung; msync_wake_up()/msync_clear() now
-+     * fall back to the object's own get_msync_idx, so msync-waiting the queue is
-+     * correct and lets a MsgWait be a pure msync wait instead of a polling
-+     * msync+server mixed wait.
++     * create_msync), whose sync is the object itself with add_queue == no_add_queue.
++     * That identity is what default_get_sync() hands back on macOS; a shadow
++     * inproc_sync there would instead push server waits into no_add_queue ->
++     * STATUS_OBJECT_TYPE_MISMATCH (Steam's "stalled pipe"), see the note there.
 +     *
-+     * process/thread stay on SERVER waits (their sync is a server event_sync with a
-+     * real add_queue and they have no dual msync path). The inproc_sync path used
-+     * here is the ntsync (Linux) mechanism, stubbed on macOS -- returning the object
-+     * itself from default_get_sync() keeps real msync primitives off no_add_queue ->
-+     * STATUS_OBJECT_TYPE_MISMATCH (Steam's "stalled pipe"). */
++     * process/thread stay on SERVER waits: their sync is a server event_sync with a
++     * real add_queue and they have no msync path the server keeps in step. */
 +    sync = get_obj_sync( obj );
-+    if (obj->ops->get_msync_idx && (sync->ops->add_queue == no_add_queue || is_msg_queue( obj )))
++    if (obj->ops->get_msync_idx && sync->ops->add_queue == no_add_queue)
 +        idx = obj->ops->get_msync_idx( obj, &type );
 +    release_object( sync );
++
++    /* Plus any object the server itself resolves to an msync index -- the msg_queue,
++     * whose dual signal path object_msync_idx() explains. Waiting on it client-side
++     * makes a MsgWait a pure msync wait rather than a polling msync+server mixed
++     * wait. Read the index back from the object's own op so the reply's type comes
++     * from the same call. */
++    if (!idx && object_msync_idx( obj ) && obj->ops->get_msync_idx)
++        idx = obj->ops->get_msync_idx( obj, &type );
 +
 +    if (idx)
 +    {
@@ -5138,7 +5715,6 @@ index 00000000000..dd66000d006
 +{
 +    reply->shm_idx = current->msync_apc_idx;
 +}
-+
 diff --git a/server/msync.h b/server/msync.h
 new file mode 100644
 index 00000000000..186b85d7af9
@@ -5514,7 +6090,7 @@ index ac38076b22c..591f9cddab8 100644
 +    unsigned int shm_idx;
 +@END
 diff --git a/server/queue.c b/server/queue.c
-index 14124112b9d..329a360859a 100644
+index 14124112b9d..754dc7f3e4c 100644
 --- a/server/queue.c
 +++ b/server/queue.c
 @@ -45,6 +45,7 @@
@@ -5592,27 +6168,59 @@ index 14124112b9d..329a360859a 100644
          thread->queue = queue;
  
          if ((desktop = get_thread_desktop( thread, 0 )))
-@@ -763,6 +782,9 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
+@@ -740,6 +759,33 @@ static inline int get_queue_status( struct msg_queue *queue )
+             queue_shm->internal_bits;
+ }
+ 
++/* Publish the queue's signaled state to both waiter mechanisms at once.
++ *
++ * The invariant is one thing: queue->sync signaled == the queue's msync shm
++ * signaled flag == get_queue_status( queue ). It used to be restated at every
++ * site that touched the wake bits, in three different shapes (signal-only,
++ * clear-only, bidirectional) -- and it was missed once: get_message() clears
++ * changed_bits directly rather than via clear_queue_bits(), which left the msync
++ * object stuck signaled after the last message drained, so the client's
++ * level-triggered MSYNC_QUEUE wait returned instantly forever and livelocked a
++ * CEF message pump at 100% CPU.
++ *
++ * Asserting both directions everywhere is safe because get_queue_status() is the
++ * single source of truth: re-publishing what it reports can only agree with it.
++ * That is also what makes a forgotten site impossible rather than a field bug. */
++static void update_queue_sync( struct msg_queue *queue )
++{
++    int signaled = get_queue_status( queue ) != 0;
++
++    if (signaled) signal_sync( queue->sync );
++    else reset_sync( queue->sync );
++
++    if (!do_msync()) return;
++
++    if (signaled) msync_wake_up( &queue->obj );
++    else msync_clear( &queue->obj );
++}
++
+ /* set some queue bits */
+ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
+ {
+@@ -762,7 +808,7 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
+     }
      SHARED_WRITE_END;
  
-     if (get_queue_status( queue )) signal_sync( queue->sync );
-+
-+    if (do_msync() && get_queue_status( queue ))
-+        msync_wake_up( &queue->obj );
+-    if (get_queue_status( queue )) signal_sync( queue->sync );
++    update_queue_sync( queue );
  }
  
  /* clear some queue bits */
-@@ -788,6 +810,9 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits
+@@ -787,7 +833,7 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits
+         if (queue->keystate_lock) unlock_input_keystate( queue->input );
          queue->keystate_lock = 0;
      }
-     if (!get_queue_status( queue )) reset_sync( queue->sync );
-+
-+    if (do_msync() && !get_queue_status( queue ))
-+        msync_clear( &queue->obj );
+-    if (!get_queue_status( queue )) reset_sync( queue->sync );
++    update_queue_sync( queue );
  }
  
  /* check if message is matched by the filter */
-@@ -1326,6 +1351,9 @@ static void cleanup_results( struct msg_queue *queue )
+@@ -1326,6 +1372,9 @@ static void cleanup_results( struct msg_queue *queue )
  /* check if the thread owning the queue is hung (not checking for messages) */
  static int is_queue_hung( struct msg_queue *queue )
  {
@@ -5622,7 +6230,7 @@ index 14124112b9d..329a360859a 100644
      /* queue is hung if it's signaled and thread didn't access it for more than 5 seconds */
      return get_queue_status( queue ) && monotonic_time - queue->shared->access_time > 5 * TICKS_PER_SEC;
  }
-@@ -1337,6 +1365,13 @@ static struct object *msg_queue_get_sync( struct object *obj )
+@@ -1337,6 +1386,13 @@ static struct object *msg_queue_get_sync( struct object *obj )
      return grab_object( queue->sync );
  }
  
@@ -5636,7 +6244,7 @@ index 14124112b9d..329a360859a 100644
  static void msg_queue_dump( struct object *obj, int verbose )
  {
      struct msg_queue *queue = (struct msg_queue *)obj;
-@@ -1389,6 +1424,8 @@ static void msg_queue_destroy( struct object *obj )
+@@ -1389,6 +1445,8 @@ static void msg_queue_destroy( struct object *obj )
      if (queue->fd) release_object( queue->fd );
      if (queue->shared) free_shared_object( queue->shared );
      if (queue->sync) release_object( queue->sync );
@@ -5645,65 +6253,49 @@ index 14124112b9d..329a360859a 100644
  }
  
  static void msg_queue_poll_event( struct fd *fd, int event )
-@@ -3267,6 +3304,16 @@ DECL_HANDLER(set_queue_mask)
- 
-     if (!get_queue_status( queue )) reset_sync( queue->sync );
-     else signal_sync( queue->sync );
-+
-+    /* keep the msync shm in parity with queue->sync in BOTH directions:
-+     * a new mask can make the queue signaled against already-set bits (no
-+     * set_queue_bits fires), so the true branch must msync_wake_up or the
-+     * msgwait client blocks forever (lost-wakeup deadlock). */
-+    if (do_msync())
-+    {
-+        if (get_queue_status( queue )) msync_wake_up( &queue->obj );
-+        else msync_clear( &queue->obj );
-+    }
- }
- 
- 
-@@ -3288,6 +3335,9 @@ DECL_HANDLER(get_queue_status)
+@@ -3265,8 +3323,9 @@ DECL_HANDLER(set_queue_mask)
+     }
      SHARED_WRITE_END;
  
-     if (!get_queue_status( queue )) reset_sync( queue->sync );
-+
-+    if (do_msync() && !get_queue_status( queue ))
-+        msync_clear( &queue->obj );
+-    if (!get_queue_status( queue )) reset_sync( queue->sync );
+-    else signal_sync( queue->sync );
++    /* A new mask can make the queue signaled against already-set bits without
++     * any set_queue_bits() firing, so this must publish both directions. */
++    update_queue_sync( queue );
  }
  
  
-@@ -3489,6 +3539,15 @@ DECL_HANDLER(get_message)
+@@ -3287,7 +3346,7 @@ DECL_HANDLER(get_queue_status)
+     }
+     SHARED_WRITE_END;
  
-     if (!get_queue_status( queue )) reset_sync( queue->sync );
+-    if (!get_queue_status( queue )) reset_sync( queue->sync );
++    update_queue_sync( queue );
+ }
  
-+    /* get_message clears changed_bits directly above (not via clear_queue_bits),
-+     * so it must also resync the msync shm signaled flag, exactly like the other
-+     * queue handlers (set_queue_mask/get_queue_status). Missing this leaves the
-+     * queue's msync object stuck signaled after the last message is drained ->
-+     * the client's level-triggered MSYNC_QUEUE wait (msync.c) returns instantly
-+     * forever -> CEF message-pump livelock (100%+ CPU, no new QS bits set). */
-+    if (do_msync() && !get_queue_status( queue ))
-+        msync_clear( &queue->obj );
-+
+ 
+@@ -3487,7 +3546,9 @@ DECL_HANDLER(get_message)
+     }
+     SHARED_WRITE_END;
+ 
+-    if (!get_queue_status( queue )) reset_sync( queue->sync );
++    /* get_message clears changed_bits directly above, not via clear_queue_bits(),
++     * so it has to republish here like every other site. */
++    update_queue_sync( queue );
+ 
      /* then check for posted messages */
      if ((filter & QS_POSTMESSAGE) &&
-         get_posted_message( queue, get_win, req->get_first, req->get_last, req->flags, reply ))
-@@ -3547,6 +3606,14 @@ DECL_HANDLER(get_message)
-     if (!get_queue_status( queue )) reset_sync( queue->sync );
-     else signal_sync( queue->sync );
+@@ -3544,8 +3605,7 @@ DECL_HANDLER(get_message)
+     }
+     SHARED_WRITE_END;
+ 
+-    if (!get_queue_status( queue )) reset_sync( queue->sync );
+-    else signal_sync( queue->sync );
++    update_queue_sync( queue );
      set_error( STATUS_PENDING );  /* FIXME */
-+
-+    /* parity with queue->sync in both directions (see set_queue_mask): the new
-+     * wake/changed mask may make the queue signaled against existing bits. */
-+    if (do_msync())
-+    {
-+        if (get_queue_status( queue )) msync_wake_up( &queue->obj );
-+        else msync_clear( &queue->obj );
-+    }
  }
  
- 
-@@ -4341,6 +4408,32 @@ DECL_HANDLER(update_rawinput_devices)
+@@ -4341,6 +4401,32 @@ DECL_HANDLER(update_rawinput_devices)
      }
  }
  

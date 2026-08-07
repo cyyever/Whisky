@@ -1,6 +1,7 @@
-From: cyy <cyyever@gmail.com>
-Date: Sun, 26 Jul 2026 00:00:00 +0000
-Subject: [PATCH] ntdll: default the D3D/Vulkan builtins in the load order
+Subject: ntdll: default the D3D/Vulkan builtins in the load order
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 This tree ships its D3D/Vulkan stack as Wine builtins: DXVK provides d3d9/d3d8
 (and d3d11/d3d10core/dxgi on FreeBSD), DXMT provides d3d11/d3d10core/dxgi on
@@ -17,11 +18,12 @@ basename catches app-directory loads too.
 The D3D/DXGI/vulkan-1 modules apply on every host this tree targets (macOS and
 FreeBSD) — the provider differs but "builtin" is always right — so they are
 unguarded. Only winemetal (DXMT's Metal interface) stays behind __APPLE__.
+
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
-index 30d17e4..691f203 100644
+index 722190da255..44922cfd443 100644
 --- a/dlls/ntdll/unix/loadorder.c
 +++ b/dlls/ntdll/unix/loadorder.c
-@@ -404,6 +404,24 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -396,6 +396,24 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
      static const WCHAR easyanticheat_x64W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','6','4',0};
      static const WCHAR easyanticheatW[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t',0};
      static const WCHAR soW[] = {'.','s','o',0};
@@ -46,7 +48,7 @@ index 30d17e4..691f203 100644
  
      static const WCHAR prefixW[] = {'\\','?','?','\\'};
      enum loadorder ret = LO_INVALID;
-@@ -508,6 +526,28 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -500,6 +518,28 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
          goto done;
      }
  

@@ -1,6 +1,4 @@
-From: cyy <cyyever@gmail.com>
-Date: Fri, 31 Jul 2026 00:00:00 +0000
-Subject: [PATCH] ws2_32: WSALookupServiceBegin semi-stub succeeds with empty set
+Subject: ws2_32: WSALookupServiceBegin semi-stub succeeds with empty set
 
 WSALookupServiceBegin{A,W} were unimplemented FIXME stubs returning
 WSA_NOT_ENOUGH_MEMORY (error 8). Steam's CEF webhelper network_change_notifier
@@ -10,10 +8,11 @@ so the notifier finishes. Real NLA unimpl; callers see no services (strictly
 better than the hard failure). Upstream Wine gap. Verified live: cef_log NLA
 errors 6/launch -> 0.
 
----
+diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
+index 915758be886..2fd275ca864 100644
 --- a/dlls/ws2_32/protocol.c
 +++ b/dlls/ws2_32/protocol.c
-@@ -2217,9 +2217,9 @@
+@@ -2232,9 +2232,9 @@ int WINAPI WSAGetServiceClassNameByClassIdW( GUID *class, WCHAR *service, DWORD
   */
  int WINAPI WSALookupServiceBeginA( WSAQUERYSETA *query, DWORD flags, HANDLE *lookup )
  {
@@ -26,7 +25,7 @@ errors 6/launch -> 0.
  }
  
  
-@@ -2228,9 +2228,9 @@
+@@ -2243,9 +2243,9 @@ int WINAPI WSALookupServiceBeginA( WSAQUERYSETA *query, DWORD flags, HANDLE *loo
   */
  int WINAPI WSALookupServiceBeginW( WSAQUERYSETW *query, DWORD flags, HANDLE *lookup )
  {

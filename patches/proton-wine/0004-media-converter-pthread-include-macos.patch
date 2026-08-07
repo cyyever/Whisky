@@ -1,12 +1,11 @@
-From: cyy <cyyever@gmail.com>
-Subject: [PATCH] winegstreamer/media-converter: include <pthread.h> for pthread_mutex_t
+Subject: winegstreamer/media-converter: include <pthread.h> for pthread_mutex_t
 
 media-converter.h declares a pthread_mutex_t member but relied on it
 being pulled in transitively; that doesn't happen on macOS. Include
 <pthread.h> explicitly.
----
+
 diff --git a/dlls/winegstreamer/media-converter/media-converter.h b/dlls/winegstreamer/media-converter/media-converter.h
-index d06534e..ccc3271 100644
+index 3dd8864d54f..c893a217bc1 100644
 --- a/dlls/winegstreamer/media-converter/media-converter.h
 +++ b/dlls/winegstreamer/media-converter/media-converter.h
 @@ -22,6 +22,7 @@

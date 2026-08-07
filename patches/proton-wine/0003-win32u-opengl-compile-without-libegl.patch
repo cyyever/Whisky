@@ -1,5 +1,4 @@
-From: cyy <cyyever@gmail.com>
-Subject: [PATCH] win32u/opengl: compile framebuffer-surface/fs_hack without libEGL
+Subject: win32u/opengl: compile framebuffer-surface/fs_hack without libEGL
 
 The framebuffer-surface and fullscreen-hack helpers were inside
 #ifdef SONAME_LIBEGL, but the driver-agnostic code uses them
@@ -8,9 +7,9 @@ framebuffer_surface_create, framebuffer_from_opengl_drawable). Without
 libEGL (macOS, where GL comes from winemac.drv) opengl.c failed to build
 with undeclared-identifier errors. The block is EGL-independent, so move
 the guard down past it; only the real EGL platform code stays guarded.
----
+
 diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
-index d2b7413..a2119f1 100644
+index 03346f5b5f6..f7e9d0a07d1 100644
 --- a/dlls/win32u/opengl.c
 +++ b/dlls/win32u/opengl.c
 @@ -186,7 +186,11 @@ static int get_window_swap_interval( HWND hwnd )
@@ -26,7 +25,7 @@ index d2b7413..a2119f1 100644
  
  struct framebuffer_surface
  {
-@@ -953,6 +957,8 @@ static BOOL needs_framebuffer_surface( HWND hwnd )
+@@ -994,6 +998,8 @@ static BOOL needs_framebuffer_surface( HWND hwnd )
      return get_float_gamma_ramp( gamma_ramp, &gamma_serial );
  }
  

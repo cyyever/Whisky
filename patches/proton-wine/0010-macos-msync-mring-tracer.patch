@@ -1,0 +1,187 @@
+Subject: macOS: msync MRING wait-path tracer (temporary)
+
+Lock-free ring recording which msync objects each thread is about to block on,
+snapshotted to /tmp/mring_<pid>.log by a background thread. Enabled with
+WINE_MRING=1.
+
+It exists to find a lost wakeup that fprintf-based tracing perturbs away: the
+TRACE path's latency reorders the sub-microsecond race out of existence, so the
+tracer has to cost one atomic fetch-add and a few plain stores on the hot path.
+
+Kept as its own patch rather than folded into 0008 so it can be dropped in one
+move when the investigation it serves is finished.
+
+diff --git a/dlls/ntdll/unix/msync_obj.c b/dlls/ntdll/unix/msync_obj.c
+index 54fdee5437f..3fac6005e10 100644
+--- a/dlls/ntdll/unix/msync_obj.c
++++ b/dlls/ntdll/unix/msync_obj.c
+@@ -321,6 +321,8 @@ static inline void signal_all( struct msync *obj )
+     /* Thread-local, unlike the server's single copy: any thread can signal. */
+     __thread static mach_msg_header_t send_header;
+ 
++    if (msync_mring_on) msync_mrec( MEV_SIGNAL, obj->shm_idx, obj->type, 0, 0 );
++
+     if (!msync_signal_wake( &send_header, obj->shm_idx, obj->shm, msync_server_port ))
+         return;
+ 
+@@ -412,6 +414,11 @@ NTSTATUS msync_set_event( HANDLE handle, LONG *prev )
+ 
+     if ((ret = get_event_object( handle, &obj, &event ))) return ret;
+ 
++    /* MRING signal-side trace: record EVERY SetEvent (a=prev signaled state) so a
++     * missing signal for a stuck waiter is visible by its absence. */
++    if (msync_mring_on) msync_mrec( MEV_SET, obj->shm_idx, obj->type,
++                        (int)__atomic_load_n( &event->signaled, __ATOMIC_ACQUIRE ), 0 );
++
+     if (!(current = __atomic_exchange_n( &event->signaled, 1, __ATOMIC_SEQ_CST )))
+         signal_all( obj );
+ 
+diff --git a/dlls/ntdll/unix/msync_private.h b/dlls/ntdll/unix/msync_private.h
+index ac78e2b2804..61c4a5c67fa 100644
+--- a/dlls/ntdll/unix/msync_private.h
++++ b/dlls/ntdll/unix/msync_private.h
+@@ -371,6 +371,12 @@ extern semaphore_t *msync_semaphore_pool_alloc(void);
+ extern void msync_semaphore_pool_free( semaphore_t *sem );
+ extern mach_port_t msync_server_port;
+ 
++/* MRING: lock-free wait-path tracer, enabled by WINE_MRING=1. Callers guard the
++ * call with `if (msync_mring_on)` so a disabled ring costs one predictable branch. */
++enum { MEV_WAIT = 1, MEV_WOKE = 2, MEV_SET = 3, MEV_SIGNAL = 4 };
++extern int msync_mring_on;
++extern void msync_mrec( int ev, unsigned int shm_idx, int type, int a, int b );
++
+ /* ---- msync_obj.c ---------------------------------------------------------- */
+ extern NTSTATUS msync_get_object( HANDLE handle, struct msync **obj );
+ /* Unprefixed, unlike its neighbours: SERVER_START_REQ( create_msync ) builds the
+diff --git a/dlls/ntdll/unix/msync_select.c b/dlls/ntdll/unix/msync_select.c
+index 47234e78a88..cac1b477fac 100644
+--- a/dlls/ntdll/unix/msync_select.c
++++ b/dlls/ntdll/unix/msync_select.c
+@@ -356,8 +356,19 @@ static NTSTATUS msync_wait_any(
+             return STATUS_TIMEOUT;
+         }
+ 
++        if (msync_mring_on)   /* MRING: record the exact set we're about to block on */
++        {
++            unsigned int mj;
++            for (mj = 0; mj < waitcount; mj++)
++                if (objs[mj]) msync_mrec( MEV_WAIT, objs[mj]->shm_idx, objs[mj]->type,
++                                    __atomic_load_n( (int *)objs[mj]->shm, __ATOMIC_ACQUIRE ),
++                                    (int)waitcount );
++        }
++
+         ret = msync_wait_multiple( objs, waitcount, timeout ? &end : NULL, current_tid );
+ 
++        if (msync_mring_on) msync_mrec( MEV_WOKE, 0, 0, (int)ret, 0 );
++
+         if (ret == STATUS_TIMEOUT)
+         {
+             TRACE("Wait timed out.\n");
+diff --git a/dlls/ntdll/unix/msync_shm.c b/dlls/ntdll/unix/msync_shm.c
+index a6f18f60d40..beb889d17c0 100644
+--- a/dlls/ntdll/unix/msync_shm.c
++++ b/dlls/ntdll/unix/msync_shm.c
+@@ -233,6 +233,86 @@ void *msync_get_shm( unsigned int idx )
+     return ret;
+ }
+ 
++/* ---- MRING: lock-free client wait-path tracer (heisenbug-safe) -------------
++ * Records, with no syscall/lock/fprintf on the hot path (one atomic fetch-add +
++ * plain stores), the exact msync objects each thread is about to block on. A
++ * background thread snapshots it to /tmp/mring_<pid>.log so we can read which
++ * shm_idx+type a STUCK thread is parked on -- the fprintf probes add latency
++ * that reorders the sub-microsecond race away. Enabled by WINE_MRING=1. Remove
++ * after use. */
++#define MRING_N 8192
++struct mring_ent { unsigned long long seq; unsigned int tid, shm_idx; int ev, type, a, b; };
++static struct mring_ent mring[MRING_N];
++static unsigned long long mring_pos;
++int msync_mring_on;
++
++void msync_mrec( int ev, unsigned int shm_idx, int type, int a, int b )
++{
++    unsigned long long s;
++    unsigned int i;
++    if (!msync_mring_on) return;
++    s = __atomic_fetch_add( &mring_pos, 1, __ATOMIC_RELAXED );
++    i = (unsigned int)(s & (MRING_N - 1));
++    mring[i].tid = GetCurrentThreadId();
++    mring[i].shm_idx = shm_idx;
++    mring[i].ev = ev;
++    mring[i].type = type;
++    mring[i].a = a;
++    mring[i].b = b;
++    __atomic_store_n( &mring[i].seq, s + 1, __ATOMIC_RELEASE ); /* seq = s+1 so 0 means empty */
++}
++
++/* Read an already-mapped slot, or NULL. Deliberately cannot map: see the dump
++ * thread below. */
++static void *peek_shm( unsigned int idx )
++{
++    int entry  = (idx * MSYNC_SHM_SLOT_SIZE) / shm_map.pagesize;
++    int offset = (idx * MSYNC_SHM_SLOT_SIZE) % shm_map.pagesize;
++    void *ret = NULL;
++
++    os_unfair_lock_lock( &shm_addrs_lock );
++    if (entry < shm_map.addrs_size && shm_map.addrs[entry])
++        ret = (char *)shm_map.addrs[entry] + offset;
++    os_unfair_lock_unlock( &shm_addrs_lock );
++
++    return ret;
++}
++
++static void *mring_dump_thread( void *arg )
++{
++    char path[64];
++    snprintf( path, sizeof(path), "/tmp/mring_%d.log", (int)getpid() );
++    for (;;)
++    {
++        FILE *f;
++        unsigned long long pos, start, k;
++        usleep( 300000 );
++        pos = __atomic_load_n( &mring_pos, __ATOMIC_ACQUIRE );
++        if (!pos || !(f = fopen( path, "w" ))) continue;
++        start = pos > MRING_N ? pos - MRING_N : 0;
++        for (k = start; k < pos; k++)
++        {
++            struct mring_ent *e = &mring[k & (MRING_N - 1)];
++            int cur = -1;
++            if (__atomic_load_n( &e->seq, __ATOMIC_ACQUIRE ) != k + 1) continue;
++            /* Current signaled value of the object NOW (dump-time): distinguishes a
++             * lost wakeup (cur=1 but the thread still parked) from a legit wait
++             * (cur=0). peek_shm(), not msync_get_shm(): the dumper must not map pages.
++             * cur=-1 means "not mapped in this process". Note the index can have
++             * been recycled since the entry was written, so cur is a hint. */
++            if (e->ev == MEV_WAIT && e->shm_idx)
++            {
++                int *addr = peek_shm( e->shm_idx );
++                if (addr) cur = __atomic_load_n( addr, __ATOMIC_ACQUIRE );
++            }
++            fprintf( f, "%llu tid=%04x ev=%d idx=%u type=%d a=%d b=%d cur=%d\n",
++                     k, e->tid, e->ev, e->shm_idx, e->type, e->a, e->b, cur );
++        }
++        fclose( f );
++    }
++    return NULL;
++}
++
+ void msync_init(void)
+ {
+     struct stat st;
+@@ -292,4 +372,16 @@ void msync_init(void)
+         exit(1);
+     }
+ 
++    /* MRING */
++    {
++        const char *e = getenv( "WINE_MRING" );
++
++        if (e && *e != '0')
++        {
++            pthread_t t;
++
++            msync_mring_on = 1;
++            if (!pthread_create( &t, NULL, mring_dump_thread, NULL )) pthread_detach( t );
++        }
++    }
+ }

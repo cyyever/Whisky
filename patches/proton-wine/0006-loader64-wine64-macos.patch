@@ -1,4 +1,4 @@
-Subject: [PATCH] loader64: build a 64-bit wine64 loader on macOS
+Subject: loader64: build a 64-bit wine64 loader on macOS
 
 macOS needs a wine64 binary that loader/ does not build (it produces only the
 host-named loader). Add a loader64 directory that reuses ../loader's sources
@@ -18,7 +18,7 @@ wine64_preloader_OBJS lists preloader_mac.o alongside preloader.o, matching
 loader/Makefile.in; without it the preloader would fail to link on macOS.
 
 diff --git a/configure.ac b/configure.ac
-index 7434ef9..3fa6a89 100644
+index 7434ef9323b..3fa6a89c735 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -2139,6 +2139,8 @@ fi
@@ -39,7 +39,7 @@ index 7434ef9..3fa6a89 100644
  fi
  
 diff --git a/loader64/Makefile.in b/loader64/Makefile.in
-index cfbe51d..83d8adf 100644
+index cfbe51d44d2..83d8adf41b5 100644
 --- a/loader64/Makefile.in
 +++ b/loader64/Makefile.in
 @@ -3,10 +3,11 @@ PARENTSRC = ../loader

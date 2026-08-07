@@ -7,7 +7,7 @@ set -e
 #   dlls/ntdll/tests/ntdll_test.exe      (dlls/ntdll/tests/sync.c   -> "sync" subtest)
 #   dlls/kernel32/tests/kernel32_test.exe (dlls/kernel32/tests/sync.c -> "sync" subtest)
 #
-# msync (dlls/ntdll/unix/msync.c) is a *transparent* backend for the NT sync
+# msync (dlls/ntdll/unix/msync_*.c) is a *transparent* backend for the NT sync
 # primitives (NtCreateEvent / NtWaitForMultipleObjects / mutexes / semaphores),
 # so it has no dedicated tests — it is validated by running Wine's generic sync
 # conformance tests under WINEMSYNC=1 vs WINEMSYNC=0. `scripts/test-msync.sh`

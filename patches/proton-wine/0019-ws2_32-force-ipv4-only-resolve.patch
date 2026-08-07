@@ -1,6 +1,7 @@
-From: cyy <cyyever@gmail.com>
-Date: Mon, 27 Jul 2026 00:00:00 +0000
-Subject: [PATCH] ws2_32: force IPv4-only getaddrinfo when WINE_DISABLE_IPV6=1
+Subject: ws2_32: force IPv4-only getaddrinfo when WINE_DISABLE_IPV6=1
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 On a network with no working IPv6 (common behind a proxy/VPN), Steam resolves
 its Connection Manager / directory hosts (api.steampowered.com, *.steamserver.net)
@@ -14,9 +15,8 @@ steamclient uses the working IPv4 path. Unset (the default) leaves resolution
 unchanged. Confirmed with WINEDEBUG=+winsock: api.steampowered.com flips from
 AF_INET6 to AF_INET 184.31.138.105.
 
----
 diff --git a/dlls/ws2_32/unixlib.c b/dlls/ws2_32/unixlib.c
-index e0e1263..957ccd1 100644
+index e0e1263e025..957ccd1372f 100644
 --- a/dlls/ws2_32/unixlib.c
 +++ b/dlls/ws2_32/unixlib.c
 @@ -704,7 +704,7 @@ static NTSTATUS unix_getaddrinfo( void *args )

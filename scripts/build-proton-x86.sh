@@ -15,7 +15,7 @@ echo "=== Building Proton (proton-wine) x86_64 from $WINE_SRC ==="
 # bleeding-edge — the only branch Valve still pushes to; proton_11.0 and
 # experimental_11.0 are both older). The reset arg
 # cleans the source first (`git checkout -- .` + `git clean -fdq`), so add-file patches
-# (msync.c, server/msync.c, …) re-apply cleanly on a forced rebuild. `git clean -fdq`
+# (msync_*.c, server/msync.c, …) re-apply cleanly on a forced rebuild. `git clean -fdq`
 # removes untracked NON-ignored files — patch leftovers, the generated inputs, and stray
 # dist/.cache — but KEEPS gitignored paths: build/ (intentional — incremental compiles)
 # and configure. NOTE: also discards uncommitted proton-wine edits (e.g. local msync

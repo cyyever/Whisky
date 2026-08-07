@@ -1,6 +1,4 @@
-From: cyy <cyyever@gmail.com>
-Date: Sun, 27 Jul 2026 00:00:00 +0000
-Subject: [PATCH] kernelbase: append --no-sandbox --in-process-gpu to steamwebhelper.exe
+Subject: kernelbase: append --no-sandbox to steamwebhelper.exe
 
 Steam's CEF host steamwebhelper.exe crashes under Wine on macOS without two
 Chromium flags:
@@ -10,10 +8,16 @@ Chromium flags:
     (src/common/pipes.cpp "Stalled cross-thread pipe" -> Fatal assert ->
     _ExitOnFatalAssert; the host exits).
 
-  - --in-process-gpu: the out-of-process GPU process cannot create an
-    ANGLE/D3D11 window surface on the browser window under Wine+DXMT
-    (eglCreateWindowSurface failed; SwapChain11.cpp), so the UI never paints.
-    Running the GPU in-process sidesteps the cross-process surface.
+--in-process-gpu was also appended here, because the out-of-process GPU process
+could not create an ANGLE/D3D11 window surface on the browser window
+(eglCreateWindowSurface failed; SwapChain11.cpp) and the UI never painted. That
+turned out to be a symptom of patch 0009: winemac's DXMT shim only built a Metal
+view for toplevel windows, so any child HWND -- which is what a browser
+composites into -- got NULL and DXMT abort()ed. 0009 now creates a client
+surface for child HWNDs too, so the flag has been removed. UNVERIFIED: this has
+not been retested against a live Steam session. If the webhelper UI stops
+painting, putting " --in-process-gpu" back on the line below is the first thing
+to try.
 
 NOTE: the GPU process's SharedImageStub (GPU virtualization) requires a shared
 GLES3 context. ANGLE's D3D11 backend only reaches GLES3 when d3d11 is DXMT
@@ -35,15 +39,15 @@ steamwebhelper.exe launch (browser + renderer/gpu/utility children), matching
 the prior wrapper's behavior, and lets us delete the wrapper binary, the _real
 copy, the IFEO registry setup, and the Steam.swift plumbing for it.
 
----
 diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index 6da31d7a8f9..038cc9a8369 100644
 --- a/dlls/kernelbase/process.c
 +++ b/dlls/kernelbase/process.c
-@@ -617,6 +617,7 @@ static const WCHAR *hack_append_command_line( const WCHAR *cmd )
+@@ -626,6 +626,7 @@ static const WCHAR *hack_append_command_line( const WCHAR *cmd )
          {L"Red Tie Runner.exe", L" --use-angle=gl"},
          {L"UnrealCEFSubProcess.exe", L" --use-gl=swiftshader", "2316580"},
          {L"UnrealCEFSubProcess.exe", L" --use-angle=d3d9", "2684500"},
-+        {L"steamwebhelper.exe", L" --no-sandbox --in-process-gpu"},
++        {L"steamwebhelper.exe", L" --no-sandbox"},
      };
      unsigned int i;
      char sgi[64];
