@@ -12,10 +12,10 @@ Kept as its own patch rather than folded into 0008 so it can be dropped in one
 move when the investigation it serves is finished.
 
 diff --git a/dlls/ntdll/unix/msync_obj.c b/dlls/ntdll/unix/msync_obj.c
-index 54fdee5437f..3fac6005e10 100644
+index e98f50178b9..8ec0468352f 100644
 --- a/dlls/ntdll/unix/msync_obj.c
 +++ b/dlls/ntdll/unix/msync_obj.c
-@@ -321,6 +321,8 @@ static inline void signal_all( struct msync *obj )
+@@ -325,6 +325,8 @@ static inline void signal_all( struct msync *obj )
      /* Thread-local, unlike the server's single copy: any thread can signal. */
      __thread static mach_msg_header_t send_header;
  
@@ -24,7 +24,7 @@ index 54fdee5437f..3fac6005e10 100644
      if (!msync_signal_wake( &send_header, obj->shm_idx, obj->shm, msync_server_port ))
          return;
  
-@@ -412,6 +414,11 @@ NTSTATUS msync_set_event( HANDLE handle, LONG *prev )
+@@ -416,6 +418,11 @@ NTSTATUS msync_set_event( HANDLE handle, LONG *prev )
  
      if ((ret = get_event_object( handle, &obj, &event ))) return ret;
  
@@ -54,7 +54,7 @@ index ac78e2b2804..61c4a5c67fa 100644
  extern NTSTATUS msync_get_object( HANDLE handle, struct msync **obj );
  /* Unprefixed, unlike its neighbours: SERVER_START_REQ( create_msync ) builds the
 diff --git a/dlls/ntdll/unix/msync_select.c b/dlls/ntdll/unix/msync_select.c
-index 47234e78a88..cac1b477fac 100644
+index bbcdbb4b804..72883bd90b7 100644
 --- a/dlls/ntdll/unix/msync_select.c
 +++ b/dlls/ntdll/unix/msync_select.c
 @@ -356,8 +356,19 @@ static NTSTATUS msync_wait_any(
