@@ -159,15 +159,47 @@ static void test_https(void)
 
 /* Helper executables Steam shells out to. A missing import makes them exit
  * c0000135 (STATUS_DLL_NOT_FOUND) before main(), which Steam records as one
- * opaque "process exit code 3221225781" line. */
-static void test_helper_deps(const char *exe, const char *dll)
+ * opaque "process exit code 3221225781" line.
+ *
+ * Actually launch it rather than probing for the DLL by name: an import is
+ * resolved from the executable's own directory, so a LoadLibrary() from here
+ * searches the wrong place and would call a working helper broken. Steam's
+ * 32-bit gldriverquery.exe needs SDL2.dll, which no *_win64 package delivers —
+ * scripts/build-sdl2.sh builds one. */
+static void test_helper_runs(const char *path)
 {
-    char msg[160];
-    HMODULE m = LoadLibraryExA(dll, NULL, LOAD_LIBRARY_AS_DATAFILE);
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {0};
+    DWORD code = 0;
+    char cmd[512], msg[600];
+    const char *leaf = strrchr(path, '\\');
 
-    if (m) { sprintf(msg, "%s: %s present", exe, dll); ok("helper dependency", msg); FreeLibrary(m); }
-    else { sprintf(msg, "%s needs %s, which is missing (exits c0000135)", exe, dll);
-           bad("helper dependency", msg); }
+    leaf = leaf ? leaf + 1 : path;
+    snprintf(cmd, sizeof(cmd), "\"%s\"", path);
+
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW,
+                        NULL, NULL, &si, &pi))
+    {
+        snprintf(msg, sizeof(msg), "%s: could not start (error %lu) — not installed?",
+                 leaf, GetLastError());
+        bad("helper runs", msg);
+        return;
+    }
+    WaitForSingleObject(pi.hProcess, 15000);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    if (code == 0xC0000135)
+    {
+        snprintf(msg, sizeof(msg), "%s: exit c0000135, an import is missing", leaf);
+        bad("helper runs", msg);
+    }
+    else
+    {
+        snprintf(msg, sizeof(msg), "%s: exit %lu", leaf, code);
+        ok("helper runs", msg);
+    }
 }
 
 int main(void)
@@ -180,7 +212,8 @@ int main(void)
     test_resolve("client-update.steamstatic.com");   /* the update manifest host */
     test_resolve("api.steampowered.com");            /* CM discovery lives here */
     test_https();
-    test_helper_deps("gldriverquery.exe", "SDL2.dll");
+    test_helper_runs("C:\\Program Files (x86)\\Steam\\bin\\gldriverquery.exe");
+    test_helper_runs("C:\\Program Files (x86)\\Steam\\bin\\gldriverquery64.exe");
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures,
            failures == 1 ? "" : "s");

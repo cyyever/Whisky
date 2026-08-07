@@ -10,3 +10,7 @@
 	url = https://gitlab.freedesktop.org/mesa/mesa.git
 	shallow = true
 	branch = main
+[submodule "vendor/sdl2"]
+	path = vendor/sdl2
+	url = https://github.com/libsdl-org/SDL.git
+	branch = release-2.30.x
