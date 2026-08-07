@@ -165,7 +165,10 @@ static void test_https(void)
  * resolved from the executable's own directory, so a LoadLibrary() from here
  * searches the wrong place and would call a working helper broken. Steam's
  * 32-bit gldriverquery.exe needs SDL2.dll, which no *_win64 package delivers —
- * scripts/build-sdl2.sh builds one. */
+ * scripts/build-sdl2.sh builds one. That one is cosmetic: measured 2026-08-07,
+ * Steam logs in and shows its whole UI with the DLL absent, so a failure here
+ * for gldriverquery.exe (not the 64-bit sibling) is a missing nicety, not a
+ * broken bottle. */
 static void test_helper_runs(const char *path)
 {
     STARTUPINFOA si = { sizeof(si) };

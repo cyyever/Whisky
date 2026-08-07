@@ -27,12 +27,25 @@ level 9_3 in `tests/d3d11-featurelevel-test.c`, that is the *other* DXMT bug —
 clobbering DXMT with wined3d, §1 below.
 
 **Status after the fix:** steam.exe survives 7+ minutes (it used to die inside 45 s) and
-steamwebhelper no longer hits "Quit message loop" (it used to, at 12–21 s). The login
-window is **still not visible**, but for a reason upstream of the window system: the CEF
-window `Chrome_WidgetWin_0` exists at 1102x659, position 0,33, with `WS_VISIBLE` **unset**
-— Steam never calls `ShowWindow`. Open leads are `YldCheckForClientUpdate: timed out
-waiting for update check` and `gldriverquery.exe` exiting `3221225781`
-(`STATUS_DLL_NOT_FOUND`).
+steamwebhelper no longer hits "Quit message loop" (it used to, at 12–21 s). Login now
+works end to end when launched **from the Whisky GUI** — the 700x440 login window renders,
+`RecvMsgClientLogOnResponse 'OK'`, and the full UI (main window 1280x800, Friends List,
+Special Offers) comes up onscreen. The earlier "the window exists at 1102x659 with
+`WS_VISIBLE` unset, Steam never calls `ShowWindow`" reading came from a bare-CLI launch,
+which is not equivalent to the GUI launch and does not count.
+
+`gldriverquery.exe` exiting `3221225781` (`STATUS_DLL_NOT_FOUND`, the missing 32-bit
+`SDL2.dll`) is **not** a lead for anything — measured 2026-08-07 by moving the DLL aside:
+the probe failed, and Steam logged in three seconds later and showed its whole UI anyway.
+`scripts/build-sdl2.sh` only silences that one log line; it is optional.
+
+**Still open:** the "Special Offers" news window cannot be closed. `WM_CLOSE` is ignored
+and `SendMessageTimeout(WM_NULL)` to it times out — its owning thread is not pumping;
+`sample` puts `CrBrowserMain` in `msync_wait_single` / `msync_wait_multiple`. That points
+at msync, not the window system. When bisecting, use only gates `msync.c` actually reads
+(`WINEMSYNC_NO_EVENT`, `_NO_AUTOEVENT`, `_NO_MANUALEVENT`, `_NO_SEMAPHORE`, `_NO_MUTEX`);
+`WINEMSYNC_NO_ANON_AUTOEVENT` never existed and silently invalidated earlier A/Bs
+(`bf150501`).
 
 ## 1. Black window (CEF GPU sandbox)
 
