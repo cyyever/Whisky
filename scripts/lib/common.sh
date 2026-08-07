@@ -57,6 +57,26 @@ export_homebrew_mirrors() {
     export HOMEBREW_API_DOMAIN=https://mirrors.ustc.edu.cn/homebrew-bottles/api
 }
 
+# Stamp the "Wine builtin DLL" signature into a PE so wineboot treats it as a real
+# builtin. wineboot only mirrors a lib/wine PE into a bottle's system32 — making it
+# findable by LoadLibrary — if the 17 bytes right after the 64-byte DOS header are
+# that signature (dlls/setupapi/fakedll.c read_file/install_lib_dir). winebuild
+# stamps Wine's own builtins (and DXMT's); DXVK is built by mingw and lacks it, so
+# on a fresh bottle LoadLibraryA("d3d9.dll") would fail with STATUS_DLL_NOT_FOUND
+# *before* patch 0017's load order (which forces builtin) ever runs. We overwrite
+# only the DOS stub at offset 64 — never executed by the PE loader; e_lfanew (128)
+# is well clear, so the NT header is untouched.
+mark_wine_builtin() {  # <pe-file>
+    python3 - "$1" <<'PY'
+import sys
+sig = b"Wine builtin DLL\x00"   # 17 bytes; must equal builtin_signature in fakedll.c
+with open(sys.argv[1], "r+b") as f:
+    f.seek(0x3c); lfanew = int.from_bytes(f.read(4), "little")
+    assert lfanew >= 64 + len(sig), f"{sys.argv[1]}: e_lfanew {lfanew} < {64+len(sig)}"
+    f.seek(64); f.write(sig)
+PY
+}
+
 # apply_patches <src_dir> <patch_dir> <label> [reset]
 #
 # Idempotently apply patch_dir/*.patch to the git worktree at src_dir: skip

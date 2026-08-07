@@ -9,7 +9,7 @@ XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
 CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
 .PHONY: all help setup-x86-brew proton proton-debug clean-proton \
-        dxmt dxvk proxychains app app-release run submodule clean check-proton-src
+        dxmt dxvk proxychains app app-release install-app run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -65,14 +65,39 @@ proxychains:  ## Build x86_64 proxychains-ng into Libraries/ProxyChains (routes 
 
 # === Whisky App ===
 
-app:  ## Build the Whisky macOS app (Debug)
+app: ## Build the Whisky macOS app (Debug) and install it over /Applications/Whisky.app
 	$(XCODEBUILD) -configuration Debug build $(CODESIGN_OFF)
+	@$(MAKE) --no-print-directory install-app CONFIG=Debug
 
-app-release:  ## Build the Whisky app (Release)
+app-release: ## Build the Whisky app (Release) and install it over /Applications/Whisky.app
 	$(XCODEBUILD) -configuration Release build $(CODESIGN_OFF)
+	@$(MAKE) --no-print-directory install-app CONFIG=Release
 
-run: app  ## Build and run Whisky
-	@open $$(ls -dt $(APP_PRODUCTS)/Debug/Whisky.app | head -1)
+# Replace the installed app with what we just built. Without this the build
+# lands only in DerivedData while Dock/Spotlight keep launching whatever is in
+# /Applications -- and a stale one is invisible: it runs, it opens bottles, it
+# just carries different code. That cost a debugging session where two builds
+# were compared against each other without either being identified, and the
+# giveaway was a wineserver environment containing WINEMSYNC_NO_ANON_AUTOEVENT,
+# a variable deleted from the tree weeks earlier.
+install-app:
+	@set -e; \
+	built=$$(ls -dt $(APP_PRODUCTS)/$(CONFIG)/Whisky.app 2>/dev/null | head -1); \
+	[ -n "$$built" ] || { echo "ERROR: no $(CONFIG) Whisky.app under $(APP_PRODUCTS)" >&2; exit 1; }; \
+	if pgrep -f '/Applications/Whisky.app/Contents/MacOS/Whisky' >/dev/null; then \
+		echo "=== Quitting the running Whisky before replacing it ==="; \
+		osascript -e 'tell application "Whisky" to quit' >/dev/null 2>&1 || true; \
+		for i in 1 2 3 4 5; do \
+			pgrep -f '/Applications/Whisky.app/Contents/MacOS/Whisky' >/dev/null || break; \
+			sleep 1; \
+		done; \
+	fi; \
+	rm -rf /Applications/Whisky.app; \
+	cp -R "$$built" /Applications/Whisky.app; \
+	echo "=== Installed $(CONFIG) build to /Applications/Whisky.app ==="
+
+run: app  ## Build, install and run Whisky
+	@open /Applications/Whisky.app
 
 # === Submodule / clean ===
 
