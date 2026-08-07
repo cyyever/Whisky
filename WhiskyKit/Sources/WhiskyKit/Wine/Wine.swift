@@ -356,14 +356,6 @@ extension Wine {
         )
     }
 
-    /// Delete a single registry value. Used to clear the retired webhelper
-    /// wrapper's IFEO `Debugger` entry from existing bottles; `reg delete` errors
-    /// when the value is absent, so callers wrap it in `try?` for an idempotent
-    /// no-op on bottles that never had it.
-    static func deleteRegistryValue(bottle: Bottle, key: String, name: String) async throws {
-        try await runWine(["reg", "delete", key, "-v", name, "-f"], bottle: bottle)
-    }
-
     private static func queryRegistryKey(
         bottle: Bottle, key: String, name: String, type: RegistryType
     ) async throws -> String? {
