@@ -1,4 +1,4 @@
-Subject: ntdll: default the D3D/Vulkan builtins in the load order
+Subject: ntdll: resolve the D3D/Vulkan builtins ahead of the registry load order
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -11,19 +11,30 @@ CEF's own vulkan-1.dll) exposes no WSI, so each of these must resolve to builtin
 
 Rather than have the host set a per-bottle WINEDLLOVERRIDES (which cannot catch a
 full-path app-directory load), extend get_load_order() — the same place Proton
-already hard-codes the EasyAntiCheat bridge — to default these basenames to
-builtin. An explicit env/registry override still wins, and matching on the
-basename catches app-directory loads too.
+already hard-codes the EasyAntiCheat bridge — to resolve these basenames to
+builtin. Matching on the basename catches app-directory loads too.
+
+The lookup runs *before* the DllOverrides registry keys, because a bottle's
+registry is persistent state written by things this tree does not control: an
+older Whisky that installed DXVK per-game as native, winetricks, a game's own
+installer. Such an entry does not select a different provider — the builtins we
+ship carry the "Wine builtin DLL" signature, so a leftover "d3d9"="native"
+matches nothing at all and the app dies on STATUS_DLL_NOT_FOUND with a usable
+d3d9.dll sitting in system32, syswow64 and its own directory. That was a real
+failure: Super Street Fighter IV, exit c0000135, traced to a single stale value.
+
+WINEDLLOVERRIDES still wins. It is set per run so it cannot go stale, and it is
+the lever for A/B-ing a provider (wined3d vs DXMT, say) during debugging.
 
 The D3D/DXGI/vulkan-1 modules apply on every host this tree targets (macOS and
 FreeBSD) — the provider differs but "builtin" is always right — so they are
 unguarded. Only winemetal (DXMT's Metal interface) stays behind __APPLE__.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
-index 722190da255..44922cfd443 100644
+index 722190da255..e3394a9d455 100644
 --- a/dlls/ntdll/unix/loadorder.c
 +++ b/dlls/ntdll/unix/loadorder.c
-@@ -396,6 +396,24 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -396,6 +396,29 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
      static const WCHAR easyanticheat_x64W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','6','4',0};
      static const WCHAR easyanticheatW[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t',0};
      static const WCHAR soW[] = {'.','s','o',0};
@@ -31,49 +42,54 @@ index 722190da255..44922cfd443 100644
 +     * macOS uses DXMT (d3d11/d3d10core/dxgi) + DXVK (d3d9/d3d8), FreeBSD uses DXVK
 +     * for all of them; vulkan-1 is winevulkan. wined3d's D3D9 is broken and an
 +     * app-bundled native loader (e.g. Steam CEF's vulkan-1.dll) exposes no WSI, so
-+     * default all of these to builtin — the provider differs by platform, but
-+     * "builtin" is always right. Not Metal-specific, so unguarded. */
++     * all of these must resolve to builtin — the provider differs by platform, but
++     * "builtin" is always right. winemetal is DXMT's Metal interface DLL, so it is
++     * the one entry that is macOS-only. */
 +    static const WCHAR d3d9W[]      = {'d','3','d','9',0};
 +    static const WCHAR d3d8W[]      = {'d','3','d','8',0};
 +    static const WCHAR d3d11W[]     = {'d','3','d','1','1',0};
 +    static const WCHAR d3d10coreW[] = {'d','3','d','1','0','c','o','r','e',0};
 +    static const WCHAR dxgiW[]      = {'d','x','g','i',0};
 +    static const WCHAR vulkan1W[]   = {'v','u','l','k','a','n','-','1',0};
-+    static const WCHAR * const builtin_defaultsW[] =
-+        { d3d9W, d3d8W, d3d11W, d3d10coreW, dxgiW, vulkan1W };
 +#ifdef __APPLE__
-+    /* winemetal is DXMT's Metal interface DLL — macOS only. */
 +    static const WCHAR winemetalW[] = {'w','i','n','e','m','e','t','a','l',0};
 +#endif
++    static const WCHAR * const builtin_onlyW[] =
++    {
++        d3d9W, d3d8W, d3d11W, d3d10coreW, dxgiW, vulkan1W,
++#ifdef __APPLE__
++        winemetalW,
++#endif
++    };
  
      static const WCHAR prefixW[] = {'\\','?','?','\\'};
      enum loadorder ret = LO_INVALID;
-@@ -500,6 +518,28 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
-         goto done;
+@@ -479,6 +502,28 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+         }
      }
  
-+    /* Default the fork's D3D/Vulkan builtins to builtin, so no bottle needs a
-+     * WINEDLLOVERRIDES. An explicit env/registry override above still wins, and
-+     * matching on the basename catches app-directory loads too (e.g. Steam CEF's
-+     * bundled vulkan-1.dll). */
-+    for (i = 0; i < ARRAY_SIZE(builtin_defaultsW); i++)
++    /* The fork's D3D/Vulkan builtins, resolved before any registry lookup. A
++     * bottle's DllOverrides outlive whatever wrote them — an old Whisky that
++     * dropped DXVK into a game directory as *native*, winetricks, a game's own
++     * installer — and this tree ships those same modules as builtins, carrying
++     * the "Wine builtin DLL" signature. A stale "d3d9"="native" therefore does
++     * not select a different provider, it makes every candidate unloadable and
++     * the app dies on STATUS_DLL_NOT_FOUND with the DLL sitting right there.
++     * WINEDLLOVERRIDES still wins: it is set per run, so it cannot go stale, and
++     * it is the lever for A/B-ing a provider (e.g. wined3d vs DXMT). */
++    for (i = 0; i < ARRAY_SIZE(builtin_onlyW); i++)
 +    {
-+        if (!wcsicmp( basename, builtin_defaultsW[i] ))
++        if (wcsicmp( basename, builtin_onlyW[i] )) continue;
++        if ((ret = get_env_load_order( basename )) != LO_INVALID)
++            TRACE( "got environment %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
++        else
 +        {
 +            ret = LO_BUILTIN;
 +            TRACE( "got fork builtin %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
-+            goto done;
 +        }
-+    }
-+#ifdef __APPLE__
-+    if (!wcsicmp( basename, winemetalW ))
-+    {
-+        ret = LO_BUILTIN;
-+        TRACE( "got Metal builtin %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
 +        goto done;
 +    }
-+#endif
 +
-     /* and last the hard-coded default */
-     ret = LO_DEFAULT;
-     TRACE( "got hardcoded %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
+     /* first explicit module name */
+     if ((ret = get_load_order_value( std_key, app_key, module+1 )) != LO_INVALID)
+         goto done;
