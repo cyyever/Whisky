@@ -39,20 +39,42 @@ which is not equivalent to the GUI launch and does not count.
 the probe failed, and Steam logged in three seconds later and showed its whole UI anyway.
 `scripts/build-sdl2.sh` only silences that one log line; it is optional.
 
-**Still open:** the "Special Offers" news window cannot be closed. `WM_CLOSE` is ignored
-and `SendMessageTimeout(WM_NULL)` to it times out — its owning thread is not pumping;
-`sample` puts `CrBrowserMain` in `msync_wait_single` / `msync_wait_multiple`. That points
-at msync, not the window system. When bisecting, use only gates `msync.c` actually reads
-(`WINEMSYNC_NO_EVENT`, `_NO_AUTOEVENT`, `_NO_MANUALEVENT`, `_NO_SEMAPHORE`, `_NO_MUTEX`);
-`WINEMSYNC_NO_ANON_AUTOEVENT` never existed and silently invalidated earlier A/Bs
-(`bf150501`).
+**Still open:** the "Special Offers" news window cannot be closed **while msync is on**.
+`WM_CLOSE` is ignored and `SendMessageTimeout(WM_NULL)` to it times out — its owning
+thread is not pumping; `sample` puts `CrBrowserMain` in `msync_wait_single` /
+`msync_wait_multiple`. Setting the bottle's enhanced sync to **none** (`WINEMSYNC=0`)
+closes the window, and a `sample` of that run has zero `msync_wait_single` frames and 47
+`server_select` frames — so msync is the cause, not the window system. The object type is
+**not** yet narrowed: Whisky already sets `WINEMSYNC_NO_MANUALEVENT=1`, so the remaining
+candidates are auto-events, semaphores and mutexes.
+
+Read that A/B narrowly. Until `7ea00fa1`, `constructWineServerEnvironment()` did not apply
+the bottle's settings, so enhanced-sync-none turned msync off **for the clients only** —
+the wineserver kept running with it on (confirmed by reading the live server's environment
+with `ps eww`). The observation stands, but it implicates the client half
+(`dlls/ntdll/unix/msync_*.c`), not the whole subsystem. A quick way to tell which side is
+off: MRING is armed at the end of `msync_init()`, which only runs when `do_msync()` is
+true, so the **absence** of `/tmp/mring_<pid>.log` for a process proves msync is off in it.
+
+Bisect it with per-program environment variables (`ProgramSettings.environment`, stored in
+the bottle's `Program Settings/<exe>.plist`) — they are applied after Whisky's defaults and
+override them, so no rebuild is needed. Kill every stale Wine process between arms or the
+next one dies at `msync_init Failed to open msync shared memory file`. Use only gates
+`msync_obj.c` actually reads (`WINEMSYNC_NO_EVENT`, `_NO_AUTOEVENT`, `_NO_MANUALEVENT`,
+`_NO_SEMAPHORE`, `_NO_MUTEX`); `WINEMSYNC_NO_ANON_AUTOEVENT` never existed and silently
+invalidated earlier A/Bs (removed in `bf150501`; `tests/env-contract-test.sh` now guards
+against the whole class).
+
+> When reading exit codes, do not pipe: `cmd | grep | head; echo $?` reports the status of
+> `head`, not of `cmd`. Several readings during this investigation were wrong for exactly
+> that reason. `tests/bottle-health-test.c` uses `GetExitCodeProcess` and is correct.
 
 ## 1. Black window (CEF GPU sandbox)
 
 Steam's CEF host `steamwebhelper.exe` renders a black window under Wine: its
 sandbox hooks the NT kernel and the out-of-process GPU can't reset the D3D
 device (`problems[10]: Some drivers are unable to reset the D3D device in the GPU
-process sandbox`). It needs `--no-sandbox --in-process-gpu`.
+process sandbox`). It needs `--no-sandbox`.
 
 **Why the sandbox can't be fixed.** Wine's sandbox emulation is incomplete:
 `SetTokenInformation(TokenIntegrityLevel)`, `SetProcessMitigationPolicy`, and
@@ -73,7 +95,7 @@ Wine+macOS that GLES3 context only exists when ANGLE's D3D11 backend is served b
 **DXMT** (the Metal `d3d11.dll` builtin, feature level **11_1** → GLES3). With
 DXMT active the webhelper renders correctly and roughly **halves the webhelper
 CPU** vs software raster (software-raster ~44% → ~24% on the main renderer). So
-patch `0020` appends only `--no-sandbox --in-process-gpu`; there is no
+patch `0020` appends only `--no-sandbox`; there is no
 `--disable-gpu`/SwiftShader path — it was the old approach and was briefly retried
 this investigation, but SwANGLE fails at `eglInitialize` (winevulkan rejects
 `VK_KHR_surface` on the host instance) and crashes inside ANGLE's closed
@@ -151,8 +173,17 @@ in the webhelper (d3d11 is DXMT). Always launch Steam with the **full bottle env
 inside Wine itself: `hack_append_command_line()` (in `dlls/kernelbase/process.c`)
 gains a `steamwebhelper.exe` entry — `patches/proton-wine/0020` — so every
 `steamwebhelper.exe` launch (the browser host **and** its renderer/gpu/utility
-children) picks up `--no-sandbox --in-process-gpu`. CEF propagates flags to its own
+children) picks up `--no-sandbox`. CEF propagates flags to its own
 child processes anyway; the substring match just makes sure each child also matches.
+
+`--in-process-gpu` used to be appended here too: the out-of-process GPU could not
+create an ANGLE/D3D11 window surface on the browser window (`eglCreateWindowSurface`
+failed, `SwapChain11.cpp`) and the UI never painted. That was a *symptom* of patch
+`0009` — winemac's DXMT shim built a Metal view only for toplevel windows, so any
+child HWND, which is what a browser composites into, got NULL and DXMT `abort()`ed.
+`0009` now creates a client surface for child HWNDs as well, so the flag is gone.
+**UNVERIFIED**: not retested against a live Steam session. If the webhelper UI stops
+painting, putting `--in-process-gpu` back is the first thing to try.
 
 This replaces a heavier mechanism. Whisky formerly attached a small
 `steamwebhelper_wrapper.exe` launcher through the image's IFEO `Debugger` value

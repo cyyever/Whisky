@@ -1,6 +1,4 @@
-From: cyy <cyyever@gmail.com>
-Date: Mon, 21 Jul 2026 00:00:00 +0000
-Subject: [PATCH] combase: wait for the RpcSs endpoint on cold start
+Subject: combase: wait for the RpcSs endpoint on cold start
 
 COM out-of-process activation binds to RpcSs via ncalrpc:[irpcss]. On a cold
 start the client can race ahead of rpcss and try to connect to
@@ -23,9 +21,9 @@ also covers the case where the service reports SERVICE_RUNNING before it has
 created its endpoint.
 
 Signed-off-by: cyy <cyyever@gmail.com>
----
+
 diff --git a/dlls/combase/rpc.c b/dlls/combase/rpc.c
-index c51b59d..c5baab8 100644
+index c51b59de4bf..c5baab84f16 100644
 --- a/dlls/combase/rpc.c
 +++ b/dlls/combase/rpc.c
 @@ -184,53 +184,57 @@ static LONG WINAPI rpc_filter(EXCEPTION_POINTERS *eptr)

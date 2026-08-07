@@ -1,6 +1,7 @@
-From: cyy <cyyever@gmail.com>
-Date: Sun, 26 Jul 2026 00:00:00 +0000
-Subject: [PATCH] ws2_32: resolve names from the prefix hosts file first
+Subject: ws2_32: resolve names from the prefix hosts file first
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Standard Windows getaddrinfo() consults %SystemRoot%\system32\driverstc\
 hosts before querying DNS. Wine skips the file and hands the name straight to
@@ -14,9 +15,8 @@ pinned name is turned into an AI_NUMERICHOST lookup (no DNS); on miss or parse
 failure it falls through to the normal resolver, so behaviour is unchanged when
 the hosts file has no matching entry (the default).
 
----
 diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
-index 7348d37..774fcab 100644
+index 3e91ab80c3e..915758be886 100644
 --- a/dlls/ws2_32/protocol.c
 +++ b/dlls/ws2_32/protocol.c
 @@ -167,6 +167,91 @@ static BOOL eac_download_hack(void)

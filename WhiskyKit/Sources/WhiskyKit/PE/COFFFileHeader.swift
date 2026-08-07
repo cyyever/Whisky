@@ -32,7 +32,7 @@ extension PEFile {
         public let characteristics: UInt16
 
         init(handle: FileHandle, offset: UInt64) {
-            var offset = offset + 4 // Skip signature
+            var offset = offset + 4  // Skip signature
 
             self.machine = handle.extract(UInt16.self, offset: offset) ?? 0
             offset += 2

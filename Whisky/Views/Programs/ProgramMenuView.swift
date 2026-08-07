@@ -34,9 +34,10 @@ struct ProgramMenuView: View {
             }
             .labelStyle(.titleAndIcon)
 
-            let buttonName = program.pinned
-            ? String(localized: "button.unpin")
-            : String(localized: "button.pin")
+            let buttonName =
+                program.pinned
+                ? String(localized: "button.unpin")
+                : String(localized: "button.pin")
 
             Button(buttonName, systemImage: "pin") {
                 program.pinned.toggle()

@@ -22,6 +22,32 @@ INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Librarie
 X86_BREW_HOME="$PROJECT_DIR/vendor/homebrew-x86"
 X86_BREW="$X86_BREW_HOME/bin/brew"
 
+# Branch maintenance (scripts/proton-branch.sh): when a vendored tree is checked
+# out on WHISKY_PATCH_BRANCH, the patch series is committed one commit per patch
+# file on top of WHISKY_PATCH_BASE, and apply_patches() steps aside.
+WHISKY_PATCH_BRANCH="whisky/patches"
+WHISKY_PATCH_BASE="whisky/base"
+
+# Every compile here runs under Rosetta, and the cc driver shells out to xcrun,
+# which dlopens libxcrun from the *active* developer dir. A Command Line Tools
+# install ships an arm64-only one, so x86_64 xcrun dies there with "missing
+# compatible architecture" and configure fails at "C compiler cannot create
+# executables". Xcode.app's copy is fat, so prefer it -- through the environment,
+# since `xcode-select -s` needs sudo and would change the machine globally.
+#
+# Always resolved to a concrete path, never left unset: the builds run configure
+# and make inside `env -i` clean rooms that pass an explicit allowlist, and a
+# conditionally-absent variable cannot be expanded into one safely.
+if [ -z "${DEVELOPER_DIR:-}" ]; then
+    DEVELOPER_DIR="$(xcode-select -p 2>/dev/null)"
+    if ! lipo -archs "$DEVELOPER_DIR/usr/lib/libxcrun.dylib" 2>/dev/null | grep -q x86_64 &&
+       [ -d /Applications/Xcode.app/Contents/Developer ]
+    then
+        DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+    fi
+fi
+export DEVELOPER_DIR
+
 # USTC mirrors for Homebrew (git remotes + bottle/api domains). Call before any
 # x86_64 `brew` invocation that may fetch from the network.
 export_homebrew_mirrors() {
@@ -31,20 +57,60 @@ export_homebrew_mirrors() {
     export HOMEBREW_API_DOMAIN=https://mirrors.ustc.edu.cn/homebrew-bottles/api
 }
 
+# Stamp the "Wine builtin DLL" signature into a PE so wineboot treats it as a real
+# builtin. wineboot only mirrors a lib/wine PE into a bottle's system32 — making it
+# findable by LoadLibrary — if the 17 bytes right after the 64-byte DOS header are
+# that signature (dlls/setupapi/fakedll.c read_file/install_lib_dir). winebuild
+# stamps Wine's own builtins (and DXMT's); DXVK is built by mingw and lacks it, so
+# on a fresh bottle LoadLibraryA("d3d9.dll") would fail with STATUS_DLL_NOT_FOUND
+# *before* patch 0017's load order (which forces builtin) ever runs. We overwrite
+# only the DOS stub at offset 64 — never executed by the PE loader; e_lfanew (128)
+# is well clear, so the NT header is untouched.
+mark_wine_builtin() {  # <pe-file>
+    python3 - "$1" <<'PY'
+import sys
+sig = b"Wine builtin DLL\x00"   # 17 bytes; must equal builtin_signature in fakedll.c
+with open(sys.argv[1], "r+b") as f:
+    f.seek(0x3c); lfanew = int.from_bytes(f.read(4), "little")
+    assert lfanew >= 64 + len(sig), f"{sys.argv[1]}: e_lfanew {lfanew} < {64+len(sig)}"
+    f.seek(64); f.write(sig)
+PY
+}
+
 # apply_patches <src_dir> <patch_dir> <label> [reset]
 #
 # Idempotently apply patch_dir/*.patch to the git worktree at src_dir: skip
 # already-applied patches (reverse-check), apply pending ones, and hard-fail on
-# a conflict or partial apply. A no-op if patch_dir does not exist. Pass a
-# non-empty 4th argument to `git checkout -- .` first, giving a deterministic
-# clean base (discards uncommitted working-tree edits in src_dir).
+# a conflict or partial apply. A no-op if patch_dir does not exist, or if
+# src_dir is checked out on WHISKY_PATCH_BRANCH (see below). Pass a non-empty
+# 4th argument to `git checkout -- .` first, giving a deterministic clean base
+# (discards uncommitted working-tree edits in src_dir).
 apply_patches() {
     local src_dir="$1" patch_dir="$2" label="$3" reset="${4:-}"
     [ -d "$patch_dir" ] || return 0
+
+    # A branch-maintained tree already has the whole series applied, as commits,
+    # so there is nothing to do -- and the loop below could not do it anyway. Its
+    # "is this applied?" test reverse-checks one patch against the working tree,
+    # which cannot hold once a later patch edits a file an earlier one CREATES:
+    # 0008 creates dlls/ntdll/unix/msync_*.c, 0010 adds the MRING tracer to them,
+    # so 0008's new-file section never matches what is on disk. That test only
+    # ever held because `reset` guaranteed an unpatched base, and reset is itself
+    # a no-op here -- the patched state is committed, not a working-tree edit.
+    if [ "$(git -C "$src_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$WHISKY_PATCH_BRANCH" ]; then
+        local n dirty
+        n="$(git -C "$src_dir" rev-list --count "$WHISKY_PATCH_BASE..HEAD" 2>/dev/null || echo '?')"
+        echo "=== $label: branch-maintained ($WHISKY_PATCH_BRANCH, $n commits); not applying $(basename "$patch_dir")/ ==="
+        dirty="$(git -C "$src_dir" status --porcelain | wc -l | tr -d ' ')"
+        [ "$dirty" = 0 ] || echo "    NOTE: $dirty uncommitted file(s) -- building them, but they" \
+                                 "reach $(basename "$patch_dir")/ only via commit + proton-branch.sh export"
+        return 0
+    fi
+
     if [ -n "$reset" ]; then
         git -C "$src_dir" checkout -- .
         # checkout -- . only reverts tracked files; untracked files created by add-file
-        # patches (e.g. msync.c/.h, server/msync.c) linger and make a re-apply hit
+        # patches (e.g. msync_*.c/.h, server/msync.c) linger and make a re-apply hit
         # "already exists" and hard-fail. `git clean -fdq` removes untracked NON-ignored
         # files (patch leftovers + generated inputs + stray dirs) for a deterministic base.
         # Deliberately no -x, so gitignored paths survive — notably an out-of-tree build/
@@ -184,6 +250,7 @@ wine_configure() {
     arch -x86_64 env -i \
         HOME="$HOME" \
         PATH="$clean_path" \
+        DEVELOPER_DIR="$DEVELOPER_DIR" \
         CC="$cc_cmd" \
         CXX="$cxx_cmd" \
         PKG_CONFIG="$arm_prefix/bin/pkg-config" \
@@ -192,6 +259,13 @@ wine_configure() {
         SDL2_CFLAGS="-I$x86_prefix/include/SDL2 -D_THREAD_SAFE" \
         SDL2_LIBS="-L$x86_prefix/lib -lSDL2" \
         LDFLAGS="-L$x86_prefix/lib -L$x86_prefix/opt/molten-vk/lib" \
+        `# NOTE: no -O here, so the unix side (ntdll.so, winemac.drv.so, ...) builds` \
+        `# unoptimised: setting CFLAGS at all suppresses autoconf's default -g -O2,` \
+        `# and nothing puts it back. The PE side still gets -O2 from Wine's own` \
+        `# configure. Left as-is on purpose while the msync hang is being chased --` \
+        `# an optimised build makes sample(1) stacks much harder to read. Add -O2` \
+        `# once that closes, and re-run scripts/test-msync.sh afterwards, since -O2` \
+        `# changes atomics scheduling and can shake out races -O0 hides.` \
         CFLAGS="-I$x86_prefix/include -I$x86_prefix/opt/freetype/include/freetype2 -I$x86_prefix/opt/molten-vk/include" \
         CPPFLAGS="-I$x86_prefix/include -I$x86_prefix/opt/freetype/include/freetype2 -I$x86_prefix/opt/molten-vk/include" \
         ../configure \

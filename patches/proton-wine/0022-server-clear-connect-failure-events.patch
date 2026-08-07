@@ -1,20 +1,12 @@
-From 864ca426a36d9e12775b4d7f67c47aa802e0f25b Mon Sep 17 00:00:00 2001
-From: =?UTF-8?q?Bernhard=20=C3=9Cbelacker?= <bernhardu@mailbox.org>
-Date: Tue, 30 May 2023 09:19:30 +0200
-Subject: [PATCH] server: Clear connection failure events in
- IOCTL_AFD_WINE_CONNECT.
+Subject: server: Clear connection failure events in IOCTL_AFD_WINE_CONNECT.
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=53574
----
- dlls/ws2_32/tests/sock.c | 94 ++++++++++++++++++++++++++++++++++++++++
- server/sock.c            |  5 +++
- 2 files changed, 99 insertions(+)
 
 diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
-index e67e50907b01..698ae0fe0b9b 100644
+index 639bcf3768d..e9e26770c37 100644
 --- a/dlls/ws2_32/tests/sock.c
 +++ b/dlls/ws2_32/tests/sock.c
-@@ -6823,6 +6823,7 @@ static void test_connect_events(struct event_test_ctx *ctx)
+@@ -6797,6 +6797,7 @@ static void test_connect_events(struct event_test_ctx *ctx)
      const struct sockaddr_in addr = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
      SOCKET listener, server, client;
      struct sockaddr_in destaddr;
@@ -22,7 +14,7 @@ index e67e50907b01..698ae0fe0b9b 100644
      int len, ret;
  
      listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-@@ -6937,6 +6938,95 @@ static void test_connect_events(struct event_test_ctx *ctx)
+@@ -6911,6 +6912,95 @@ static void test_connect_events(struct event_test_ctx *ctx)
      closesocket(server);
  
      closesocket(listener);
@@ -118,7 +110,7 @@ index e67e50907b01..698ae0fe0b9b 100644
  }
  
  /* perform a blocking recv() even on a nonblocking socket */
-@@ -7415,6 +7505,7 @@ static void test_events(void)
+@@ -7389,6 +7479,7 @@ static void test_events(void)
      struct event_test_ctx ctx;
  
      ctx.is_message = FALSE;
@@ -126,7 +118,7 @@ index e67e50907b01..698ae0fe0b9b 100644
      ctx.event = CreateEventW(NULL, TRUE, FALSE, NULL);
  
      test_accept_events(&ctx);
-@@ -7426,7 +7517,9 @@ static void test_events(void)
+@@ -7400,7 +7491,9 @@ static void test_events(void)
  
      CloseHandle(ctx.event);
  
@@ -136,7 +128,7 @@ index e67e50907b01..698ae0fe0b9b 100644
      ctx.window = CreateWindowA("Message", NULL, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, NULL, NULL);
  
      test_accept_events(&ctx);
-@@ -7437,6 +7530,7 @@ static void test_events(void)
+@@ -7411,6 +7504,7 @@ static void test_events(void)
      test_oob_events(&ctx);
  
      DestroyWindow(ctx.window);
@@ -145,10 +137,10 @@ index e67e50907b01..698ae0fe0b9b 100644
  
  static void test_ipv6only(void)
 diff --git a/server/sock.c b/server/sock.c
-index 51441c12478f..e3be1bbbae27 100644
+index 7a7d3af1771..5f9b15a9325 100644
 --- a/server/sock.c
 +++ b/server/sock.c
-@@ -2723,6 +2723,11 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
+@@ -2744,6 +2744,11 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
              set_error( STATUS_INVALID_ADDRESS );
              return;
          }

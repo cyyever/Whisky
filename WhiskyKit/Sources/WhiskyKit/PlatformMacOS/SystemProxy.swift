@@ -59,8 +59,9 @@ public enum SystemProxy {
 
         for proxy in proxies {
             guard let type = proxy[kCFProxyTypeKey as String] as? String,
-                  type == (kCFProxyTypeHTTP as String) || type == (kCFProxyTypeHTTPS as String),
-                  let host = proxy[kCFProxyHostNameKey as String] as? String, !host.isEmpty else {
+                type == (kCFProxyTypeHTTP as String) || type == (kCFProxyTypeHTTPS as String),
+                let host = proxy[kCFProxyHostNameKey as String] as? String, !host.isEmpty
+            else {
                 continue
             }
             // The proxy server speaks HTTP for both schemes (HTTPS via CONNECT).
@@ -76,8 +77,9 @@ public enum SystemProxy {
 
         // Hosts the system never proxies (loopback, RFC1918, *.local, …).
         if let settingsDict = settings as? [String: Any],
-           let exceptions = settingsDict[kCFNetworkProxiesExceptionsList as String] as? [String],
-           !exceptions.isEmpty {
+            let exceptions = settingsDict[kCFNetworkProxiesExceptionsList as String] as? [String],
+            !exceptions.isEmpty
+        {
             result["no_proxy"] = exceptions.joined(separator: ",")
         }
 
@@ -95,9 +97,11 @@ public enum SystemProxy {
     /// tunneled. `nil` when there is no SOCKS proxy or the dylib isn't built, so
     /// the caller falls back to the http_proxy path.
     private static func socksProxyEnvironment(from proxies: [[String: Any]]) -> [String: String]? {
-        guard let socks = proxies.first(where: {
-            ($0[kCFProxyTypeKey as String] as? String) == (kCFProxyTypeSOCKS as String)
-        }), let host = socks[kCFProxyHostNameKey as String] as? String, !host.isEmpty else {
+        guard
+            let socks = proxies.first(where: {
+                ($0[kCFProxyTypeKey as String] as? String) == (kCFProxyTypeSOCKS as String)
+            }), let host = socks[kCFProxyHostNameKey as String] as? String, !host.isEmpty
+        else {
             return nil
         }
         let resolvedHost = host == "0.0.0.0" ? "127.0.0.1" : host
@@ -129,18 +133,18 @@ public enum SystemProxy {
         // shouldn't be tunneled — only external TCP goes through SOCKS.
         let conf = dir.appending(path: "proxychains.conf")
         let body = """
-        strict_chain
-        tcp_read_time_out 15000
-        tcp_connect_time_out 8000
-        localnet 127.0.0.0/255.0.0.0
-        localnet 10.0.0.0/255.0.0.0
-        localnet 172.16.0.0/255.240.0.0
-        localnet 192.168.0.0/255.255.0.0
-        localnet 169.254.0.0/255.255.0.0
-        [ProxyList]
-        socks5 \(resolvedHost) \(port)
+            strict_chain
+            tcp_read_time_out 15000
+            tcp_connect_time_out 8000
+            localnet 127.0.0.0/255.0.0.0
+            localnet 10.0.0.0/255.0.0.0
+            localnet 172.16.0.0/255.240.0.0
+            localnet 192.168.0.0/255.255.0.0
+            localnet 169.254.0.0/255.255.0.0
+            [ProxyList]
+            socks5 \(resolvedHost) \(port)
 
-        """
+            """
         // Only inject proxychains once its config is actually on disk — otherwise
         // the dylib loads with no readable config and aborts inside every (Rosetta)
         // wine process, breaking all launches. Fall back to the http_proxy path.
@@ -152,7 +156,7 @@ public enum SystemProxy {
 
         return [
             "DYLD_INSERT_LIBRARIES": dylib.path(percentEncoded: false),
-            "PROXYCHAINS_CONF_FILE": conf.path(percentEncoded: false)
+            "PROXYCHAINS_CONF_FILE": conf.path(percentEncoded: false),
         ]
     }
 
@@ -182,7 +186,7 @@ public enum SystemProxy {
                 connection.cancel()
                 semaphore.signal()
             default:
-                break   // .setup / .preparing / .cancelled — keep waiting for a verdict
+                break  // .setup / .preparing / .cancelled — keep waiting for a verdict
             }
         }
         connection.start(queue: .global())
@@ -194,8 +198,10 @@ public enum SystemProxy {
     /// The concrete proxies the system would use for `url`, executing any
     /// auto-configuration (PAC) script encountered.
     private static func resolvedProxies(for url: URL, settings: CFDictionary) -> [[String: Any]] {
-        guard let raw = CFNetworkCopyProxiesForURL(url as CFURL, settings)
-            .takeRetainedValue() as? [[String: Any]] else {
+        guard
+            let raw = CFNetworkCopyProxiesForURL(url as CFURL, settings)
+                .takeRetainedValue() as? [[String: Any]]
+        else {
             return []
         }
 
@@ -203,7 +209,8 @@ public enum SystemProxy {
         for proxy in raw {
             let type = proxy[kCFProxyTypeKey as String] as? String
             if type == (kCFProxyTypeAutoConfigurationURL as String),
-               let pacURL = proxy[kCFProxyAutoConfigurationURLKey as String] {
+                let pacURL = proxy[kCFProxyAutoConfigurationURLKey as String]
+            {
                 // swiftlint:disable:next force_cast
                 resolved.append(contentsOf: executePAC(scriptURL: pacURL as! CFURL, targetURL: url))
             } else {

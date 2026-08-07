@@ -8,7 +8,7 @@ Keep this file high-level. Details live in `docs/`, the build scripts, `patches/
 - **Whisky** — SwiftUI app (Xcode project). **WhiskyKit** — Swift package (Wine/bottle/process logic); `PlatformMacOS/` holds the macOS-specific files.
 - **Wine** — x86_64 Proton-wine 11.0, built from source, runs under Rosetta 2. Source `vendor/proton-wine` (gitignored) + `patches/proton-wine/`.
 - **DXMT** — Metal D3D11/10/DXGI (`vendor/dxmt`). **DXVK** — D3D9 only (`vendor/dxvk`). **KosmicKrisp** — Vulkan-on-Metal (`vendor/mesa`).
-- Steam CEF (`steamwebhelper.exe`) gets `--no-sandbox --in-process-gpu` appended in Proton itself (`hack_append_command_line`, patches/proton-wine 0020) — no launcher shim.
+- Steam CEF (`steamwebhelper.exe`) gets `--no-sandbox` appended in Proton itself (`hack_append_command_line`, patches/proton-wine 0020) — no launcher shim.
 
 ## Build
 ```bash
@@ -32,7 +32,7 @@ Fresh-machine order: ARM brew deps → `make setup-x86-brew` → `scripts/build-
 - C++ cross-platform plan → `docs/cxx-migration-plan.md`
 
 ## Operational gotchas
-- **Steam login**: turn Follow System Proxy OFF (an HTTP proxy breaks Steam's CM); SOCKS is tunneled via proxychains automatically. On a filtering network the complete fix is a system TUN — see `docs/steam-networking.md`. Launch games from the **Steam Play button**, not a bare CLI.
+- **Steam login**: works end to end as of 2026-08-07, with no proxy and no TUN. Turn Follow System Proxy OFF (an HTTP proxy breaks Steam's CM); SOCKS is tunneled via proxychains automatically. Only on a genuinely filtering network is a system TUN worth reaching for — see `docs/steam-networking.md`. Launch Steam and games from the **Whisky GUI / Steam Play button**, never a bare CLI: a CLI launch logs `no bootstrapper found` and invalidates any conclusion about the login window.
 - Native ARM64 Wine doesn't work on macOS — x86_64 + Rosetta only; WoW64 (`i386,x86_64`) because Steam is 32-bit.
 - Xbox Bluetooth controllers need `SDL_JOYSTICK_MFI=0`.
 - Rebuild Wine → restart Whisky/Steam (wineserver version mismatch).

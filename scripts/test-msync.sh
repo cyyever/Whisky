@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Validate the macOS msync fast-sync backend against Wine's generic NT-sync
-# conformance tests. msync (dlls/ntdll/unix/msync.c) transparently backs the NT
+# conformance tests. msync (dlls/ntdll/unix/msync_*.c) transparently backs the NT
 # sync primitives, so it has no tests of its own — we run the ntdll/kernel32
 # "sync" subtests under WINEMSYNC=1 (msync path) and WINEMSYNC=0 (wineserver
 # baseline) and diff. A subtest that PASSES on the server baseline but FAILS
@@ -84,10 +84,13 @@ echo ""
 # combined stdout+stderr to $outfile and returns wine's exit code (= the
 # number of failed assertions in the Wine test framework).
 #
-# For the msync (WINEMSYNC=1) run we UNSET the event masks so the run is FULL msync
-# the FULL msync path is exercised — the shipping bottle sets that mask to route
-# anonymous auto-reset events back to wineserver sync, which would hide msync
-# bugs on exactly those objects and weaken the conformance signal.
+# Only WINEMSYNC is set here. Anything else in the caller's environment is
+# inherited, and the WINEMSYNC_NO_* gates matter: with one of them set, an object
+# class is routed to the server in BOTH arms, so the diff compares two
+# configurations that agree by construction and the run proves nothing about that
+# class. Run this from a shell with none of them exported. Note the shipping
+# bottle does set WINEMSYNC_NO_MANUALEVENT=1 (WhiskyKit .../Wine.swift), so
+# manual events are outside what this harness can speak to either way.
 run_one() {
     local exe="$1" mode="$2" outfile="$3" rc
     # IMPORTANT: capture through a PIPE (| cat), not a direct `> file` redirect.

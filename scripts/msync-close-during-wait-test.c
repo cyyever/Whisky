@@ -26,8 +26,8 @@
  * reuse ever steals a signal, the waiter would return WAIT_OBJECT_0 early.
  *
  * Build: like the other msync test PEs, mingw x86_64 (see the accompanying
- * scripts/run-msync-close-test.sh). Run inside a bottle under WINEMSYNC=1 (with
- * WINEMSYNC_NO_ANON_AUTOEVENT UNSET) and WINEMSYNC=0, compare.
+ * scripts/run-msync-close-test.sh). Run inside a bottle once with msync on
+ * (the default; WINEMSYNC unset) and once with WINEMSYNC=0, and compare.
  */
 #include <windows.h>
 #include <stdio.h>

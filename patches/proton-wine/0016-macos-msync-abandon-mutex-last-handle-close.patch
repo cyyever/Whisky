@@ -1,6 +1,4 @@
-From: cyy <cyyever@gmail.com>
-Date: Sat, 25 Jul 2026 00:00:00 +0000
-Subject: [PATCH] macOS: msync - abandon owned mutex after its last handle closes
+Subject: macOS: msync - abandon owned mutex after its last handle closes
 
 Fixes kernel32:sync's abandoned-mutex subtest (sync.c:393/:397) under
 WINEMSYNC=1: a thread owns an msync mutex, another thread waits on it, the
@@ -26,7 +24,7 @@ Two independent lifetime bugs, one server-side and one client-side:
    reclaim never destroys an shm out from under a live waiter, and it does not
    leak.
 
-2. Client wait binding (dlls/ntdll/unix/msync.c). msync caches objects per
+2. Client wait binding (dlls/ntdll/unix/msync_select.c). msync caches objects per
    handle; closing a handle runs msync_close(), which zeroes that cache slot's
    ->type. An in-flight waiter re-read ->type == 0 and bailed with
    STATUS_INVALID_HANDLE (WAIT_FAILED) instead of completing. Windows (and the
@@ -40,11 +38,56 @@ Two independent lifetime bugs, one server-side and one client-side:
 Verified with scripts/test-msync.sh (SteamProton): msync-only failure count for
 the sync suites drops from 2 (sync.c:393, :397) to 0, with no other location
 regressing across repeated runs.
----
+
+diff --git a/dlls/ntdll/unix/msync_select.c b/dlls/ntdll/unix/msync_select.c
+index 72883bd90b7..8e5ce47df0d 100644
+--- a/dlls/ntdll/unix/msync_select.c
++++ b/dlls/ntdll/unix/msync_select.c
+@@ -497,6 +497,8 @@ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
+ {
+     __thread static int current_tid = 0;
+     __thread static struct msync *objs[MAXIMUM_WAIT_OBJECTS + 1];
++    /* Per-wait private snapshots of each waited object (see the copy below). */
++    __thread static struct msync objs_snapshot[MAXIMUM_WAIT_OBJECTS + 1];
+     struct msync apc_obj;
+     int has_msync = 0, has_server = 0;
+     LONGLONG timeleft;
+@@ -574,6 +576,30 @@ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
+             return ret;
+     }
+ 
++    /* Bind the wait to a private snapshot of each object, taken now, instead of
++     * the shared per-handle cache slot msync_get_object() returns a pointer into.
++     * Another thread closing this handle mid-wait runs msync_close(), which
++     * zeroes that slot's ->type; the in-flight wait would then read type 0 and
++     * bail with STATUS_INVALID_HANDLE (WAIT_FAILED). Windows (and the wineserver
++     * oracle) instead keep an in-flight wait valid across a concurrent handle
++     * close -- e.g. kernel32:sync closes an owned mutex's last handle while a
++     * thread waits on it and still expects WAIT_ABANDONED once the owner dies.
++     * The snapshot copies ->type/->shm_idx/->shm (a stable mapped address) and
++     * ->access; live shm CONTENTS (signaled/tid/count/alive flags) are still read
++     * through the shared ->shm pointer, so signals and destroy detection keep
++     * working. It also correctly pins the wait to the original object if the
++     * handle is closed and its number reused for a different object mid-wait. */
++    {
++        struct msync **live = objs, *snap = objs_snapshot;  /* resolve the TLS bases once */
++
++        for (i = 0; i < count; i++)
++        {
++            if (!live[i]) continue;
++            snap[i] = *live[i];
++            live[i] = &snap[i];
++        }
++    }
++
+     if (has_msync && has_server)
+     {
+         /* A wait set mixing msync and server objects cannot be handled by
 diff --git a/server/msync.c b/server/msync.c
+index e63c6e32c5e..23bc217f2f2 100644
 --- a/server/msync.c
 +++ b/server/msync.c
-@@ -577,11 +577,17 @@
+@@ -618,11 +618,17 @@ struct msync
      unsigned int   shm_idx;
      enum msync_type type;
      struct list     mutex_entry;
@@ -62,7 +105,7 @@ diff --git a/server/msync.c b/server/msync.c
  static void msync_destroy( struct object *obj );
  
  const struct object_ops msync_ops =
-@@ -606,7 +612,7 @@
+@@ -647,7 +653,7 @@ const struct object_ops msync_ops =
      default_unlink_name,       /* unlink_name */
      no_open_file,              /* open_file */
      no_kernel_obj_list,        /* get_kernel_obj_list */
@@ -71,7 +114,7 @@ diff --git a/server/msync.c b/server/msync.c
      msync_destroy              /* destroy */
  };
  
-@@ -754,6 +760,7 @@
+@@ -780,6 +786,7 @@ struct msync *create_msync( struct object *root, const struct unicode_str *name,
  
              msync->shm_idx = msync_alloc_shm( low, high );
              msync->type = type;
@@ -79,11 +122,10 @@ diff --git a/server/msync.c b/server/msync.c
              if (type == MSYNC_MUTEX)
                  list_add_tail( &mutex_list, &msync->mutex_entry );
          }
-@@ -1015,11 +1022,66 @@
-     int tid;
-     int count;  /* recursion count */
- };
-+
+@@ -951,9 +958,64 @@ struct mutex
+ C_ASSERT( sizeof(struct mutex) == 8 );
+ C_ASSERT( offsetof(struct mutex, tid) == 0 );
+ 
 +/* Keep an OWNED msync mutex alive past its last-handle-close so a killed owner
 + * can still be abandoned (waiters must get STATUS_ABANDONED).
 + *
@@ -109,7 +151,7 @@ diff --git a/server/msync.c b/server/msync.c
 +    {
 +        struct mutex *mutex = get_shm( msync->shm_idx );
 +        int tid = __atomic_load_n( &mutex->tid, __ATOMIC_SEQ_CST );
- 
++
 +        /* 0 == free, ~0 == already abandoned; any other value is a live owner. */
 +        if (tid && tid != ~0)
 +        {
@@ -124,7 +166,7 @@ diff --git a/server/msync.c b/server/msync.c
  {
 -    struct msync *msync;
 +    struct msync *msync, *next;
- 
++
 +    /* Reclaim objects retained by msync_close_handle() that were abandoned on an
 +     * EARLIER thread exit and are now unowned (shm tid == ~0). Deferring the free
 +     * to a later abandon pass -- rather than freeing in the same pass that
@@ -143,11 +185,10 @@ diff --git a/server/msync.c b/server/msync.c
 +            release_object( &msync->obj );  /* drops the retain ref; may destroy */
 +        }
 +    }
-+
+ 
      LIST_FOR_EACH_ENTRY( msync, &mutex_list, struct msync, mutex_entry )
      {
-         struct mutex *mutex = get_shm( msync->shm_idx );
-@@ -1031,6 +1093,8 @@
+@@ -966,6 +1028,8 @@ void msync_abandon_mutexes( struct thread *thread )
              mutex->tid = ~0;
              mutex->count = 0;
              signal_all ( msync->shm_idx, (int *)mutex );
@@ -156,44 +197,3 @@ diff --git a/server/msync.c b/server/msync.c
          }
      }
  }
-diff --git a/dlls/ntdll/unix/msync.c b/dlls/ntdll/unix/msync.c
---- a/dlls/ntdll/unix/msync.c
-+++ b/dlls/ntdll/unix/msync.c
-@@ -1789,6 +1789,8 @@
- 
-     __thread static int current_tid = 0;
-     __thread static struct msync *objs[MAXIMUM_WAIT_OBJECTS + 1];
-+    /* Per-wait private snapshots of each waited object (see the copy below). */
-+    __thread static struct msync objs_snapshot[MAXIMUM_WAIT_OBJECTS + 1];
-     struct msync apc_obj;
-     int has_msync = 0, has_server = 0;
-     BOOL msgwait = FALSE;
-@@ -1850,6 +1852,28 @@
-             has_server = 1;
-         else
-             return ret;
-+    }
-+
-+    /* Bind the wait to a private snapshot of each object, taken now, instead of
-+     * the shared per-handle cache slot get_object() returns a pointer into.
-+     * Another thread closing this handle mid-wait runs msync_close(), which
-+     * zeroes that slot's ->type; the in-flight wait would then read type 0 and
-+     * bail with STATUS_INVALID_HANDLE (WAIT_FAILED). Windows (and the wineserver
-+     * oracle) instead keep an in-flight wait valid across a concurrent handle
-+     * close -- e.g. kernel32:sync closes an owned mutex's last handle while a
-+     * thread waits on it and still expects WAIT_ABANDONED once the owner dies.
-+     * The snapshot copies ->type/->shm_idx/->shm (a stable mapped address) and
-+     * ->access; live shm CONTENTS (signaled/tid/count/alive flags) are still read
-+     * through the shared ->shm pointer, so signals and destroy detection keep
-+     * working. It also correctly pins the wait to the original object if the
-+     * handle is closed and its number reused for a different object mid-wait. */
-+    for (i = 0; i < count; i++)
-+    {
-+        if (objs[i])
-+        {
-+            objs_snapshot[i] = *objs[i];
-+            objs[i] = &objs_snapshot[i];
-+        }
-     }
- 
-     if (count && objs[count - 1] && objs[count - 1]->type == MSYNC_QUEUE)

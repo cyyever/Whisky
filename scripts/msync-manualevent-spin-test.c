@@ -1,7 +1,7 @@
 /*
  * msync manual-event busy-spin reproducer.
  *
- * The msync fast path (dlls/ntdll/unix/msync.c) has a wait_any/single inner loop
+ * The msync fast path (dlls/ntdll/unix/msync_wait.c) has a wait_any/single inner loop
  * ("INNERSPIN") that must BLOCK each pass. For a level-triggered MANUAL event whose
  * shm signaled-state races the server's, check_shm_contention keeps returning
  * "signaled" so the loop re-polls without blocking -> 100% CPU on one core.

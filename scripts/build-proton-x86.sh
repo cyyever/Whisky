@@ -15,7 +15,7 @@ echo "=== Building Proton (proton-wine) x86_64 from $WINE_SRC ==="
 # bleeding-edge — the only branch Valve still pushes to; proton_11.0 and
 # experimental_11.0 are both older). The reset arg
 # cleans the source first (`git checkout -- .` + `git clean -fdq`), so add-file patches
-# (msync.c, server/msync.c, …) re-apply cleanly on a forced rebuild. `git clean -fdq`
+# (msync_*.c, server/msync.c, …) re-apply cleanly on a forced rebuild. `git clean -fdq`
 # removes untracked NON-ignored files — patch leftovers, the generated inputs, and stray
 # dist/.cache — but KEEPS gitignored paths: build/ (intentional — incremental compiles)
 # and configure. NOTE: also discards uncommitted proton-wine edits (e.g. local msync
@@ -78,6 +78,7 @@ echo "=== Building Wine (x86_64) with $NCPU cores ==="
 arch -x86_64 env -i \
     HOME="$HOME" \
     PATH="$CLEAN_PATH" \
+    DEVELOPER_DIR="$DEVELOPER_DIR" \
     make -j"$NCPU"
 
 echo "=== Installing to $INSTALL_DIR ==="
@@ -133,6 +134,33 @@ if [ -f "$DXMT_B64/d3d11/d3d11.dll" ]; then
     done
     cp "$DXMT_B64/winemetal/unix/winemetal.so" "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/winemetal.so"
     echo "DXMT restored: d3d11/d3d10core/dxgi/winemetal (x86_64 + i386)"
+fi
+
+# --- DXVK (D3D9/D3D8) restore over wined3d ----------------------------------
+# The same clobber, for the other graphics backend. build-dxvk.sh installs DXVK
+# AS the builtin d3d9/d3d8 (patch 0017 defaults them to builtin, so no bottle
+# needs a WINEDLLOVERRIDES), and the cp -R of lib/ above just wrote wined3d's
+# copies back over them. Without this every `make proton` silently drops D3D9
+# games back to wined3d, which on macOS paints a black window and burns a core
+# in a SIGSEGV loop -- a failure that looks nothing like "your graphics backend
+# was replaced". Skipped when the DXVK build trees are absent (run `make dxvk`).
+#
+# The builtin signature is re-stamped rather than copied: build-dxvk.sh applies
+# it to the INSTALLED file, so the build tree's copy does not carry it, and
+# without it wineboot never mirrors the DLL into a bottle's system32.
+DXVK_SRC_DIR="$PROJECT_DIR/vendor/dxvk"
+if [ -f "$DXVK_SRC_DIR/build.w64/src/d3d9/d3d9.dll" ]; then
+    echo "=== Restoring DXVK builtins over wined3d (proton install clobbered them) ==="
+    for dxvk_pair in "build.w64:x86_64-windows" "build.w32:i386-windows"; do
+        dxvk_bdir="${dxvk_pair%%:*}"; dxvk_arch="${dxvk_pair##*:}"
+        for dxvk_dll in d3d9 d3d8; do
+            dxvk_src="$DXVK_SRC_DIR/$dxvk_bdir/src/$dxvk_dll/$dxvk_dll.dll"
+            [ -f "$dxvk_src" ] || continue
+            cp "$dxvk_src" "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/$dxvk_dll.dll"
+            mark_wine_builtin "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/$dxvk_dll.dll"
+        done
+    done
+    echo "DXVK restored: d3d9/d3d8 (x86_64 + i386)"
 fi
 
 # Bundle x86 dylibs so Wine finds them at runtime. cp -R (implies -P on BSD)

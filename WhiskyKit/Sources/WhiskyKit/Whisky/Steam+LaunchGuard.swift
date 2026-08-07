@@ -153,7 +153,8 @@ extension Steam {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
         guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0,
-              size > MemoryLayout<Int32>.size else { return nil }
+            size > MemoryLayout<Int32>.size
+        else { return nil }
         var buffer = [UInt8](repeating: 0, count: size)
         guard sysctl(&mib, UInt32(mib.count), &buffer, &size, nil, 0) == 0 else { return nil }
 

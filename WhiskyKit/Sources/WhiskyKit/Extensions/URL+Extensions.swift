@@ -20,8 +20,10 @@ import Foundation
 
 extension String {
     var esc: String {
-        let esc = ["\\", "\"", "'", " ", "(", ")", "[", "]", "{", "}", "&", "|",
-                   ";", "<", ">", "`", "$", "!", "*", "?", "#", "~", "="]
+        let esc = [
+            "\\", "\"", "'", " ", "(", ")", "[", "]", "{", "}", "&", "|",
+            ";", "<", ">", "`", "$", "!", "*", "?", "#", "~", "=",
+        ]
         var str = self
         for char in esc {
             str = str.replacingOccurrences(of: char, with: "\\" + char)
@@ -37,7 +39,8 @@ extension URL {
 
     public func prettyPath() -> String {
         var prettyPath = path(percentEncoded: false)
-        prettyPath = prettyPath
+        prettyPath =
+            prettyPath
             .replacingOccurrences(of: Bundle.main.bundleIdentifier ?? Bundle.whiskyBundleIdentifier, with: "Whisky")
             .replacingOccurrences(of: "/Users/\(NSUserName())", with: "~")
         return prettyPath
@@ -56,8 +59,9 @@ extension URL {
             newBottlePath += "/"
         }
 
-        let newPath = originalPath.replacingOccurrences(of: oldBottlePath,
-                                                        with: newBottlePath)
+        let newPath = originalPath.replacingOccurrences(
+            of: oldBottlePath,
+            with: newBottlePath)
         return URL(filePath: newPath)
     }
 }

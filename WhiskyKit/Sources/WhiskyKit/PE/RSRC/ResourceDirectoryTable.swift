@@ -34,7 +34,7 @@ public struct ResourceDirectoryTable: Hashable, Equatable {
     public let entries: [ResourceDataEntry]
 
     /// Read the Resource Directory Table
-    /// 
+    ///
     /// - Parameters:
     ///   - fileHandle: The file handle to read the data from.
     ///   - pointerToRawData: The offset to the Resource Directory Table in the file handle.

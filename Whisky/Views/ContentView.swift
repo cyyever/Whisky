@@ -77,9 +77,10 @@ struct ContentView: View {
             SetupView(showSetup: $showSetup, firstTime: false)
         }
         .sheet(item: $openedFileURL) { url in
-            FileOpenView(fileURL: url,
-                         currentBottle: selected,
-                         bottles: bottleVM.bottles)
+            FileOpenView(
+                fileURL: url,
+                currentBottle: selected,
+                bottles: bottleVM.bottles)
         }
         .onChange(of: selected) {
             selectedBottleURL = selected

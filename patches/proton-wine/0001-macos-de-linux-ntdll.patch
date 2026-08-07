@@ -3,7 +3,7 @@ Subject: ntdll: de-linux TEB/futex paths and macOS TEB fix
 macOS x86_64 build: guard Linux-only futex/CPU paths and make set_thread_teb a no-op on Apple (the dispatcher manages %gs/pthread TSD; writing the raw TEB clobbers it -> SIGBUS). sync.c and loader.c de-linux hunks live in the msync patch (0008) which owns those files in full.
 
 diff --git a/dlls/ntdll/unix/fsync.c b/dlls/ntdll/unix/fsync.c
-index 25d41ca..97968eb 100644
+index 25d41cac793..97968ebc16f 100644
 --- a/dlls/ntdll/unix/fsync.c
 +++ b/dlls/ntdll/unix/fsync.c
 @@ -61,6 +61,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(fsync);
@@ -40,7 +40,7 @@ index 25d41ca..97968eb 100644
 +
 +#endif  /* __linux__ */
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
-index 110404c..dc5f479 100644
+index 110404c274c..dc5f4796cdf 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
 @@ -2279,7 +2279,7 @@ __ASM_GLOBAL_FUNC( dump_syscall_fault_return,
@@ -71,10 +71,10 @@ index 110404c..dc5f479 100644
  
  /***********************************************************************
 diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
-index 1fe3081..b599e14 100644
+index 1821c6eb3ca..40f1d161554 100644
 --- a/dlls/ntdll/unix/system.c
 +++ b/dlls/ntdll/unix/system.c
-@@ -1166,6 +1166,11 @@ static BOOL logical_proc_info_add_group( DWORD num_cpus, ULONG_PTR mask )
+@@ -1208,6 +1208,11 @@ static BOOL logical_proc_info_add_group( DWORD num_cpus, ULONG_PTR mask )
      return TRUE;
  }
  

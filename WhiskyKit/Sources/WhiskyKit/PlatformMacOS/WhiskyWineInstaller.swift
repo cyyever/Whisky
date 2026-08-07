@@ -23,7 +23,7 @@ public class WhiskyWineInstaller {
     /// The Whisky application folder
     public static let applicationFolder = FileManager.default.urls(
         for: .applicationSupportDirectory, in: .userDomainMask
-        )[0].appending(path: Bundle.whiskyBundleIdentifier)
+    )[0].appending(path: Bundle.whiskyBundleIdentifier)
 
     /// The folder of all the libfrary files
     public static let libraryFolder = applicationFolder.appending(path: "Libraries")
@@ -37,7 +37,8 @@ public class WhiskyWineInstaller {
 
     public static func whiskyWineVersion() -> SemanticVersion? {
         do {
-            let versionPlist = libraryFolder
+            let versionPlist =
+                libraryFolder
                 .appending(path: "WhiskyWineVersion")
                 .appendingPathExtension("plist")
 

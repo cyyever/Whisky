@@ -22,7 +22,7 @@ import WhiskyKit
 struct PinView: View {
     @ObservedObject var bottle: Bottle
     @ObservedObject var program: Program
-    @State var pin: PinnedProgram // swiftlint:disable:this private_swiftui_state
+    @State var pin: PinnedProgram  // swiftlint:disable:this private_swiftui_state
     @Binding var path: NavigationPath
 
     @State private var image: Image?

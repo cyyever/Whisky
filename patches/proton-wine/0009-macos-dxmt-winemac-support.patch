@@ -44,9 +44,10 @@ which dlsym cannot see driver symbols at all.
 Covered by tests/dxmt-child-swapchain-test.c.
 
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 7c827ee2542..34f2d9c0a56 100644
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -1010,7 +1010,21 @@
+@@ -1010,7 +1010,21 @@ static NTSTATUS dlopen_dll( const char *so_name, UNICODE_STRING *nt_name, void *
      void *module, *handle;
      const IMAGE_NT_HEADERS *nt;
  
