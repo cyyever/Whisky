@@ -96,11 +96,17 @@ extension Steam {
     /// Steam's CEF holds Chromium's singleton lock plus a LevelDB `LOCK` per
     /// store under `htmlcache`, and Steam itself keeps a `.crash` marker that it
     /// only deletes on a clean exit. After a SIGKILL — ours above, a crash, or a
-    /// wineserver death — all of it survives, and the next start comes up in a
-    /// distinctive shape: the browser process runs but spawns no renderers and
-    /// creates no window, so Steam sits there with no UI at low CPU. It looks
-    /// like a hang, and it is intermittent, because whether it happens depends
-    /// entirely on how the *previous* session ended.
+    /// wineserver death — all of it survives into the next launch.
+    ///
+    /// This is hygiene, not a fix for anything measured. It was written for a
+    /// Steam that intermittently came up with no UI (browser process running, no
+    /// renderers, no window), on the theory that the leftovers were read as a
+    /// live instance. That theory is **not** supported: the same hang occurs
+    /// with this clearing in place, and on a run whose `.crash` and `lockfile`
+    /// were freshly created by the very process that was hanging. Whatever
+    /// causes it, it is not these files. Removing them is still right — they are
+    /// genuinely stale and cost microseconds — but do not reach for this when
+    /// the no-UI hang shows up again.
     ///
     /// Only safe with no client running — every caller reaps first.
     /// Same failure and same fix as GOG Galaxy's, see `GogGalaxy.clearStaleLocks`.
