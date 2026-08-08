@@ -9,29 +9,49 @@ macOS, and winevulkan provides vulkan-1 (backed by KosmicKrisp on macOS).
 wined3d's D3D9/D3D8 is broken here, and an app-bundled native loader (e.g. Steam
 CEF's own vulkan-1.dll) exposes no WSI, so each of these must resolve to builtin.
 
-Rather than have the host set a per-bottle WINEDLLOVERRIDES (which cannot catch a
-full-path app-directory load), extend get_load_order() — the same place Proton
-already hard-codes the EasyAntiCheat bridge — to resolve these basenames to
-builtin. Matching on the basename catches app-directory loads too.
+The reason is the *registry*, and only the registry. A bottle's DllOverrides are
+persistent state written by things this tree does not control: an older Whisky
+that installed DXVK per-game as native, winetricks, a game's own installer. Such
+an entry does not select a different provider — the builtins we ship carry the
+"Wine builtin DLL" signature, so a leftover "d3d9"="native" matches nothing at
+all and the app dies on STATUS_DLL_NOT_FOUND with a usable d3d9.dll sitting in
+system32, syswow64 and its own directory. That was a real failure: Super Street
+Fighter IV, exit c0000135, traced to a single stale value.
 
-The lookup runs *before* the DllOverrides registry keys, because a bottle's
-registry is persistent state written by things this tree does not control: an
-older Whisky that installed DXVK per-game as native, winetricks, a game's own
-installer. Such an entry does not select a different provider — the builtins we
-ship carry the "Wine builtin DLL" signature, so a leftover "d3d9"="native"
-matches nothing at all and the app dies on STATUS_DLL_NOT_FOUND with a usable
-d3d9.dll sitting in system32, syswow64 and its own directory. That was a real
-failure: Super Street Fighter IV, exit c0000135, traced to a single stale value.
+So extend get_load_order() — the same place Proton already hard-codes the
+EasyAntiCheat bridge — to resolve these basenames to builtin before the
+DllOverrides keys are consulted.
 
-WINEDLLOVERRIDES still wins. It is set per run so it cannot go stale, and it is
-the lever for A/B-ing a provider (wined3d vs DXMT, say) during debugging.
+WINEDLLOVERRIDES still wins, in all three spellings get_load_order_value() would
+have tried: the full module name, "*basename", and basename. It is set per run
+so it cannot go stale, and it is the lever for A/B-ing a provider (wined3d vs
+DXMT, say) during debugging. Checking only the bare name — as an earlier version
+of this did — silently ignored "*d3d9=n", the form winetricks and most of the
+documentation use, while the TRACE still reported "fork builtin"; an A/B run
+then reads as "the override made no difference to the bug".
+
+Note what this deliberately does *not* claim. An earlier version of this message
+argued that a host-set WINEDLLOVERRIDES could not catch a full-path
+app-directory load, which would have made the env route unusable and this patch
+the only option. That is wrong: the "*basename" rung a few lines below runs
+unconditionally, including for loads by explicit path, so a per-bottle
+WINEDLLOVERRIDES would catch Steam CEF's bundled vulkan-1.dll perfectly well.
+The env route is viable and simpler; it is the *stale registry* that an env var
+cannot defend against, since the registry is consulted whether or not anyone set
+an env.
+
+Two consequences worth stating. Wine's own per-application overrides for these
+modules — loader/wine.inf.in ships rayne1/rayne2 d3d8=native and RDR2
+vulkan-1=native — are inert in this tree, since AppDefaults is part of the
+registry this now resolves ahead of. And the module set lives in several places
+(here, the build scripts, tests/); nothing enforces agreement.
 
 The D3D/DXGI/vulkan-1 modules apply on every host this tree targets (macOS and
 FreeBSD) — the provider differs but "builtin" is always right — so they are
 unguarded. Only winemetal (DXMT's Metal interface) stays behind __APPLE__.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
-index 722190da255..e3394a9d455 100644
+index 722190da255..45d7a3f7466 100644
 --- a/dlls/ntdll/unix/loadorder.c
 +++ b/dlls/ntdll/unix/loadorder.c
 @@ -396,6 +396,29 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
@@ -64,7 +84,7 @@ index 722190da255..e3394a9d455 100644
  
      static const WCHAR prefixW[] = {'\\','?','?','\\'};
      enum loadorder ret = LO_INVALID;
-@@ -479,6 +502,28 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -479,6 +502,43 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
          }
      }
  
@@ -78,9 +98,24 @@ index 722190da255..e3394a9d455 100644
 +     * WINEDLLOVERRIDES still wins: it is set per run, so it cannot go stale, and
 +     * it is the lever for A/B-ing a provider (e.g. wined3d vs DXMT). */
 +    for (i = 0; i < ARRAY_SIZE(builtin_onlyW); i++)
++        if (!wcsicmp( basename, builtin_onlyW[i] )) break;
++
++    if (i < ARRAY_SIZE(builtin_onlyW))
 +    {
-+        if (wcsicmp( basename, builtin_onlyW[i] )) continue;
-+        if ((ret = get_env_load_order( basename )) != LO_INVALID)
++        /* Every WINEDLLOVERRIDES spelling get_load_order_value() would have
++         * tried, in its order: the full module name, "*basename", basename.
++         * add_load_order_set() stores each key verbatim and get_env_load_order()
++         * matches it whole, so checking only the bare name silently ignored
++         * "*d3d9=n" — the form winetricks and most of the documentation use.
++         * Silently is the problem: the TRACE below still said "fork builtin", so
++         * an A/B run reads as "the override made no difference to the bug". */
++        if ((ret = get_env_load_order( module+1 )) == LO_INVALID)
++        {
++            basename[-1] = '*';
++            if ((ret = get_env_load_order( basename-1 )) == LO_INVALID)
++                ret = get_env_load_order( basename );
++        }
++        if (ret != LO_INVALID)
 +            TRACE( "got environment %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
 +        else
 +        {
