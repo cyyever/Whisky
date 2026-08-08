@@ -34,11 +34,21 @@ import os.log
 /// silent removal makes the next report of "it hung again" impossible to read.
 enum StaleLocks {
     /// Remove one lock file if it is there. `what` names it in the log.
-    static func remove(_ url: URL, describing what: String) {
+    @discardableResult
+    static func remove(_ url: URL, describing what: String) -> Bool {
         let manager = FileManager.default
-        guard manager.fileExists(atPath: url.path(percentEncoded: false)) else { return }
-        try? manager.removeItem(at: url)
+        guard manager.fileExists(atPath: url.path(percentEncoded: false)) else { return false }
+        do {
+            try manager.removeItem(at: url)
+        } catch {
+            // Worth a line rather than silence: a lock that could not be removed
+            // is about to cause the failure this whole path exists to prevent,
+            // and "Removed" logged over a failed removal is worse than nothing.
+            Logger.wineKit.error("Failed to remove stale \(what): \(error.localizedDescription)")
+            return false
+        }
         Logger.wineKit.info("Removed stale \(what)")
+        return true
     }
 
     /// Remove every file named `name` anywhere under `root`.
@@ -55,8 +65,14 @@ enum StaleLocks {
 
         var removed = 0
         for case let url as URL in walker where url.lastPathComponent == name {
-            try? manager.removeItem(at: url)
-            removed += 1
+            do {
+                try manager.removeItem(at: url)
+                removed += 1
+            } catch {
+                Logger.wineKit.error(
+                    "Failed to remove stale \(what) at \(url.lastPathComponent): \(error.localizedDescription)"
+                )
+            }
         }
         if removed > 0 {
             Logger.wineKit.info("Removed \(removed) stale \(what)")
@@ -73,8 +89,7 @@ enum StaleLocks {
         else { return }
 
         for entry in entries {
-            try? manager.removeItem(at: entry)
-            Logger.wineKit.info("Removed stale \(what) \(entry.lastPathComponent)")
+            remove(entry, describing: "\(what) \(entry.lastPathComponent)")
         }
     }
 }

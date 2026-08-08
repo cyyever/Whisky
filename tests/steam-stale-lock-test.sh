@@ -19,6 +19,21 @@
 # end of every reap, so a bottle should never be found in this state while Steam
 # is not running. If this test fails with no Steam running, that call regressed.
 #
+# Only .crash is asserted on, and that is deliberate. The two obvious-looking
+# candidates are not usable as evidence:
+#
+#   - htmlcache/*/LOCK -- LevelDB never unlinks these. Measured: after deleting
+#     all of them, a *healthy* Steam recreated 25 within the hour, and they
+#     outlive a clean exit. Their presence says nothing about how the last
+#     session ended, so asserting on them would fail on every good machine.
+#   - htmlcache/lockfile -- present throughout a normal run, and whether it
+#     survives a clean exit was not established. Not a discriminator until it is.
+#
+# .crash is the one Steam itself deletes on a clean exit, so it means exactly
+# what this test needs it to mean. The clearing code removes all three, since
+# removing the others is harmless and cheap; the test only claims what it can
+# actually tell apart.
+#
 # Run: tests/steam-stale-lock-test.sh [bottle-dir]   # exit 0 = clean
 #      With no argument, checks every bottle.
 set -uo pipefail
@@ -48,19 +63,6 @@ for bottle in "${bottles[@]}"; do
         stale=$((stale + 1))
     fi
 
-    html="$bottle/drive_c/users/steamuser/AppData/Local/Steam/htmlcache"
-    if [ -f "$html/lockfile" ]; then
-        echo "  !! htmlcache/lockfile"
-        echo "       Chromium's singleton lock. Held, the browser process starts but"
-        echo "       spawns no renderers and creates no window."
-        stale=$((stale + 1))
-    fi
-
-    n=$(find "$html" -name LOCK -type f 2>/dev/null | wc -l | tr -d ' ')
-    if [ "${n:-0}" -gt 0 ]; then
-        echo "  !! $n LevelDB LOCK file(s) under htmlcache"
-        stale=$((stale + 1))
-    fi
 done
 
 echo

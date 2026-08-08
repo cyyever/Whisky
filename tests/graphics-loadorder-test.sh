@@ -30,7 +30,8 @@
 #      With no argument, checks every bottle.
 set -uo pipefail
 
-BOTTLES_DIR="$HOME/Library/Containers/com.isaacmarovitz.Whisky/Bottles"
+. "$(dirname "$0")/lib/bottles.sh"
+
 WINE_LIB="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/lib/wine"
 
 # The modules patch 0017 owns. Registry names carry no .dll extension; the file
@@ -43,24 +44,13 @@ if [ ! -d "$WINE_LIB/x86_64-windows" ]; then
     exit 0
 fi
 
-if [ $# -ge 1 ]; then
-    bottles=("$1")
-else
-    bottles=()
-    for b in "$BOTTLES_DIR"/*/; do [ -d "$b/drive_c" ] && bottles+=("${b%/}"); done
-fi
-
-if [ ${#bottles[@]} -eq 0 ]; then
-    echo "SKIP: no bottles found under $BOTTLES_DIR"
-    exit 0
-fi
+select_bottles "$@"
 
 overrides=0
 differing=0
 identical=0
 
 for bottle in "${bottles[@]}"; do
-    [ -d "$bottle/drive_c" ] || { echo "ERROR: not a bottle: $bottle" >&2; exit 2; }
     echo "=== $(basename "$bottle")"
 
     # --- 1. DllOverrides on a module we own -------------------------------
@@ -68,44 +58,82 @@ for bottle in "${bottles[@]}"; do
     # to start, and no risk of this check itself mutating the bottle.
     for reg in user.reg system.reg; do
         [ -f "$bottle/$reg" ] || continue
-        section=$(awk '/^\[Software\\\\Wine\\\\DllOverrides\]/{f=1;next} /^\[/{f=0} f' "$bottle/$reg")
-        [ -n "$section" ] || continue
-        for module in "${MODULES[@]}"; do
-            line=$(printf '%s\n' "$section" | grep -i "^\"$module\"=" || true)
-            [ -n "$line" ] || continue
-            echo "  !! $reg  $line"
-            echo "       overrides the builtin we ship; patch 0017 must resolve ahead of it"
-            overrides=$((overrides + 1))
-        done
+        # Every DllOverrides section, not just the global one: a *per-application*
+        # override lives under AppDefaults\<app>.exe\DllOverrides, and that is
+        # exactly where a per-game DXVK install -- the provenance in the header --
+        # writes its entry. Keep the section header so the report says which.
+        section=""
+        while IFS= read -r line; do
+            case "$line" in
+                \[*DllOverrides\]*) section="${line%% *}"; continue ;;
+                \[*)                 section=""; continue ;;
+            esac
+            [ -n "$section" ] || continue
+            for module in "${MODULES[@]}"; do
+                # Both spellings: "d3d9" and the wildcard "*d3d9" that winetricks
+                # emits. Matching only the first reported a clean bottle for the
+                # form most likely to be there.
+                case "$line" in
+                    "\"$module\"="*|"\"*$module\"="*) ;;
+                    *) continue ;;
+                esac
+                # Only the *global* section is a failure. AppDefaults entries
+                # for these modules ship in Wine's own loader/wine.inf.in
+                # (rayne1.exe d3d8=native, RDR2.exe vulkan-1=native, ...), are
+                # rewritten by every wineboot, and cannot be "cleaned up" -- so
+                # failing on them would fail on every bottle forever. They are
+                # still worth printing: patch 0017 resolves ahead of the
+                # registry, which means those upstream per-game workarounds are
+                # inert in this tree.
+                case "$section" in
+                    *AppDefaults*)
+                        echo "  -  $reg $section  $line"
+                        echo "       Wine's own per-app default; inert under patch 0017"
+                        continue
+                        ;;
+                esac
+                echo "  !! $reg $section  $line"
+                echo "       overrides the builtin we ship; patch 0017 must resolve ahead of it"
+                overrides=$((overrides + 1))
+            done
+        done < "$bottle/$reg"
     done
 
     # --- 2. App-directory copy of a builtin we own ------------------------
+    # One traversal, not one per DLL: drive_c holds whole game installs, so a
+    # pass per name walked tens of GB five times over for the same answer.
+    find_args=()
     for dll in "${DLLS[@]}"; do
-        while IFS= read -r found; do
-            case "$found" in */drive_c/windows/*) continue ;; esac
-
-            # Compare against whichever builtin matches its architecture. A PE32+
-            # ("PE32+ executable") is x86_64; PE32 is i386.
-            if file -b "$found" 2>/dev/null | grep -q 'PE32+'; then
-                builtin="$WINE_LIB/x86_64-windows/$dll"
-            else
-                builtin="$WINE_LIB/i386-windows/$dll"
-            fi
-
-            rel="${found#"$bottle"/drive_c/}"
-            if [ ! -f "$builtin" ]; then
-                echo "  ?  $rel (no builtin $dll to compare against)"
-            elif cmp -s "$found" "$builtin"; then
-                echo "  =  $rel (identical to the builtin; shadows it harmlessly)"
-                identical=$((identical + 1))
-            else
-                echo "  !! $rel"
-                echo "       $(stat -f '%z bytes, %Sm' -t '%Y-%m-%d' "$found")  <- loaded by the game"
-                echo "       $(stat -f '%z bytes, %Sm' -t '%Y-%m-%d' "$builtin")  <- what we install, and what it displaces"
-                differing=$((differing + 1))
-            fi
-        done < <(find "$bottle/drive_c" -name "$dll" -type f 2>/dev/null)
+        [ ${#find_args[@]} -eq 0 ] || find_args+=(-o)
+        find_args+=(-name "$dll")
     done
+    while IFS= read -r found; do
+        dll="${found##*/}"
+
+        # Compare against whichever builtin matches its architecture. A PE32+
+        # ("PE32+ executable") is x86_64; PE32 is i386.
+        if file -b "$found" 2>/dev/null | grep -q 'PE32+'; then
+            builtin="$WINE_LIB/x86_64-windows/$dll"
+        else
+            builtin="$WINE_LIB/i386-windows/$dll"
+        fi
+
+        rel="${found#"$bottle"/drive_c/}"
+        if [ ! -f "$builtin" ]; then
+            echo "  ?  $rel (no builtin $dll to compare against)"
+        elif cmp -s "$found" "$builtin"; then
+            echo "  =  $rel (identical to the builtin; shadows it harmlessly)"
+            identical=$((identical + 1))
+        else
+            echo "  !! $rel"
+            echo "       $(stat -f '%z bytes, %Sm' -t '%Y-%m-%d' "$found")  <- loaded by the game"
+            echo "       $(stat -f '%z bytes, %Sm' -t '%Y-%m-%d' "$builtin")  <- what we install, and what it displaces"
+            differing=$((differing + 1))
+        fi
+    done < <(
+        find "$bottle/drive_c" -path "$bottle/drive_c/windows" -prune -o \
+            -type f \( "${find_args[@]}" \) -print 2>/dev/null
+    )
 done
 
 echo

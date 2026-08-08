@@ -18,7 +18,6 @@
 
 import Darwin
 import Foundation
-import os.log
 
 // Single-instance launch guard: keeps Steam to one clean CEF login tree.
 extension Steam {
@@ -33,7 +32,7 @@ extension Steam {
 
     /// True when a Steam client (`steam.exe`) is already running in any bottle.
     public static func isSteamRunning() -> Bool {
-        !matchingPIDs(patterns: ["steam.exe"]).isEmpty
+        !WineProcesses.matching(patterns: ["steam.exe"]).isEmpty
     }
 
     /// True when `url` is the Steam client executable — the one launch we guard.
@@ -57,13 +56,13 @@ extension Steam {
     public static func reapSteamProcesses(in bottle: Bottle) async {
         await SteamLaunchGuard.shared.serialize {
             let prefix = bottle.url.path(percentEncoded: false)
-            for pid in matchingPIDs(patterns: steamProcessPatterns) {
+            for pid in WineProcesses.matching(patterns: steamProcessPatterns) {
                 kill(pid, SIGKILL)
             }
             // SIGKILL is prompt, but reparented children can take a moment to
             // disappear; wait (bounded ~5s) before clearing the server.
             for _ in 0..<25 {
-                if matchingPIDs(patterns: steamProcessPatterns).isEmpty { break }
+                if WineProcesses.matching(patterns: steamProcessPatterns).isEmpty { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
             // Kill the bottle's whole Wine tree by working directory, not by name:
@@ -76,12 +75,12 @@ extension Steam {
             // server death (crash, `wineserver -k`, Wine rebuild). Their cwd stays
             // inside this bottle's prefix, readable via proc_pidinfo, and scoped to
             // this bottle so another bottle's Wine is never touched.
-            for pid in pidsWithWorkingDirectory(under: prefix) {
+            for pid in WineProcesses.withWorkingDirectory(under: prefix) {
                 kill(pid, SIGKILL)
             }
             // Belt and suspenders: a wineserver whose cwd is not under the prefix
             // is still caught by its WINEPREFIX environment.
-            for pid in wineserverPIDs(forPrefix: prefix) {
+            for pid in WineProcesses.wineservers(forPrefix: prefix) {
                 kill(pid, SIGKILL)
             }
             // Everything above is SIGKILL, which is precisely what leaves the
@@ -128,104 +127,6 @@ extension Steam {
             .appending(path: "htmlcache")
         StaleLocks.remove(htmlCache.appending(path: "lockfile"), describing: "Steam CEF lockfile")
         StaleLocks.removeAll(named: "LOCK", under: htmlCache, describing: "Steam LevelDB LOCK file(s)")
-    }
-
-    /// PIDs whose argv contains any of `patterns` (case-insensitive), found via
-    /// libproc + `sysctl(KERN_PROCARGS2)` — no `pgrep`/`pkill` subprocess.
-    private static func matchingPIDs(patterns: [String]) -> [pid_t] {
-        let needles = patterns.map { $0.lowercased() }
-        return allPIDs().filter { pid in
-            guard let argv = processArgvEnv(pid)?.argv.lowercased() else { return false }
-            return needles.contains { argv.contains($0) }
-        }
-    }
-
-    /// PIDs of the wineserver(s) whose `WINEPREFIX` environment is `prefix` — matched on
-    /// argv (the wineserver binary) plus env (the prefix), so this bottle's server is
-    /// killed without touching another bottle's, entirely via `sysctl` + `kill(2)`.
-    private static func wineserverPIDs(forPrefix prefix: String) -> [pid_t] {
-        let prefixNeedle = "wineprefix=\(prefix)".lowercased()
-        return allPIDs().filter { pid in
-            guard let info = processArgvEnv(pid) else { return false }
-            return info.argv.lowercased().contains("wineserver")
-                && info.env.lowercased().contains(prefixNeedle)
-        }
-    }
-
-    /// PIDs whose current working directory is `prefix` or lives inside it, via
-    /// `proc_pidinfo(PROC_PIDVNODEPATHINFO)` — readable even for detached processes
-    /// whose argv/env `sysctl(KERN_PROCARGS2)` no longer returns. This is how the
-    /// bottle's Wine service tree is reached; scoped to `prefix` so it cannot touch
-    /// another bottle.
-    private static func pidsWithWorkingDirectory(under prefix: String) -> [pid_t] {
-        let root = prefix.hasSuffix("/") ? prefix : prefix + "/"
-        return allPIDs().filter { pid in
-            guard let cwd = processWorkingDirectory(pid) else { return false }
-            return cwd == prefix || cwd.hasPrefix(root)
-        }
-    }
-
-    /// The current working directory of `pid`, or nil if unreadable/gone.
-    private static func processWorkingDirectory(_ pid: pid_t) -> String? {
-        var info = proc_vnodepathinfo()
-        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
-        let written = withUnsafeMutablePointer(to: &info) {
-            proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, $0, size)
-        }
-        guard written == size else { return nil }
-        return withUnsafeBytes(of: &info.pvi_cdir.vip_path) { raw -> String? in
-            guard let base = raw.baseAddress else { return nil }
-            return String(cString: base.assumingMemoryBound(to: CChar.self))
-        }
-    }
-
-    /// Every process ID on the system (best-effort).
-    private static func allPIDs() -> [pid_t] {
-        let needed = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard needed > 0 else { return [] }
-        let capacity = Int(needed) / MemoryLayout<pid_t>.size + 32
-        var pids = [pid_t](repeating: 0, count: capacity)
-        let written = proc_listpids(
-            UInt32(PROC_ALL_PIDS), 0, &pids, Int32(capacity * MemoryLayout<pid_t>.size))
-        guard written > 0 else { return [] }
-        return pids.prefix(Int(written) / MemoryLayout<pid_t>.size).filter { $0 != 0 }
-    }
-
-    /// The exec path + argv and the environment of `pid`, each as one string, via
-    /// `sysctl(KERN_PROCARGS2)`. Returns nil when the process is gone or unreadable.
-    private static func processArgvEnv(_ pid: pid_t) -> (argv: String, env: String)? {
-        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
-        var size = 0
-        guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0,
-            size > MemoryLayout<Int32>.size
-        else { return nil }
-        var buffer = [UInt8](repeating: 0, count: size)
-        guard sysctl(&mib, UInt32(mib.count), &buffer, &size, nil, 0) == 0 else { return nil }
-
-        // Layout: argc (Int32), exec_path\0, padding\0…, argv[0]\0 … argv[argc-1]\0, env…
-        let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
-        var index = MemoryLayout<Int32>.size
-        func nextString() -> String? {
-            guard index < buffer.count else { return nil }
-            let start = index
-            while index < buffer.count, buffer[index] != 0 { index += 1 }
-            defer { index += 1 }
-            return String(bytes: buffer[start..<index], encoding: .utf8)
-        }
-        var argvParts: [String] = []
-        if let execPath = nextString() { argvParts.append(execPath) }
-        while index < buffer.count, buffer[index] == 0 { index += 1 }  // padding before argv
-        var read: Int32 = 0
-        while read < argc, index < buffer.count, let arg = nextString() {
-            argvParts.append(arg)
-            read += 1
-        }
-        var envParts: [String] = []
-        while index < buffer.count, buffer[index] == 0 { index += 1 }  // padding before env
-        while index < buffer.count, let env = nextString(), !env.isEmpty {
-            envParts.append(env)
-        }
-        return (argvParts.joined(separator: " "), envParts.joined(separator: " "))
     }
 }
 

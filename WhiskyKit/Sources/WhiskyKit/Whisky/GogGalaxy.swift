@@ -17,7 +17,6 @@
 //
 
 import Foundation
-import os.log
 
 /// GOG Galaxy launch hygiene.
 ///
@@ -43,8 +42,16 @@ public enum GogGalaxy {
     }
 
     /// True while a Galaxy client is live in `bottle`, so we leave its locks alone.
+    ///
+    /// Scoped to the bottle by working directory. The previous matcher looked for
+    /// the bottle prefix in the process's argv, which cannot work: a Wine
+    /// process's argv carries the *Windows* path of its exe
+    /// (`C:\…\GalaxyClient.exe`) and no prefix at all. Its fallback clause made
+    /// the test unconditionally true, so a Galaxy in any bottle suppressed lock
+    /// clearing for every other bottle — the silent exit-0 this file exists to
+    /// prevent.
     public static func isGalaxyRunning(in bottle: Bottle) -> Bool {
-        !matchingPIDs(pattern: "GalaxyClient.exe", bottle: bottle).isEmpty
+        !WineProcesses.matching(patterns: ["GalaxyClient.exe"], in: bottle).isEmpty
     }
 
     /// Remove lock files left by a previous run so Galaxy doesn't mistake them for
@@ -68,32 +75,5 @@ public enum GogGalaxy {
         StaleLocks.removeAll(
             named: "LOCK", under: programData.appending(path: "webcache"),
             describing: "GOG Galaxy webcache LOCK file(s)")
-    }
-
-    /// PIDs of processes whose command line contains `pattern` and that belong to
-    /// `bottle`. Mirrors the Steam launch guard's matcher.
-    private static func matchingPIDs(pattern: String, bottle: Bottle) -> [pid_t] {
-        let process = Process()
-        process.executableURL = URL(filePath: "/bin/ps")
-        process.arguments = ["-axo", "pid=,args="]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        guard (try? process.run()) != nil,
-            let data = try? pipe.fileHandleForReading.readToEnd(),
-            let output = String(data: data, encoding: .utf8)
-        else { return [] }
-        process.waitUntilExit()
-
-        let prefix = bottle.url.path(percentEncoded: false)
-        return output.split(separator: "\n").compactMap { line in
-            guard line.contains(pattern) else { return nil }
-            // A Wine process's argv carries the unix path of its exe, so the
-            // bottle prefix distinguishes this bottle's Galaxy from another's.
-            guard line.contains(prefix) || line.contains("GalaxyClient.exe") else { return nil }
-            let fields = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-            return fields.first.flatMap { pid_t($0) }
-        }
     }
 }

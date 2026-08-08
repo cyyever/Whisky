@@ -26,7 +26,10 @@
  * kernel refusing W+X. Wine's own vprot bookkeeping resetting the protection,
  * or a write outside the range that was mprotect'd, remain open.
  *
- * Exit 0 if W+X is refused, 1 if granted. It currently exits 1.
+ * Exit 0 when the measurement still matches what is recorded here (W+X
+ * granted) and 1 if it ever changes, matching the 0-is-clean convention the
+ * rest of tests/ uses. A nonzero exit here means the negative result above no
+ * longer holds and the SFIV notes that lean on it need re-reading.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +42,7 @@
 int main( void )
 {
     const size_t len = 0x4000;
-    int rc, failures = 0;
+    int rc, refused = 0;
     void *addr;
 
     /* Anonymous, read+execute: the shape Wine's loader leaves a PE .text
@@ -55,8 +58,18 @@ int main( void )
     errno = 0;
     rc = mprotect( addr, len, PROT_READ | PROT_WRITE | PROT_EXEC );
     printf( "mprotect(RWX)  -> %d", rc );
-    if (rc == -1) { printf( "  errno=%d (%s)  <- W^X refuses it\n", errno, strerror( errno ) ); failures++; }
-    else printf( "  granted\n" );
+    if (rc == -1) { printf( "  errno=%d (%s)  <- W^X refuses it\n", errno, strerror( errno ) ); refused = 1; }
+    else
+    {
+        /* The case that actually matters, and the one an earlier version of this
+         * test never reached: mprotect can return 0 and the store still fault,
+         * if something below the syscall declines to make an executable page
+         * writable. Write here, while the page is still RWX -- the later
+         * downgrade to RW would make this prove nothing. */
+        printf( "  granted\n" );
+        memset( addr, 0x90, 16 );
+        printf( "write while RWX -> ok (no fault)\n" );
+    }
 
     /* 2. Write+read without exec, to show the refusal is about W+X together and
      * not about the mapping being unwritable in general. */
@@ -66,16 +79,8 @@ int main( void )
     if (rc == -1) printf( "  errno=%d (%s)\n", errno, strerror( errno ) );
     else printf( "  granted\n" );
 
-    /* 3. Whether the write Proton then performs would actually land. Only
-     * meaningful if step 1 granted; otherwise the page is RW from step 2. */
-    if (rc == 0)
-    {
-        memset( addr, 0x90, 16 );
-        printf( "write after RW -> ok\n" );
-    }
-
     printf( "\n" );
-    if (failures)
+    if (refused)
         printf( "W+X refused. steamclient_setup_trampolines()'s unchecked mprotect\n"
                 "fails here, and the jump stubs it writes next hit a read-only page.\n"
                 "WINESTEAMNOEXEC=1 takes the branch that never writes to .text.\n" );
@@ -83,5 +88,5 @@ int main( void )
         printf( "W+X granted -- the SFIV fault is NOT explained by W^X.\n" );
 
     munmap( addr, len );
-    return failures ? 0 : 1;
+    return refused;
 }
