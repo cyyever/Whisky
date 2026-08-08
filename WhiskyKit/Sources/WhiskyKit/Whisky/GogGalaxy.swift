@@ -50,40 +50,24 @@ public enum GogGalaxy {
     /// Remove lock files left by a previous run so Galaxy doesn't mistake them for
     /// a live instance. Only safe when no client is running — checked by the caller.
     public static func clearStaleLocks(in bottle: Bottle) {
-        let manager = FileManager.default
         let programData = bottle.url
             .appending(path: "drive_c")
             .appending(path: "ProgramData")
             .appending(path: "GOG.com")
             .appending(path: "Galaxy")
 
-        // The lock directory itself is recreated by Galaxy, so emptying it is
-        // enough — and safer than removing the directory, which the client may
-        // expect to exist.
-        let lockDirectory = programData.appending(path: "lock-files")
-        if let entries = try? manager.contentsOfDirectory(
-            at: lockDirectory,
-            includingPropertiesForKeys: nil)
-        {
-            for entry in entries {
-                try? manager.removeItem(at: entry)
-                Logger.wineKit.info("Removed stale GOG Galaxy lock \(entry.lastPathComponent)")
-            }
-        }
+        StaleLocks.empty(
+            programData.appending(path: "lock-files"), describing: "GOG Galaxy lock")
 
-        // The embedded Chromium's LevelDB lock. Held for the process lifetime, so
-        // it survives a kill too and blocks the web view from opening its store.
-        let webCacheLock =
-            programData
-            .appending(path: "webcache")
-            .appending(path: "common")
-            .appending(path: "Local Storage")
-            .appending(path: "leveldb")
-            .appending(path: "LOCK")
-        if manager.fileExists(atPath: webCacheLock.path(percentEncoded: false)) {
-            try? manager.removeItem(at: webCacheLock)
-            Logger.wineKit.info("Removed stale GOG Galaxy webcache LOCK")
-        }
+        // The embedded Chromium's LevelDB locks. Held for the process lifetime, so
+        // they survive a kill too and block the web view from opening its store.
+        // Swept rather than named: this used to remove only
+        // `webcache/common/Local Storage/leveldb/LOCK`, which is one store out of
+        // however many the bundled Chromium happens to ship — see
+        // `StaleLocks.removeAll`.
+        StaleLocks.removeAll(
+            named: "LOCK", under: programData.appending(path: "webcache"),
+            describing: "GOG Galaxy webcache LOCK file(s)")
     }
 
     /// PIDs of processes whose command line contains `pattern` and that belong to

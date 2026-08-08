@@ -18,6 +18,7 @@
 
 import Darwin
 import Foundation
+import os.log
 
 // Single-instance launch guard: keeps Steam to one clean CEF login tree.
 extension Steam {
@@ -83,7 +84,50 @@ extension Steam {
             for pid in wineserverPIDs(forPrefix: prefix) {
                 kill(pid, SIGKILL)
             }
+            // Everything above is SIGKILL, which is precisely what leaves the
+            // state cleared below. Reaping without this is a half-measure: the
+            // next launch comes up crippled instead of clean.
+            clearStaleLocks(in: bottle)
         }
+    }
+
+    /// Remove the state a killed Steam leaves behind, so the next launch is not
+    /// treated as a second instance.
+    ///
+    /// Steam's CEF holds Chromium's singleton lock plus a LevelDB `LOCK` per
+    /// store under `htmlcache`, and Steam itself keeps a `.crash` marker that it
+    /// only deletes on a clean exit. After a SIGKILL — ours above, a crash, or a
+    /// wineserver death — all of it survives, and the next start comes up in a
+    /// distinctive shape: the browser process runs but spawns no renderers and
+    /// creates no window, so Steam sits there with no UI at low CPU. It looks
+    /// like a hang, and it is intermittent, because whether it happens depends
+    /// entirely on how the *previous* session ended.
+    ///
+    /// Only safe with no client running — every caller reaps first.
+    /// Same failure and same fix as GOG Galaxy's, see `GogGalaxy.clearStaleLocks`.
+    static func clearStaleLocks(in bottle: Bottle) {
+        let driveC = bottle.url.appending(path: "drive_c")
+
+        // Steam's own "last exit was not clean" marker.
+        StaleLocks.remove(
+            driveC
+                .appending(path: "Program Files (x86)")
+                .appending(path: "Steam")
+                .appending(path: ".crash"),
+            describing: "Steam .crash marker")
+
+        // Chromium's singleton lock, plus the LevelDB LOCK each store under it
+        // holds open for the process lifetime.
+        let htmlCache =
+            driveC
+            .appending(path: "users")
+            .appending(path: "steamuser")
+            .appending(path: "AppData")
+            .appending(path: "Local")
+            .appending(path: "Steam")
+            .appending(path: "htmlcache")
+        StaleLocks.remove(htmlCache.appending(path: "lockfile"), describing: "Steam CEF lockfile")
+        StaleLocks.removeAll(named: "LOCK", under: htmlCache, describing: "Steam LevelDB LOCK file(s)")
     }
 
     /// PIDs whose argv contains any of `patterns` (case-insensitive), found via
