@@ -1,0 +1,109 @@
+Subject: ntdll: disable Steam's overlay DLLs on macOS, where they hang every game
+
+GameOverlayRenderer.dll installs inline hooks over user32's input entry points.
+Under Rosetta that is fatal: the hook writes into user32's r-x code pages, and
+Rosetta write-protects the pages backing its translation cache, so the store
+traps into Rosetta's own mach exception server -- which retries it forever. Two
+cores at 100%, no window, and nothing to go on: the exception never reaches
+Wine's SIGSEGV handler, so no log anywhere records it.
+
+Measured on Super Street Fighter IV AE (appid 45760), 2026-08-09. The faulting
+address was user32+0xa430 -- eight bytes into GetAsyncKeyState, inside a run of
+20-byte jump-table slots that is nothing but input functions (ClipCursor,
+EnableScrollBar, GetKeyState, GetKeyboardState), which is what an inline-hook
+installer leaves behind. Disabling these two DLLs takes that game from "never
+exits, 100% CPU, exactly one segv record" to "no segv records at all, exits in
+three seconds". The three seconds are a separate problem -- Valve's CEG DRM
+fails its own integrity check -- but that one at least reports itself.
+
+This had been misattributed for a week: the hang was read as the CEG DRM writing
+to its own read-only code (WineHQ bug 32515). It is not. The writer is Steam's
+overlay and the loop is inside Rosetta, and the two failures are stacked, so
+every earlier A/B against the DRM was really testing the overlay hang.
+
+Resolved ahead of the registry, like the D3D/Vulkan builtins above it, so a
+bottle's stale DllOverrides cannot undo it. WINEDLLOVERRIDES still wins in all
+three spellings, so `WINEDLLOVERRIDES=gameoverlayrenderer=n` re-enables the
+overlay for a single run -- the way to re-test this if Rosetta ever stops
+looping. macOS-only: the same hooks are fine natively, Rosetta is what turns the
+write into an endless loop.
+
+Cost is the overlay itself -- Shift+Tab, screenshots, the in-game store. Steam
+still tracks playtime and achievements, and the games do not need it.
+
+diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
+index 45d7a3f7466..688d1842638 100644
+--- a/dlls/ntdll/unix/loadorder.c
++++ b/dlls/ntdll/unix/loadorder.c
+@@ -420,6 +420,36 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+ #endif
+     };
+ 
++#ifdef __APPLE__
++    /* Steam's overlay hangs any game it is injected into, under Rosetta. It works
++     * by writing inline hooks over user32's input entry points -- the faulting
++     * address measured in SSFIV was user32+0xa430, eight bytes into
++     * GetAsyncKeyState, in a run of 20-byte jump-table slots that is nothing but
++     * input functions (ClipCursor, EnableScrollBar, GetKeyState,
++     * GetKeyboardState). Those pages are r-x, and Rosetta write-protects the
++     * pages backing its translation cache, so the store traps into Rosetta's own
++     * mach exception server, which retries it forever: two cores at 100%, no
++     * window, no fault ever reaching Wine's SIGSEGV handler and nothing in any
++     * log. Measured 2026-08-09: disabling these two DLLs takes the game from
++     * "never exits, 100% CPU, one segv record" to "no segv records at all".
++     *
++     * Not a game bug and not fixable in the game: the writer is Steam's DLL and
++     * the retry loop is inside Rosetta. Disabling it costs the overlay (Shift+Tab,
++     * screenshots, the in-game store) and nothing else -- the game itself does not
++     * need it, and Steam still tracks playtime and achievements.
++     *
++     * macOS-only because Rosetta is what turns the write into an endless loop; the
++     * same hooks are fine natively. */
++    static const WCHAR gameoverlayrendererW[] =
++        {'g','a','m','e','o','v','e','r','l','a','y','r','e','n','d','e','r','e','r',0};
++    static const WCHAR gameoverlayrenderer64W[] =
++        {'g','a','m','e','o','v','e','r','l','a','y','r','e','n','d','e','r','e','r','6','4',0};
++    static const WCHAR * const disabled_onlyW[] =
++    {
++        gameoverlayrendererW, gameoverlayrenderer64W,
++    };
++#endif
++
+     static const WCHAR prefixW[] = {'\\','?','?','\\'};
+     enum loadorder ret = LO_INVALID;
+     const WCHAR *path = nt_name->Buffer;
+@@ -539,6 +569,34 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+         goto done;
+     }
+ 
++#ifdef __APPLE__
++    /* Same shape as the builtin_only block above, and for the same reason it sits
++     * ahead of the registry: this has to hold whatever a bottle's DllOverrides
++     * happen to say. WINEDLLOVERRIDES still wins, in all three spellings, so
++     * `WINEDLLOVERRIDES=gameoverlayrenderer=n` re-enables the overlay for one run
++     * -- which is also how to re-test this once Rosetta stops looping. */
++    for (i = 0; i < ARRAY_SIZE(disabled_onlyW); i++)
++        if (!wcsicmp( basename, disabled_onlyW[i] )) break;
++
++    if (i < ARRAY_SIZE(disabled_onlyW))
++    {
++        if ((ret = get_env_load_order( module+1 )) == LO_INVALID)
++        {
++            basename[-1] = '*';
++            if ((ret = get_env_load_order( basename-1 )) == LO_INVALID)
++                ret = get_env_load_order( basename );
++        }
++        if (ret != LO_INVALID)
++            TRACE( "got environment %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
++        else
++        {
++            ret = LO_DISABLED;
++            TRACE( "got fork disabled %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
++        }
++        goto done;
++    }
++#endif
++
+     /* first explicit module name */
+     if ((ret = get_load_order_value( std_key, app_key, module+1 )) != LO_INVALID)
+         goto done;
