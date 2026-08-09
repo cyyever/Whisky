@@ -1,0 +1,79 @@
+Subject: ntdll: widen the vprot tracer to the game's own code pages
+
+The tracer added alongside the segv one only logged VirtualProtect calls in the
+32-bit builtin range, because the question then was who made user32's code
+writable. That question is answered -- the overlay did, and the calls succeeded.
+
+The remaining one is a floor lower and outside that range. Valve's CEG DRM
+decrypts and checksums the game's OWN code before it will run; when the check
+fails the game prints "In memory integrity check failed. This may be caused by
+debug breakpoints or DLL relocation." and exits(3). All of that happens at the
+image base -- 0x400000 for this 32-bit exe -- which the filter excluded. So the
+log showing nothing for the DRM was not evidence that the DRM did nothing.
+
+Filter on EXECUTE protection rather than on a second address range: it catches
+code-page manipulation wherever an image lands, without readmitting the heap and
+data churn that makes VirtualProtect one of the busiest calls at startup. Cap
+raised 256 -> 1024 accordingly.
+
+The blunt alternative was tried first and does not work: WINEDEBUG=+virtual
+cannot be scoped to the game, because the game inherits its environment from
+Steam, so it instruments the whole Steam process tree. It wrote 53 MB in under a
+minute and left Steam with no window -- which is also the signature of a separate
+open bug, so it destroys the very thing it was meant to observe.
+
+Refines the tracer from the fault-diagnostics patch and drops with it.
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 74a4eea4000..4ceeea14b2d 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5841,7 +5841,7 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+ }
+ 
+ 
+-/* ---- VPROT-TRACE (temporary): who asks to make a builtin's code writable? ----
++/* ---- VPROT-TRACE (temporary): who asks to make CODE writable? ---------------
+  * Something writes into user32's GetAsyncKeyState thunk (confirmed: base
+  * 0x7b8e0000 + 0xa430) on a page Wine keeps r-x, and the resulting
+  * EXC_BAD_ACCESS is swallowed by Rosetta's exception server and retried
+@@ -5853,18 +5853,34 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+  *   - no call at all means the writer never asked, and would have faulted on
+  *     Windows too -- so the difference is elsewhere.
+  *
+- * Only calls touching the 32-bit builtin range are logged. VirtualProtect runs
+- * constantly during startup and an unfiltered log would both bury the one call
+- * that matters and perturb the timing of the thing being measured.
++ * Two filters, because there are two questions. The builtin range answers the
++ * original one above. The executable-protection filter answers the second:
++ * Valve's CEG DRM decrypts and checksums the game's OWN code, and when it fails
++ * the game prints "In memory integrity check failed. This may be caused by debug
++ * breakpoints or DLL relocation." and exits(3). That work happens at the image
++ * base (0x400000 for a 32-bit exe), which the builtin filter excluded -- so the
++ * log showing nothing there was never evidence that nothing happened.
++ *
++ * Filtering on EXECUTE rather than on an address range keeps this usable: it
++ * catches code-page manipulation wherever the image landed, while leaving out
++ * the heap and data churn that makes VirtualProtect one of the busiest calls
++ * during startup. An unfiltered log would bury the calls that matter and perturb
++ * the timing of the thing being measured -- WINEDEBUG=+virtual was tried and
++ * wrote 53 MB in under a minute, which is not a measurement, it is a load test.
++ *
+  * Shares WINE_SEGV_TRACE's switch. Remove after use. */
++#define VPROT_TRACE_EXEC (PAGE_EXECUTE | PAGE_EXECUTE_READ | \
++                          PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)
+ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old, unsigned int status )
+ {
+-    static int fd = -1, checked, left = 256;
++    static int fd = -1, checked, left = 1024;
+     char line[256];
+     ULONG_PTR a = (ULONG_PTR)addr;
+     int len;
+ 
+-    if ((a + size) < 0x7b000000 || a >= 0x7c000000) return;
++    if (((a + size) < 0x7b000000 || a >= 0x7c000000) &&
++        !(new_prot & VPROT_TRACE_EXEC) && !(old & VPROT_TRACE_EXEC))
++        return;
+ 
+     if (!checked)
+     {
