@@ -1,0 +1,267 @@
+Subject: ntdll: fault-localisation diagnostics behind WINE_SEGV_TRACE (macOS, temporary)
+
+Three write-only tracers sharing one env switch, WINE_SEGV_TRACE=1, so a session
+needs one variable and one restart:
+
+  /tmp/segv_<pid>.log    every SIGSEGV the handler sees: faulting address, rip,
+                         rsp, err bit and trap number, capped at 64 entries.
+  /tmp/modmap_<pid>.log  where each builtin PE landed. vmmap(1) labels every Wine
+                         PE mapping as WINE_RESERVE pointing at the wine binary,
+                         so a raw fault address can be placed in a region but
+                         never attributed to a DLL -- and builtin bases are not
+                         stable across programs (measured: ntdll at 7be10000 in a
+                         console probe, 7bf30000 in the game), so a probe process
+                         cannot supply the map either.
+  /tmp/vprot_<pid>.log   NtProtectVirtualMemory calls touching the 32-bit builtin
+                         range, recorded after the fact so old_prot and status
+                         are the ones the caller actually saw. Filtered to that
+                         range because VirtualProtect runs constantly during
+                         startup and an unfiltered log would bury the one call
+                         that matters and perturb what is being measured.
+
+Written with open/write rather than TRACE: the first runs inside a signal
+handler, and all three have to work in builds with the debug channels off. The
+usual debuggers are not available for these processes -- winedbg's attach fails
+with ACCESS_DENIED, and lldb attaches but runs none of its -o commands against a
+Rosetta-translated target.
+
+Grown for the SFIV CEG-DRM read-only-code-write fault (WineHQ bug 32515) and
+kept because segv_<pid>.log is currently the only fault record for the
+intermittent Steam "no UI" startup hang: the *absence* of an entry for a CEF
+child that connected and then vanished is itself the evidence there.
+
+Committed rather than left in the working tree because proton-branch.sh exports
+commits, not working-tree edits, and patches/proton-wine/ is all a fresh clone
+gets -- vendor/proton-wine is gitignored.
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 34f2d9c0a56..cf3e3238baa 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1758,7 +1758,48 @@ done:
+  * Load the builtin dll if specified by load order configuration.
+  * Return STATUS_IMAGE_ALREADY_LOADED if we should keep the native one that we have found.
+  */
+-NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *nt_name,
++/* ---- MODMAP (temporary): record where each builtin landed --------------------
++ * vmmap(1) labels every Wine PE mapping as WINE_RESERVE pointing at the wine
++ * binary, so a raw fault address can be placed in a region but never attributed
++ * to a DLL. The usual ways in are all closed for the process we care about:
++ * winedbg's attach fails with ACCESS_DENIED, lldb attaches but runs none of its
++ * -o commands against a Rosetta-translated target, and a probe process is no
++ * help because builtin bases are NOT stable across programs (measured: ntdll at
++ * 7be10000 in a console probe, 7bf30000 in the game). So have the process write
++ * its own map. Shares WINE_SEGV_TRACE's switch -- one env var, one restart.
++ * Not a signal handler, so ordinary snprintf/write are fine. Remove after use. */
++static void modmap_note( const UNICODE_STRING *nt_name, const void *module, SIZE_T size )
++{
++    static int fd = -1, checked;
++    char line[512], name[256];
++    unsigned int i, len;
++
++    if (!checked)
++    {
++        const char *e = getenv( "WINE_SEGV_TRACE" );
++        char path[64];
++
++        checked = 1;
++        if (e && *e != '0')
++        {
++            snprintf( path, sizeof(path), "/tmp/modmap_%d.log", (int)getpid() );
++            fd = open( path, O_WRONLY | O_CREAT | O_APPEND, 0644 );
++        }
++    }
++    if (fd == -1 || !module) return;
++
++    len = nt_name->Length / sizeof(WCHAR);
++    if (len > sizeof(name) - 1) len = sizeof(name) - 1;
++    for (i = 0; i < len; i++)
++        name[i] = (nt_name->Buffer[i] > 0 && nt_name->Buffer[i] < 128) ? (char)nt_name->Buffer[i] : '?';
++    name[len] = 0;
++
++    len = snprintf( line, sizeof(line), "%p %08lx %s\n",
++                    module, (unsigned long)size, name );
++    if (len > 0) write( fd, line, len );
++}
++
++static NTSTATUS load_builtin_impl( const struct pe_image_info *image_info, UNICODE_STRING *nt_name,
+                        ANSI_STRING *exp_name, USHORT machine, SECTION_IMAGE_INFORMATION *info,
+                        void **module, SIZE_T *size, ULONG_PTR limit_low, ULONG_PTR limit_high,
+                        off_t offset )
+@@ -1801,6 +1842,17 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
+     }
+ }
+ 
++NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *nt_name,
++                       ANSI_STRING *exp_name, USHORT machine, SECTION_IMAGE_INFORMATION *info,
++                       void **module, SIZE_T *size, ULONG_PTR limit_low, ULONG_PTR limit_high,
++                       off_t offset )
++{
++    NTSTATUS status = load_builtin_impl( image_info, nt_name, exp_name, machine, info,
++                                         module, size, limit_low, limit_high, offset );
++    if (!status) modmap_note( nt_name, *module, size ? *size : 0 );
++    return status;
++}
++
+ 
+ /***************************************************************************
+  *	get_machine_wow64_dir
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index dc5f4796cdf..72e57494e8f 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2689,6 +2689,64 @@ static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
+  *
+  * Handler for SIGSEGV and related errors.
+  */
++
++/* ---- SEGV-TRACE (temporary): name whoever faults writing a read-only page ---
++ * Super Street Fighter IV pins a core forever on a write to user32's
++ * GetAsyncKeyState thunk, which Wine keeps r-x. Nothing outside the handler can
++ * say who the writer is: sample(1) and lldb cannot unwind Rosetta-translated
++ * guest frames (every caller shows as 0x0), winedbg's attach is unreliable
++ * here, and a GUI-launched program's stderr goes to /dev/null so WINEDEBUG is
++ * not readable either. The guest RIP is sitting right there in the ucontext, so
++ * record it from the handler.
++ *
++ * Signal-handler rules apply: no snprintf, no malloc, no stdio -- the fd is
++ * opened once at init and the formatting is by hand, leaving write(2) as the
++ * only call. Bounded, because the fault repeats forever and an unbounded log
++ * would fill the disk. Enabled by WINE_SEGV_TRACE=1. Remove after use. */
++static int segv_trace_fd = -1;
++static int segv_trace_left;
++
++static void segv_trace_init(void)
++{
++    const char *e = getenv( "WINE_SEGV_TRACE" );
++    char path[64];
++
++    if (!e || *e == '0') return;
++    /* Decimal, matching modmap_ and vprot_ -- this used to be hex, and three
++     * trace files keyed by the same pid in two different bases is a way to read
++     * the wrong process's log without noticing. Runs before any handler is
++     * installed, so snprintf here is not in a signal context. */
++    snprintf( path, sizeof(path), "/tmp/segv_%d.log", (int)getpid() );
++    segv_trace_fd = open( path, O_WRONLY | O_CREAT | O_TRUNC, 0644 );
++    segv_trace_left = 64;
++}
++
++static void segv_trace( const void *addr, ULONG_PTR rip, ULONG_PTR rsp, unsigned int err, int trap )
++{
++    char buf[160], *p = buf;
++
++    if (segv_trace_fd == -1 || segv_trace_left <= 0) return;
++    segv_trace_left--;
++
++#define PUT_STR(s) do { const char *q = (s); while (*q) *p++ = *q++; } while (0)
++#define PUT_HEX(v) do { ULONG_PTR x = (ULONG_PTR)(v); int sh = 60, seen = 0; \
++        for (; sh >= 0; sh -= 4) { int d = (x >> sh) & 0xf; \
++            if (d || seen || !sh) { *p++ = "0123456789abcdef"[d]; seen = 1; } } } while (0)
++    PUT_STR( "trap=" );         PUT_HEX( trap );
++    PUT_STR( " addr=" );        PUT_HEX( addr );
++    PUT_STR( " rip=" );         PUT_HEX( rip );
++    PUT_STR( " rsp=" );         PUT_HEX( rsp );
++    PUT_STR( " err=" );         PUT_HEX( err );
++    /* err bit 1 = write, bit 4 = instruction fetch; both are what distinguishes
++     * "wrote a read-only page" from "executed a no-exec page". */
++    PUT_STR( (err & 2) ? " WRITE" : " read" );
++    if (err & 16) PUT_STR( " EXEC" );
++    *p++ = '\n';
++#undef PUT_STR
++#undef PUT_HEX
++    write( segv_trace_fd, buf, p - buf );
++}
++
+ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+     ucontext_t *ucontext = init_handler( sigcontext );
+@@ -2699,6 +2757,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     rec.ExceptionAddress = (void *)RIP_sig(ucontext);
+     save_context( &context, ucontext );
+ 
++    /* SEGV-TRACE: before the switch, so it catches every trap kind. macOS maps
++     * KERN_PROTECTION_FAILURE to a different trap than Linux's page fault, and
++     * instrumenting only TRAP_x86_PAGEFLT missed the fault we are chasing. */
++    segv_trace( siginfo->si_addr, RIP_sig(ucontext), RSP_sig(ucontext),
++                ERROR_sig(ucontext), TRAP_sig(ucontext) );
++
+     switch(TRAP_sig(ucontext))
+     {
+     case TRAP_x86_OFLOW:   /* Overflow exception */
+@@ -3140,6 +3204,8 @@ void signal_init_process(void)
+     struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
+     void *ptr, *kernel_stack = (char *)thread_data->kernel_stack + kernel_stack_size;
+ 
++    segv_trace_init();  /* SEGV-TRACE (temporary): opens the fd before any handler runs */
++
+     if (user_shared_data->XState.Size) xstate_size = user_shared_data->XState.Size - sizeof(XSAVE_FORMAT);
+     frame_size = offsetof( struct syscall_frame, xstate ) + xstate_size;
+ 
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index c66b96ed592..74a4eea4000 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5841,6 +5841,52 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+ }
+ 
+ 
++/* ---- VPROT-TRACE (temporary): who asks to make a builtin's code writable? ----
++ * Something writes into user32's GetAsyncKeyState thunk (confirmed: base
++ * 0x7b8e0000 + 0xa430) on a page Wine keeps r-x, and the resulting
++ * EXC_BAD_ACCESS is swallowed by Rosetta's exception server and retried
++ * forever. On Windows that write requires a VirtualProtect first, so the
++ * question is whether one is made at all:
++ *
++ *   - a call that arrives and succeeds means Wine granted write access and the
++ *     store still faulted, i.e. the protection did not reach the mapping;
++ *   - no call at all means the writer never asked, and would have faulted on
++ *     Windows too -- so the difference is elsewhere.
++ *
++ * Only calls touching the 32-bit builtin range are logged. VirtualProtect runs
++ * constantly during startup and an unfiltered log would both bury the one call
++ * that matters and perturb the timing of the thing being measured.
++ * Shares WINE_SEGV_TRACE's switch. Remove after use. */
++static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old, unsigned int status )
++{
++    static int fd = -1, checked, left = 256;
++    char line[256];
++    ULONG_PTR a = (ULONG_PTR)addr;
++    int len;
++
++    if ((a + size) < 0x7b000000 || a >= 0x7c000000) return;
++
++    if (!checked)
++    {
++        const char *e = getenv( "WINE_SEGV_TRACE" );
++        char path[64];
++
++        checked = 1;
++        if (e && *e != '0')
++        {
++            snprintf( path, sizeof(path), "/tmp/vprot_%d.log", (int)getpid() );
++            fd = open( path, O_WRONLY | O_CREAT | O_APPEND, 0644 );
++        }
++    }
++    if (fd == -1 || left <= 0) return;
++    left--;
++
++    len = snprintf( line, sizeof(line), "addr=%p size=%lx new=%08x old=%08x status=%08x\n",
++                    addr, (unsigned long)size, (unsigned int)new_prot,
++                    (unsigned int)old, status );
++    if (len > 0) write( fd, line, len );
++}
++
+ /***********************************************************************
+  *             NtProtectVirtualMemory   (NTDLL.@)
+  *             ZwProtectVirtualMemory   (NTDLL.@)
+@@ -5943,6 +5989,10 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T
+         *old_prot = old;
+     }
+     else *old_prot = PAGE_NOACCESS;
++    /* VPROT-TRACE: after the fact, so the recorded old_prot and status are the
++     * ones the caller actually sees. Failures matter as much as successes here
++     * -- a denied request explains the fault just as well as a missing one. */
++    vprot_note( base, size, new_prot, *old_prot, status );
+     return status;
+ }
+ 
