@@ -41,12 +41,82 @@ Accepted anyway because the alternative is not "overlay on": it is a game that
 never starts. Revisit as a bottle setting if Rosetta stops looping on the retry,
 or if a controller-only user turns up who would rather have the pad than the
 game.
+Factored out forced_load_order() rather than adding a second copy of the block
+that resolves the D3D/Vulkan builtins. The two differ only in which table they
+search and which constant they fall back to, and the twenty lines they share are
+the three-spelling WINEDLLOVERRIDES probe -- the part with the history: checking
+only the bare name once ignored "*d3d9=n" silently, while still tracing "fork
+builtin", so an A/B run read as "the override made no difference". Kept as one
+copy so the next fix to it cannot be applied to one caller and missed on the
+other. The TRACE wording is preserved verbatim, redundant "fork builtin builtin"
+included, so existing logs still match.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
-index 45d7a3f7466..688d1842638 100644
+index 45d7a3f7466..3a5b69081f9 100644
 --- a/dlls/ntdll/unix/loadorder.c
 +++ b/dlls/ntdll/unix/loadorder.c
-@@ -420,6 +420,36 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -270,6 +270,60 @@ static inline enum loadorder get_env_load_order( const WCHAR *module )
+ }
+ 
+ 
++/***************************************************************************
++ *	forced_load_order
++ *
++ * Resolve one of the fork's forced-load-order tables, ahead of any registry
++ * lookup. Returns LO_INVALID when `basename` is not in `names`, so the caller
++ * falls through to the normal resolution.
++ *
++ * A bottle's DllOverrides outlive whatever wrote them -- an old Whisky that
++ * dropped DXVK into a game directory as *native*, winetricks, a game's own
++ * installer -- so for the modules this fork ships or must keep out, the
++ * registry cannot be allowed the last word. WINEDLLOVERRIDES still wins: it is
++ * set per run, so it cannot go stale, and it is the lever for A/B-ing a
++ * provider or re-enabling something this fork disables.
++ *
++ * All three spellings get_load_order_value() would have tried are tried here,
++ * in its order: the full module name, "*basename", basename. add_load_order_set()
++ * stores each key verbatim and get_env_load_order() matches it whole, so checking
++ * only the bare name silently ignored "*d3d9=n" -- the form winetricks and most
++ * of the documentation use. Silently is the problem: the TRACE still said "fork
++ * builtin", so an A/B run reads as "the override made no difference to the bug".
++ *
++ * Note this writes '*' into basename[-1], as the registry path below does for
++ * the same reason; it is the same character either way, so the buffer is left
++ * exactly as that path expects to find it.
++ */
++static enum loadorder forced_load_order( const UNICODE_STRING *nt_name, const WCHAR *module,
++                                         WCHAR *basename, const WCHAR * const *names,
++                                         unsigned int count, enum loadorder forced,
++                                         const char *what )
++{
++    enum loadorder ret;
++    unsigned int i;
++
++    for (i = 0; i < count; i++)
++        if (!wcsicmp( basename, names[i] )) break;
++    if (i == count) return LO_INVALID;
++
++    if ((ret = get_env_load_order( module+1 )) == LO_INVALID)
++    {
++        basename[-1] = '*';
++        if ((ret = get_env_load_order( basename-1 )) == LO_INVALID)
++            ret = get_env_load_order( basename );
++    }
++    if (ret != LO_INVALID)
++        TRACE( "got environment %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
++    else
++    {
++        ret = forced;
++        TRACE( "got fork %s %s for %s\n", what, debugstr_loadorder(ret), debugstr_us(nt_name) );
++    }
++    return ret;
++}
++
++
+ /***************************************************************************
+  *	open_app_key
+  *
+@@ -420,6 +474,36 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
  #endif
      };
  
@@ -83,38 +153,44 @@ index 45d7a3f7466..688d1842638 100644
      static const WCHAR prefixW[] = {'\\','?','?','\\'};
      enum loadorder ret = LO_INVALID;
      const WCHAR *path = nt_name->Buffer;
-@@ -539,6 +569,34 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
-         goto done;
-     }
- 
-+#ifdef __APPLE__
-+    /* Same shape as the builtin_only block above, and for the same reason it sits
-+     * ahead of the registry: this has to hold whatever a bottle's DllOverrides
-+     * happen to say. WINEDLLOVERRIDES still wins, in all three spellings, so
-+     * `WINEDLLOVERRIDES=gameoverlayrenderer=n` re-enables the overlay for one run
-+     * -- which is also how to re-test this once Rosetta stops looping. */
-+    for (i = 0; i < ARRAY_SIZE(disabled_onlyW); i++)
-+        if (!wcsicmp( basename, disabled_onlyW[i] )) break;
-+
-+    if (i < ARRAY_SIZE(disabled_onlyW))
-+    {
-+        if ((ret = get_env_load_order( module+1 )) == LO_INVALID)
-+        {
-+            basename[-1] = '*';
-+            if ((ret = get_env_load_order( basename-1 )) == LO_INVALID)
-+                ret = get_env_load_order( basename );
-+        }
-+        if (ret != LO_INVALID)
-+            TRACE( "got environment %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
-+        else
-+        {
-+            ret = LO_DISABLED;
-+            TRACE( "got fork disabled %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
-+        }
+@@ -511,33 +595,15 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+      * the app dies on STATUS_DLL_NOT_FOUND with the DLL sitting right there.
+      * WINEDLLOVERRIDES still wins: it is set per run, so it cannot go stale, and
+      * it is the lever for A/B-ing a provider (e.g. wined3d vs DXMT). */
+-    for (i = 0; i < ARRAY_SIZE(builtin_onlyW); i++)
+-        if (!wcsicmp( basename, builtin_onlyW[i] )) break;
++    if ((ret = forced_load_order( nt_name, module, basename, builtin_onlyW,
++                                  ARRAY_SIZE(builtin_onlyW), LO_BUILTIN, "builtin" )) != LO_INVALID)
 +        goto done;
-+    }
+ 
+-    if (i < ARRAY_SIZE(builtin_onlyW))
+-    {
+-        /* Every WINEDLLOVERRIDES spelling get_load_order_value() would have
+-         * tried, in its order: the full module name, "*basename", basename.
+-         * add_load_order_set() stores each key verbatim and get_env_load_order()
+-         * matches it whole, so checking only the bare name silently ignored
+-         * "*d3d9=n" — the form winetricks and most of the documentation use.
+-         * Silently is the problem: the TRACE below still said "fork builtin", so
+-         * an A/B run reads as "the override made no difference to the bug". */
+-        if ((ret = get_env_load_order( module+1 )) == LO_INVALID)
+-        {
+-            basename[-1] = '*';
+-            if ((ret = get_env_load_order( basename-1 )) == LO_INVALID)
+-                ret = get_env_load_order( basename );
+-        }
+-        if (ret != LO_INVALID)
+-            TRACE( "got environment %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
+-        else
+-        {
+-            ret = LO_BUILTIN;
+-            TRACE( "got fork builtin %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
+-        }
++#ifdef __APPLE__
++    if ((ret = forced_load_order( nt_name, module, basename, disabled_onlyW,
++                                  ARRAY_SIZE(disabled_onlyW), LO_DISABLED, "disabled" )) != LO_INVALID)
+         goto done;
+-    }
 +#endif
-+
+ 
      /* first explicit module name */
      if ((ret = get_load_order_value( std_key, app_key, module+1 )) != LO_INVALID)
-         goto done;
