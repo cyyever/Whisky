@@ -135,18 +135,36 @@ public class Wine {
 
         // Fire-and-forget launch (a game, Steam): `start` (no `/wait`) returns as soon
         // as it has launched the program, but the launched program inherits our
-        // stdout/stderr — so streaming would keep the pipe's write end open (and, for
+        // stdout/stderr — so *streaming* would keep the pipe's write end open (and, for
         // a busy program, flood us with output at 100% CPU) until that program exits,
-        // never returning. Discard output to /dev/null and return once the `wine`
-        // launcher itself exits, which is near-immediate.
+        // never returning. A log **file** has neither problem: nobody reads it, so there
+        // is no backpressure and no reader to keep alive, and the launched program
+        // inheriting the fd is the point — that is how we get Steam's own stderr after
+        // `wine start` is long gone. Return once the launcher itself exits.
+        //
+        // This used to be /dev/null, which made WINEDEBUG useless on the GUI launch
+        // path — the only launch path whose results count for Steam (a bare CLI launch
+        // is not equivalent; Steam logs `no bootstrapper found`). Debugging anything
+        // that only reproduces under the GUI launch needs somewhere for the trace to
+        // land. Default WINEDEBUG is `-all`, so the file stays near-empty unless a
+        // bottle or per-program setting asks for channels.
         let process = Process()
         process.executableURL = wineBinary(for: bottle)
         process.arguments = allArgs
         process.currentDirectoryURL = wineBinary(for: bottle).deletingLastPathComponent()
         process.environment = constructWineEnvironment(for: bottle, environment: environment)
         process.qualityOfService = .userInitiated
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        if let fileHandle = try? makeFileHandle() {
+            fileHandle.writeApplicaitonInfo()
+            fileHandle.writeInfo(for: bottle)
+            fileHandle.writeInfo(for: process)
+            process.standardOutput = fileHandle
+            process.standardError = fileHandle
+        } else {
+            // Logging is a debugging aid; never let it stop a launch.
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        }
         Logger.wineKit.info("Launching: \(allArgs.joined(separator: " "))")
         try process.run()
 
