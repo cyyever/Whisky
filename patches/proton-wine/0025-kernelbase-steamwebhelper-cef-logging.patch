@@ -1,0 +1,37 @@
+Subject: kernelbase: make steamwebhelper's CEF children say why they exit (temporary)
+
+Steam passes --log-file=logs/cef_log.txt but never asks Chromium to log, so that
+file only ever receives what logs unconditionally -- WARNING and above. That is
+why the intermittent "Steam comes up with one webhelper and no window" hang has
+no diagnosis after a week of looking at it: its CEF children announce
+
+    INFO:child_thread_impl.cc(942)] ChildThreadImpl::EnsureConnected()
+
+and then vanish, leaving no exit reason anywhere. Not in cef_log.txt, and not in
+/tmp/segv_<pid>.log either, so they are not faulting -- something is deciding to
+end them, and only Chromium can say what. Add --enable-logging --v=1 to the
+hack_append_command_line() entry; the substring match already covers the
+children, so they are logged too.
+
+The cost is log volume, not behaviour: --v=1 is one verbosity level, not the
+--enable-logging=stderr firehose, and it lands in Steam's own log file, which
+Steam truncates each run.
+
+Its own commit rather than folded into the flags it sits next to: those two are
+load-bearing (without them the webhelper dies or never paints), this one is
+instrumentation for one open investigation and should be droppable in a single
+revert once that closes.
+
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index d8311a71b29..ad52625e27a 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -626,7 +626,7 @@ static const WCHAR *hack_append_command_line( const WCHAR *cmd )
+         {L"Red Tie Runner.exe", L" --use-angle=gl"},
+         {L"UnrealCEFSubProcess.exe", L" --use-gl=swiftshader", "2316580"},
+         {L"UnrealCEFSubProcess.exe", L" --use-angle=d3d9", "2684500"},
+-        {L"steamwebhelper.exe", L" --no-sandbox --in-process-gpu"},
++        {L"steamwebhelper.exe", L" --no-sandbox --in-process-gpu --enable-logging --v=1"},
+     };
+     unsigned int i;
+     char sgi[64];
