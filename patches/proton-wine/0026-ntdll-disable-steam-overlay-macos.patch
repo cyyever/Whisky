@@ -28,8 +28,19 @@ overlay for a single run -- the way to re-test this if Rosetta ever stops
 looping. macOS-only: the same hooks are fine natively, Rosetta is what turns the
 write into an endless loop.
 
-Cost is the overlay itself -- Shift+Tab, screenshots, the in-game store. Steam
-still tracks playtime and achievements, and the games do not need it.
+Cost is the overlay and everything delivered through it. That is more than
+Shift+Tab, screenshots and the in-game store: Steam Input's controller
+configuration and remapping reach a game that does not use the Steamworks input
+API through these same in-process hooks, which is why Valve requires the overlay
+to be enabled for Steam Input to apply. On a legacy title with a saved
+controller config, disabling this yields an unconfigured pad and no explanation
+-- worth knowing in a tree that already carries controller workarounds
+(SDL_JOYSTICK_MFI=0). Steam still tracks playtime and achievements.
+
+Accepted anyway because the alternative is not "overlay on": it is a game that
+never starts. Revisit as a bottle setting if Rosetta stops looping on the retry,
+or if a controller-only user turns up who would rather have the pad than the
+game.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
 index 45d7a3f7466..688d1842638 100644

@@ -17,7 +17,10 @@ needs one variable and one restart:
                          are the ones the caller actually saw. Filtered to that
                          range because VirtualProtect runs constantly during
                          startup and an unfiltered log would bury the one call
-                         that matters and perturb what is being measured.
+                         that matters and perturb what is being measured. (A
+                         later patch in this series replaces that range filter
+                         with an EXECUTE-protection one, so that the game's own
+                         code pages are covered too; the two drop together.)
 
 Written with open/write rather than TRACE: the first runs inside a signal
 handler, and all three have to work in builds with the debug channels off. The

@@ -23,7 +23,7 @@ tree that plain WineHQ 11.13 lacks.
   (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
   redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
-  in main: `patches/proton-wine/` (**22-patch series**, base `c3007e6f` on Valve's
+  in main: `patches/proton-wine/` (**26-patch series**, base `c3007e6f` on Valve's
   `bleeding-edge`) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
   `scripts/build-dxmt.sh` defaults `DXMT_WINE_BUILD` to `vendor/proton-wine/build`.
@@ -55,7 +55,7 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 22-patch series
+## patches/proton-wine/ — 26-patch series
 Base: **`c3007e6f`** on Valve's `bleeding-edge` — the only branch Valve still pushes to
 (see the header comment in `scripts/build-proton-x86.sh`, which is the source of truth).
 
@@ -315,6 +315,34 @@ Both are **PE** dlls built for BOTH arches (`dlls/{combase,ntdll}/{i386,x86_64}-
   each data slot *before* the callback (so a rescan / concurrent teardown never
   double-calls), drop `fls_section` around the callback, re-acquire and `goto restart`.
   This is a genuine upstream Wine bug, not Proton- or msync-specific.
+
+### 0016–0027 — one line each
+Not written up individually: each patch file carries its own reasoning in its header,
+and that header is the source of truth. Listed here only so the enumeration above is
+not mistaken for the whole series.
+
+- `0016` msync: abandon an owned mutex once its last handle closes.
+- `0017` ntdll: resolve the D3D/Vulkan builtins **ahead of the registry**, so a bottle's
+  stale `DllOverrides` cannot make a shipped builtin unloadable.
+- `0018` ws2_32: resolve names from the prefix `hosts` file first.
+- `0019` ws2_32: IPv4-only `getaddrinfo` under `WINE_DISABLE_IPV6=1`.
+- `0020` kernelbase: append `--no-sandbox --in-process-gpu` to steamwebhelper.exe.
+- `0021` ws2_32: `WSALookupServiceBegin` semi-stub succeeds with an empty set.
+- `0022` server: clear connection-failure events in `IOCTL_AFD_WINE_CONNECT`.
+- `0023` winemac: correct a borderless window placed at the work-area origin.
+- `0026` ntdll: disable Steam's overlay DLLs on macOS. `GameOverlayRenderer.dll` hooks
+  user32's input entry points inline; under Rosetta that write traps into Rosetta's own
+  exception server and is retried forever, hanging the game with no fault ever reaching
+  Wine. Resolved ahead of the registry like `0017`; `WINEDLLOVERRIDES` still wins.
+
+**Temporary — diagnostics, drop together when the investigations close:**
+
+- `0024` ntdll: `WINE_SEGV_TRACE=1` → `/tmp/{segv,modmap,vprot}_<pid>.log`.
+- `0025` kernelbase: `--enable-logging --v=1` for steamwebhelper, so CEF children report
+  why they exit.
+- `0027` ntdll: widen `0024`'s vprot filter to EXECUTE protections (and always log
+  failures) so the game's own code pages are covered.
+
 
 ## Steam on Proton — launch investigation
 **Resolved 2026-07-24: Steam logs in fully.** Order of bugs hit and fixed to get there:

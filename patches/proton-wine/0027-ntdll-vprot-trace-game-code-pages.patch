@@ -16,6 +16,14 @@ code-page manipulation wherever an image lands, without readmitting the heap and
 data churn that makes VirtualProtect one of the busiest calls at startup. Cap
 raised 256 -> 1024 accordingly.
 
+Failures bypass both filters and are always logged. NtProtectVirtualMemory
+forces *old_prot = PAGE_NOACCESS on every non-success path, and this tracer runs
+after that, so a DENIED request carries no EXECUTE bit in either protection --
+a refused VirtualProtect(0x400000, ..., PAGE_READWRITE), which is precisely the
+shape a decrypt-in-place would take, would have matched neither filter and
+vanished. Losing that case would reproduce the misreading this whole patch
+exists to prevent: silence read as "the DRM never asked".
+
 The blunt alternative was tried first and does not work: WINEDEBUG=+virtual
 cannot be scoped to the game, because the game inherits its environment from
 Steam, so it instruments the whole Steam process tree. It wrote 53 MB in under a
@@ -25,7 +33,7 @@ open bug, so it destroys the very thing it was meant to observe.
 Refines the tracer from the fault-diagnostics patch and drops with it.
 
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index 74a4eea4000..4ceeea14b2d 100644
+index 74a4eea4000..b1cdccf68ab 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
 @@ -5841,7 +5841,7 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
@@ -37,7 +45,7 @@ index 74a4eea4000..4ceeea14b2d 100644
   * Something writes into user32's GetAsyncKeyState thunk (confirmed: base
   * 0x7b8e0000 + 0xa430) on a page Wine keeps r-x, and the resulting
   * EXC_BAD_ACCESS is swallowed by Rosetta's exception server and retried
-@@ -5853,18 +5853,34 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+@@ -5853,18 +5853,44 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
   *   - no call at all means the writer never asked, and would have faulted on
   *     Windows too -- so the difference is elsewhere.
   *
@@ -71,7 +79,17 @@ index 74a4eea4000..4ceeea14b2d 100644
      int len;
  
 -    if ((a + size) < 0x7b000000 || a >= 0x7c000000) return;
-+    if (((a + size) < 0x7b000000 || a >= 0x7c000000) &&
++    /* Failures are logged unconditionally, whatever the address or protection.
++     * NtProtectVirtualMemory forces *old_prot = PAGE_NOACCESS on every
++     * non-success path and this runs after that, so a DENIED request carries no
++     * EXECUTE bit in either protection: a refused
++     * VirtualProtect(0x400000, ..., PAGE_READWRITE) -- the shape a
++     * decrypt-in-place takes -- would match neither filter and vanish. That is
++     * the one outcome this must never lose, because the silence would read as
++     * "the DRM never asked", which is the exact misreading that cost a week
++     * here. Failures are rare, so the extra records cost nothing. */
++    if (status == STATUS_SUCCESS &&
++        ((a + size) < 0x7b000000 || a >= 0x7c000000) &&
 +        !(new_prot & VPROT_TRACE_EXEC) && !(old & VPROT_TRACE_EXEC))
 +        return;
  
