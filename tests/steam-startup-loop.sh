@@ -74,8 +74,40 @@ wine_env() {
         WHISKY_HIDE_VIRTUAL_AUDIO=1 \
         WINE_MRING="${WINE_MRING:-1}" \
         WINE_SEGV_TRACE="${WINE_SEGV_TRACE:-1}" \
-        WINE_SIMULATE_WRITECOPY=1 \
+        ${WINE_SIMULATE_WRITECOPY:+WINE_SIMULATE_WRITECOPY="$WINE_SIMULATE_WRITECOPY"} \
         "$@"
+}
+
+# WSTRACE=1: run the wineserver under its own request trace, which is the only
+# way to answer "what is this thread waiting on". Its `select( ... timeout=...,
+# data={WAIT,handles={....}} )` / `select() = PENDING` pairs name the objects a
+# thread blocked on and whether it was ever woken -- which `sample` cannot tell
+# us, because a thread parked from Rosetta-translated code shows one JIT frame
+# and nothing below it.
+#
+# The server has to be started FIRST and left running, so the client attaches to
+# it instead of spawning an untraced one of its own. Tracing the clients too
+# (WINEDEBUG=+server) would be the obvious thing and is the wrong one: it
+# instruments every process in the tree, and a firehose that size perturbs the
+# startup being measured -- WINEDEBUG=+virtual wrote 53 MB in a minute and left
+# Steam with no window, i.e. it manufactured the very fault it was watching for.
+#
+# Register dumps are dropped: `contexts={{machine=...}}` lines carry the entire
+# CPU state and are by far the longest, while the handle sets we need are on the
+# lines without them.
+WSTRACE_LOG="${WSTRACE_LOG:-/tmp/wineserver-trace.log}"
+start_traced_server() {
+    [ "${WSTRACE:-0}" = 1 ] || return 0
+    : >"$WSTRACE_LOG"
+    ( cd "$WINEBIN" && wine_env "$WINEBIN/wineserver" -f -d1 -p 2>&1 \
+        | grep --line-buffered -v 'contexts={{machine=' >>"$WSTRACE_LOG" ) &
+    # Give it time to create the socket; a client that starts first would fork
+    # its own untraced server and this whole arm would silently measure nothing.
+    for _ in $(seq 1 20); do
+        [ -S "/tmp/.wine-$(id -u)"/server-*/socket ] 2>/dev/null && return 0
+        sleep 0.5
+    done
+    echo "WARNING: traced wineserver did not create its socket" >&2
 }
 
 # Kill everything and *wait for it to be gone*. A survivor from the previous
@@ -138,6 +170,7 @@ for round in $(seq 1 "$ROUNDS"); do
     dir="$(printf '%s/round-%02d' "$OUT" "$round")"
     mkdir -p "$dir"
     cleanup
+    start_traced_server
 
     started=$(date +%s)
     (cd "$WINEBIN" && wine_env "$WINEBIN/wine64" start /unix "$STEAM_EXE") \
@@ -179,6 +212,15 @@ for round in $(seq 1 "$ROUNDS"); do
             cp "/tmp/mring_$pid.log" "$dir/mring_$pid.log" 2>/dev/null
             cp "/tmp/segv_$pid.log" "$dir/segv_$pid.log" 2>/dev/null
         done
+        # The tail of the server trace, not the whole thing: a Steam startup
+        # produces hundreds of MB of it, and what matters is the last select()
+        # each thread issued and whether a *wakeup* ever followed. Kept per
+        # round because the next round truncates the live file.
+        if [ "${WSTRACE:-0}" = 1 ] && [ -s "$WSTRACE_LOG" ]; then
+            tail -c "${WSTRACE_TAIL:-40000000}" "$WSTRACE_LOG" >"$dir/wineserver-trace-tail.log"
+            echo "  server trace: $(du -h "$dir/wineserver-trace-tail.log" | cut -f1)" \
+                 "of $(du -h "$WSTRACE_LOG" | cut -f1) total"
+        fi
     fi
 
     printf 'round %02d  %-7s  %3ds  webhelpers=%s\n' \
