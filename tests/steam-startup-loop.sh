@@ -96,18 +96,43 @@ wine_env() {
 # CPU state and are by far the longest, while the handle sets we need are on the
 # lines without them.
 WSTRACE_LOG="${WSTRACE_LOG:-/tmp/wineserver-trace.log}"
+
+# This bottle's server directory, derived the way Wine derives it: the prefix's
+# device and inode in hex. Globbing /tmp/.wine-<uid>/server-*/ instead is wrong
+# twice over -- every prefix the user has ever run leaves its own directory, so
+# `[` gets several arguments and errors out, and the one that matches may belong
+# to a different bottle.
+server_dir() {
+    set -- $(stat -f '%d %i' "$BOTTLE" 2>/dev/null)
+    [ -n "${1:-}" ] || return 1
+    printf '/tmp/.wine-%s/server-%x-%x\n' "$(id -u)" "$1" "$2"
+}
+
 start_traced_server() {
     [ "${WSTRACE:-0}" = 1 ] || return 0
+    local dir sock
+    dir="$(server_dir)" || { echo "WARNING: cannot derive the server dir" >&2; return 0; }
+    sock="$dir/socket"
+
+    # cleanup() SIGKILLs the wineserver, which skips its atexit unlink, so the
+    # previous round's socket inode is still sitting there. Without removing it
+    # the readiness poll below matches that dead socket on its first iteration
+    # and returns before the traced server has bound -- and a client that starts
+    # in that window forks an untraced server of its own, which may win the lock.
+    # The round then runs with no trace and looks exactly like one that worked.
+    rm -f "$sock"
+
     : >"$WSTRACE_LOG"
     ( cd "$WINEBIN" && wine_env "$WINEBIN/wineserver" -f -d1 -p 2>&1 \
         | grep --line-buffered -v 'contexts={{machine=' >>"$WSTRACE_LOG" ) &
-    # Give it time to create the socket; a client that starts first would fork
-    # its own untraced server and this whole arm would silently measure nothing.
+
+    # Now the socket's existence means our server created it, and nothing else.
     for _ in $(seq 1 20); do
-        [ -S "/tmp/.wine-$(id -u)"/server-*/socket ] 2>/dev/null && return 0
+        [ -S "$sock" ] && return 0
         sleep 0.5
     done
-    echo "WARNING: traced wineserver did not create its socket" >&2
+    echo "WARNING: traced wineserver never bound $sock -- this round would run" \
+         "untraced; treat its result as unmeasured" >&2
 }
 
 # Kill everything and *wait for it to be gone*. A survivor from the previous
