@@ -131,9 +131,13 @@ int main( void )
     printf( "\n2. can the reserved range be taken by hand?\n" );
     for (i = 0; i < sizeof(probes)/sizeof(probes[0]); i++)
     {
+        /* Deliberately not counted: this check cannot tell the two states apart
+         * (see the header), and 0x10000000 is a base several DLLs declare, so a
+         * resident module there would fail it for a reason unrelated to the
+         * question and drag the whole gate down with it. */
         int ok = reserve_probe( probes[i].addr, 0x142000 );
-        printf( "   %s  %s\n", ok ? "pass " : "FAIL ", probes[i].what );
-        if (!ok) failures++;
+        printf( "   %s  %s%s\n", ok ? "pass " : "note ", probes[i].what,
+                ok ? "" : "  (not counted)" );
     }
 
     printf( "\n3. does a DLL get its preferred base?\n" );
@@ -146,10 +150,16 @@ int main( void )
             "Super Street Fighter IV - Arcade Edition\\cryptopp.dll";
         HMODULE h = LoadLibraryExA( dll, NULL, DONT_RESOLVE_DLL_REFERENCES );
         if (!h)
-            printf( "   skip  cannot load %s (%lu) -- and this was the only\n"
+        {
+            /* Counted. The header calls this the only discriminating probe, so a
+             * run that skipped it measured nothing about image placement and
+             * must not exit 0 into a CI job or a shell && chain. */
+            printf( "   SKIP  cannot load %s (%lu) -- and this was the only\n"
                     "         discriminating check, so this run measured the handshake\n"
                     "         and nothing about where the loader places an image\n",
                     dll, GetLastError() );
+            failures++;
+        }
         else
         {
             /* Read the preferred base from the FILE, never from the loaded

@@ -118,6 +118,7 @@ start_traced_server() {
     [ "${WSTRACE:-0}" = 1 ] || return 0
     local dir sock
     UNTRACED_ROUND=0
+    WSTRACE_LOG=""
     dir="$(server_dir)" || {
         echo "WARNING: cannot derive the server dir -- this round runs untraced" >&2
         echo "cannot derive the server dir" >"$(dirname "$1")/UNTRACED"
@@ -132,15 +133,37 @@ start_traced_server() {
     # and returns before the traced server has bound -- and a client that starts
     # in that window forks an untraced server of its own, which may win the lock.
     # The round then runs with no trace and looks exactly like one that worked.
+    # Only when nothing is alive to own it. cleanup() merely warns if a process
+    # outlives its 30 s wait, so a survivor is reachable here -- and removing a
+    # live server's socket strands it: it keeps the lock, the traced server then
+    # exits in acquire_lock() without binding, and no client can reach either.
+    # The round would fail for a reason with nothing to do with the fault.
+    if pgrep -f "$WINEBIN/wineserver" >/dev/null 2>&1; then
+        echo "WARNING: a wineserver survived cleanup; leaving its socket alone" >&2
+        echo "wineserver survived cleanup" >"$(dirname "$1")/UNTRACED"
+        UNTRACED_ROUND=1
+        return 0
+    fi
     rm -f "$sock"
 
     WSTRACE_LOG="$1"
     : >"$WSTRACE_LOG"
     ( cd "$WINEBIN" && wine_env "$WINEBIN/wineserver" -f -d1 -p 2>&1 \
         | grep --line-buffered -v 'contexts={{machine=' >>"$WSTRACE_LOG" ) &
+    local pipeline=$!
 
-    # Now the socket's existence means our server created it, and nothing else.
+    # The socket alone is not enough: wineserver binds it in open_master_socket()
+    # *before* msync_init(), which can still fatal_error() out (a survivor's
+    # shared memory is exactly the case cleanup() warns about). The socket would
+    # then exist with nobody behind it, the client would fork its own untraced
+    # server, and the round would look traced. Require both.
     for _ in $(seq 1 20); do
+        if ! kill -0 "$pipeline" 2>/dev/null; then
+            echo "WARNING: traced wineserver died during startup -- round runs untraced" >&2
+            echo "traced wineserver died during startup" >"$(dirname "$1")/UNTRACED"
+            UNTRACED_ROUND=1
+            return 0
+        fi
         [ -S "$sock" ] && return 0
         sleep 0.5
     done
@@ -237,6 +260,29 @@ for round in $(seq 1 "$ROUNDS"); do
     elapsed=$(( $(date +%s) - started ))
     helpers=$(webhelper_count)
 
+    # Bound every round's trace, not just the failing ones -- a passing round
+    # produces just as much of it, and a default run would leave several GB
+    # behind. Rewritten in place rather than `tail > new && mv`: the round's
+    # grep still holds an O_APPEND fd, so replacing the path would leave it
+    # writing to an orphaned inode while the visible log froze at the trim.
+    if [ "${WSTRACE:-0}" = 1 ] && [ -n "$WSTRACE_LOG" ] && [ -s "$WSTRACE_LOG" ]; then
+        full=$(wc -c <"$WSTRACE_LOG" | tr -d ' ')
+        keep=${WSTRACE_TAIL:-40000000}
+        if [ "$full" -gt "$keep" ]; then
+            python3 - "$WSTRACE_LOG" "$keep" <<'TRIM'
+import os, sys
+path, keep = sys.argv[1], int(sys.argv[2])
+with open(path, "r+b") as f:
+    f.seek(-keep, os.SEEK_END)
+    tail = f.read()
+    f.seek(0); f.write(tail); f.truncate()
+TRIM
+            echo "  server trace trimmed to $(du -h "$WSTRACE_LOG" | cut -f1) of $full bytes"
+        else
+            echo "  server trace: $(du -h "$WSTRACE_LOG" | cut -f1)"
+        fi
+    fi
+
     if [ "$verdict" = OK ]; then
         pass=$(( pass + 1 ))
     else
@@ -254,23 +300,6 @@ for round in $(seq 1 "$ROUNDS"); do
             cp "/tmp/mring_$pid.log" "$dir/mring_$pid.log" 2>/dev/null
             cp "/tmp/segv_$pid.log" "$dir/segv_$pid.log" 2>/dev/null
         done
-        # The tail of the server trace, not the whole thing: a Steam startup
-        # produces hundreds of MB of it, and what matters is the last select()
-        # each thread issued and whether a *wakeup* ever followed. Kept per
-        # round because the next round truncates the live file.
-        # The trace already lives in this round's directory, so there is nothing
-        # to copy -- only to bound. What matters is the tail: the last select()
-        # each thread issued and whether a *wakeup* ever followed.
-        if [ "${WSTRACE:-0}" = 1 ] && [ -s "$WSTRACE_LOG" ]; then
-            full=$(wc -c <"$WSTRACE_LOG" | tr -d ' ')
-            if [ "$full" -gt "${WSTRACE_TAIL:-40000000}" ]; then
-                tail -c "${WSTRACE_TAIL:-40000000}" "$WSTRACE_LOG" >"$WSTRACE_LOG.tail" &&
-                    mv "$WSTRACE_LOG.tail" "$WSTRACE_LOG"
-                echo "  server trace trimmed to $(du -h "$WSTRACE_LOG" | cut -f1) of ${full} bytes"
-            else
-                echo "  server trace: $(du -h "$WSTRACE_LOG" | cut -f1)"
-            fi
-        fi
     fi
 
     printf 'round %02d  %-7s  %3ds  webhelpers=%s%s\n' \
