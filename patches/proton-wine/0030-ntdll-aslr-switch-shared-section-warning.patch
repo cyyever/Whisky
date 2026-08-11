@@ -1,0 +1,85 @@
+Subject: ntdll: name the real reason not to use the ASLR switch, and finish the trace fixes
+
+The "this is not a fix" list in 0028 was missing the sharpest entry, and it is
+not about wasted address space. The server-assigned base is what makes every
+process in the prefix agree on where a DLL lives, and sections marked
+IMAGE_SCN_MEM_SHARED|MEM_WRITE are mapped MAP_SHARED from shared_file
+(map_image_into_view). With per-process bases, relocations one process applies
+inside such a section are visible to the others, pointing at addresses that are
+wrong there -- cross-process memory corruption, not merely fragmentation. Given
+the comment exists to stop someone reaching for the switch, that belongs in it.
+
+Two smaller ones from the same review:
+
+  - The vprot cap banner was written before the record that filled the cap, so
+    the log read "later calls are NOT recorded" and then showed one more. It now
+    follows the record and marks the true end.
+  - The empty-string debugstr_loadorder fix reached only the forced branch. The
+    environment branch one line above still printed it raw, so
+    WINEDLLOVERRIDES="foo=" traced as "got environment  for ..." -- no verdict
+    token, in exactly the A/B that most needs to be readable.
+
+Found in review.
+
+diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
+index a455f15435c..6b547838710 100644
+--- a/dlls/ntdll/unix/loadorder.c
++++ b/dlls/ntdll/unix/loadorder.c
+@@ -314,7 +314,14 @@ static enum loadorder forced_load_order( const UNICODE_STRING *nt_name, const WC
+             ret = get_env_load_order( basename );
+     }
+     if (ret != LO_INVALID)
+-        TRACE( "got environment %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
++    {
++        /* Same empty-string problem as below: WINEDLLOVERRIDES="foo=" resolves to
++         * LO_DISABLED, which prints as "", so the A/B that most needs to be
++         * readable traces as "got environment  for ..." with no verdict. */
++        const char *env_lo = debugstr_loadorder( ret );
++
++        TRACE( "got environment %s for %s\n", *env_lo ? env_lo : "(disabled)", debugstr_us(nt_name) );
++    }
+     else
+     {
+         /* debugstr_loadorder(LO_DISABLED) is the empty string, so the disable
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index e5d2a2e93aa..6e574e5ea69 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -3642,6 +3642,13 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
+  *     scatter to their preferred bases fragments the 2 GB a 32-bit game has to
+  *     work in, and an allocation failure caused that way looks nothing like its
+  *     cause.
++ *   - Worst of all, the server-assigned address is what makes every process in
++ *     the prefix agree on where a DLL lives. Sections marked
++ *     IMAGE_SCN_MEM_SHARED|MEM_WRITE are mapped MAP_SHARED from shared_file (see
++ *     map_image_into_view), so with per-process bases the relocations one
++ *     process applies inside such a section are visible to the others, pointing
++ *     at addresses that are wrong there. That is cross-process memory
++ *     corruption, not merely wasted address space.
+  *
+  * Environment-gated rather than compiled in so an A/B costs a relaunch instead
+  * of a rebuild, and so the default behaviour is untouched.
+@@ -5959,16 +5966,18 @@ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old
+      * exact misreading this tracer exists to prevent. Widening the filter to
+      * every EXECUTE protection made the cap easy to reach: relocating one module
+      * alone costs two matching calls per executable section. */
++    len = snprintf( line, sizeof(line), "addr=%p size=%lx new=%08x old=%08x status=%08x\n",
++                    addr, (unsigned long)size, (unsigned int)new_prot,
++                    (unsigned int)old, status );
++    if (len > 0) write( fd, line, len );
++
++    /* After the record, so the banner marks the true end of the log rather than
++     * sitting one line above the last entry. */
+     if (--left == 0)
+     {
+         static const char msg[] = "*** vprot trace cap reached; later calls are NOT recorded ***\n";
+         write( fd, msg, sizeof(msg) - 1 );
+     }
+-
+-    len = snprintf( line, sizeof(line), "addr=%p size=%lx new=%08x old=%08x status=%08x\n",
+-                    addr, (unsigned long)size, (unsigned int)new_prot,
+-                    (unsigned int)old, status );
+-    if (len > 0) write( fd, line, len );
+ }
+ 
+ /***********************************************************************

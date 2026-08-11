@@ -50,9 +50,11 @@
  * check 3 is the only discriminating probe, because only it observes where the
  * loader *chooses* to put a relocatable image.
  *
- * Check 1's first probe is not evidence about the handshake either:
- * virtual_release_address_space() frees 0x20000000-0x7f000000, and 0x10000000
- * lies below that, so no fix to the handshake would change it.
+ * Check 2's first probe is doubly uninformative: virtual_release_address_space()
+ * frees 0x20000000-0x7f000000, and 0x10000000 lies below that, so no fix to the
+ * handshake could change it even in principle. (Check 1 has a single probe --
+ * the NtFreeVirtualMemory((void *)1, ...) call -- and its verdict is the point
+ * of this file; do not discount it.)
  *
  * Exit code is the number of failed checks, so it doubles as a pass/fail gate.
  */

@@ -23,7 +23,7 @@ tree that plain WineHQ 11.13 lacks.
   (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
   redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
-  in main: `patches/proton-wine/` (**28-patch series**, base `c3007e6f` on Valve's
+  in main: `patches/proton-wine/` (**29-patch series**, base `c3007e6f` on Valve's
   `bleeding-edge`) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
   `scripts/build-dxmt.sh` defaults `DXMT_WINE_BUILD` to `vendor/proton-wine/build`.
@@ -55,7 +55,7 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 28-patch series
+## patches/proton-wine/ — 29-patch series
 Base: **`c3007e6f`** on Valve's `bleeding-edge` — the only branch Valve still pushes to
 (see the header comment in `scripts/build-proton-x86.sh`, which is the source of truth).
 
@@ -316,7 +316,7 @@ Both are **PE** dlls built for BOTH arches (`dlls/{combase,ntdll}/{i386,x86_64}-
   double-calls), drop `fls_section` around the callback, re-acquire and `goto restart`.
   This is a genuine upstream Wine bug, not Proton- or msync-specific.
 
-### 0016–0029 — one line each
+### 0016–0030 — one line each
 Not written up individually: each patch file carries its own reasoning in its header,
 and that header is the source of truth. Listed here only so the enumeration above is
 not mistaken for the whole series.
@@ -350,6 +350,10 @@ not mistaken for the whole series.
 - `0029` ntdll: review fixes for the above — the vprot cap now announces itself,
   the disable traces with a verdict token, and the overlay comment carries the
   Steam Input cost it had been understating.
+- `0030` ntdll: the sharpest argument against `0028` — per-process image bases
+  break `IMAGE_SCN_MEM_SHARED|MEM_WRITE` sections, which are mapped MAP_SHARED
+  across the prefix, so one process's relocations become another's wrong
+  pointers. Plus the cap banner ordering and the environment branch's trace token.
 
 
 ## Steam on Proton — launch investigation
