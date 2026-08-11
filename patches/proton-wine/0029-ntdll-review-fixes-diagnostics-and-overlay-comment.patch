@@ -1,0 +1,125 @@
+Subject: ntdll: fix what the review found in the diagnostics and the overlay comment
+
+Four corrections, all of the same kind: a tracer or a comment that would let a
+reader draw a conclusion the code does not support.
+
+**The vprot record cap stopped silently.** `left` bounds the log, and widening
+the filter to every EXECUTE protection made it easy to reach -- relocating a
+single module costs two matching calls per executable section. A run where the
+call of interest is the 1025th produced a log byte-identical to a run where it
+never happened, which is precisely the "silence read as: it never asked"
+misreading the tracer was widened to prevent. It now writes one line when the
+cap is hit.
+
+**"Failures are logged unconditionally" was not true of two paths.**
+NtProtectVirtualMemory returns before reaching the tracer for a NULL old_prot
+(STATUS_ACCESS_VIOLATION) and for the cross-process branch, which is queued as
+an APC -- so a denied cross-process VirtualProtect, which is how an external
+tool would appear, is not recorded. Said so at the claim.
+
+**The disable traced with no verdict token.** debugstr_loadorder(LO_DISABLED)
+is the empty string, so the new table's hits printed "got fork disabled  for
+..." -- double space, nothing to grep. Substitute "(disabled)" for the empty
+case; the builtin case still prints "b", so existing logs match unchanged.
+
+**The overlay comment still understated the cost.** The patch header was
+corrected earlier to say that disabling the overlay also takes out Steam Input's
+controller configuration for titles that do not use the Steamworks input API,
+but the comment that actually lands in the Wine tree -- the one a reader of this
+code sees -- still said "and nothing else". It now carries the real cost, the
+reason it is accepted anyway, and the condition for revisiting. The re-enable
+recipe now gives both DLL names: the table disables the 32-bit and 64-bit
+modules separately, so the one-name form silently leaves a 64-bit title
+disabled and reads as "the override made no difference" -- the same failure this
+file's own history warns about for the "*d3d9=n" spelling.
+
+Found in review.
+
+diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
+index 3a5b69081f9..a455f15435c 100644
+--- a/dlls/ntdll/unix/loadorder.c
++++ b/dlls/ntdll/unix/loadorder.c
+@@ -317,8 +317,14 @@ static enum loadorder forced_load_order( const UNICODE_STRING *nt_name, const WC
+         TRACE( "got environment %s for %s\n", debugstr_loadorder(ret), debugstr_us(nt_name) );
+     else
+     {
++        /* debugstr_loadorder(LO_DISABLED) is the empty string, so the disable
++         * case would otherwise trace as "got fork disabled  for ..." -- a double
++         * space and no verdict token to grep for. The builtin case is unchanged
++         * ("b"), so existing logs still match. */
++        const char *lo = debugstr_loadorder( forced );
++
+         ret = forced;
+-        TRACE( "got fork %s %s for %s\n", what, debugstr_loadorder(ret), debugstr_us(nt_name) );
++        TRACE( "got fork %s %s for %s\n", what, *lo ? lo : "(disabled)", debugstr_us(nt_name) );
+     }
+     return ret;
+ }
+@@ -488,9 +494,23 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+      * "never exits, 100% CPU, one segv record" to "no segv records at all".
+      *
+      * Not a game bug and not fixable in the game: the writer is Steam's DLL and
+-     * the retry loop is inside Rosetta. Disabling it costs the overlay (Shift+Tab,
+-     * screenshots, the in-game store) and nothing else -- the game itself does not
+-     * need it, and Steam still tracks playtime and achievements.
++     * the retry loop is inside Rosetta.
++     *
++     * The cost is the overlay and everything delivered through it -- more than
++     * Shift+Tab, screenshots and the in-game store. Steam Input's controller
++     * configuration and remapping reach a game that does not use the Steamworks
++     * input API through these same in-process hooks, so a legacy title with a
++     * saved controller config gets an unconfigured pad and no explanation. That
++     * is worth knowing in a tree that already ships SDL_JOYSTICK_MFI=0 for
++     * gamepads. Accepted because the alternative is not "overlay on", it is a
++     * game that never starts; revisit if Rosetta stops looping on the retry.
++     * Steam still tracks playtime and achievements.
++     *
++     * To put it back for one run -- also the way to re-test this later -- both
++     * names are needed, since the two DLLs are separate entries here and giving
++     * only the 32-bit one leaves a 64-bit title still disabled:
++     *
++     *     WINEDLLOVERRIDES="gameoverlayrenderer,gameoverlayrenderer64=n"
+      *
+      * macOS-only because Rosetta is what turns the write into an endless loop; the
+      * same hooks are fine natively. */
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index b20020e9bd5..e5d2a2e93aa 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5927,7 +5927,13 @@ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old
+      * decrypt-in-place takes -- would match neither filter and vanish. That is
+      * the one outcome this must never lose, because the silence would read as
+      * "the DRM never asked", which is the exact misreading that cost a week
+-     * here. Failures are rare, so the extra records cost nothing. */
++     * here. Failures are rare, so the extra records cost nothing.
++     *
++     * Two failure paths still escape, because NtProtectVirtualMemory returns
++     * before reaching this call at all: a NULL old_prot (STATUS_ACCESS_VIOLATION)
++     * and the cross-process branch, which is queued as an APC. A denied
++     * cross-process VirtualProtect -- how an external tool would appear -- is
++     * therefore not recorded. Worth knowing before reading silence as absence. */
+     if (status == STATUS_SUCCESS &&
+         ((a + size) < 0x7b000000 || a >= 0x7c000000) &&
+         !(new_prot & VPROT_TRACE_EXEC) && !(old & VPROT_TRACE_EXEC))
+@@ -5945,8 +5951,19 @@ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old
+             fd = open( path, O_WRONLY | O_CREAT | O_APPEND, 0644 );
+         }
+     }
+-    if (fd == -1 || left <= 0) return;
+-    left--;
++    if (fd == -1) return;
++    if (left <= 0) return;
++    /* Say so when the cap is reached, on the last record. A log that simply
++     * stops is indistinguishable from a log of a run where the interesting call
++     * never happened -- and "no record" being read as "it never asked" is the
++     * exact misreading this tracer exists to prevent. Widening the filter to
++     * every EXECUTE protection made the cap easy to reach: relocating one module
++     * alone costs two matching calls per executable section. */
++    if (--left == 0)
++    {
++        static const char msg[] = "*** vprot trace cap reached; later calls are NOT recorded ***\n";
++        write( fd, msg, sizeof(msg) - 1 );
++    }
+ 
+     len = snprintf( line, sizeof(line), "addr=%p size=%lx new=%08x old=%08x status=%08x\n",
+                     addr, (unsigned long)size, (unsigned int)new_prot,

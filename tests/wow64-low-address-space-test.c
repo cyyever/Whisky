@@ -39,9 +39,20 @@
  *   2. can the low range be reserved by hand afterwards?
  *   3. does a DLL that wants a base in that range actually get it?
  *
- * On classic WoW64 (a real 32-bit unix ntdll, which is what Proton on Linux
- * uses for 32-bit titles) all three should pass. Failures here are the
- * mechanism, stated as numbers rather than as an argument.
+ * READ CHECK 2 AS CONTEXT, NOT AS EVIDENCE. It passes either way, so it cannot
+ * tell the states apart: a fixed-base NtAllocateVirtualMemory goes through
+ * map_view() -> map_fixed_area(), which walks the reserved areas and maps
+ * straight over any that covers the request -- handing that range to the
+ * application is what the reservation is *for*. So these probes succeed with
+ * the reservation intact and succeed again once it is gone. It is here to show
+ * the range is usable at all, and it was briefly misread as proof that the
+ * unreleased reservation does not force relocation. It proves no such thing;
+ * check 3 is the only discriminating probe, because only it observes where the
+ * loader *chooses* to put a relocatable image.
+ *
+ * Check 1's first probe is not evidence about the handshake either:
+ * virtual_release_address_space() frees 0x20000000-0x7f000000, and 0x10000000
+ * lies below that, so no fix to the handshake would change it.
  *
  * Exit code is the number of failed checks, so it doubles as a pass/fail gate.
  */
@@ -135,7 +146,9 @@ int main( void )
             "Super Street Fighter IV - Arcade Edition\\cryptopp.dll";
         HMODULE h = LoadLibraryExA( dll, NULL, DONT_RESOLVE_DLL_REFERENCES );
         if (!h)
-            printf( "   skip  cannot load %s (%lu) -- not fatal, checks 1-2 carry the result\n",
+            printf( "   skip  cannot load %s (%lu) -- and this was the only\n"
+                    "         discriminating check, so this run measured the handshake\n"
+                    "         and nothing about where the loader places an image\n",
                     dll, GetLastError() );
         else
         {

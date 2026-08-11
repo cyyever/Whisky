@@ -95,7 +95,13 @@ wine_env() {
 # Register dumps are dropped: `contexts={{machine=...}}` lines carry the entire
 # CPU state and are by far the longest, while the handle sets we need are on the
 # lines without them.
-WSTRACE_LOG="${WSTRACE_LOG:-/tmp/wineserver-trace.log}"
+#
+# One log per round. Sharing a single file and truncating it at the top of each
+# round leaves a window: the previous round's `grep --line-buffered` only exits
+# once cleanup SIGKILLs the server, its fd is O_APPEND, and anything still in
+# flight after the truncate lands at offset 0 of the new round's log -- a trace
+# whose head is the previous round's traffic.
+WSTRACE_LOG=""
 
 # This bottle's server directory, derived the way Wine derives it: the prefix's
 # device and inode in hex. Globbing /tmp/.wine-<uid>/server-*/ instead is wrong
@@ -111,7 +117,13 @@ server_dir() {
 start_traced_server() {
     [ "${WSTRACE:-0}" = 1 ] || return 0
     local dir sock
-    dir="$(server_dir)" || { echo "WARNING: cannot derive the server dir" >&2; return 0; }
+    UNTRACED_ROUND=0
+    dir="$(server_dir)" || {
+        echo "WARNING: cannot derive the server dir -- this round runs untraced" >&2
+        echo "cannot derive the server dir" >"$(dirname "$1")/UNTRACED"
+        UNTRACED_ROUND=1
+        return 0
+    }
     sock="$dir/socket"
 
     # cleanup() SIGKILLs the wineserver, which skips its atexit unlink, so the
@@ -122,6 +134,7 @@ start_traced_server() {
     # The round then runs with no trace and looks exactly like one that worked.
     rm -f "$sock"
 
+    WSTRACE_LOG="$1"
     : >"$WSTRACE_LOG"
     ( cd "$WINEBIN" && wine_env "$WINEBIN/wineserver" -f -d1 -p 2>&1 \
         | grep --line-buffered -v 'contexts={{machine=' >>"$WSTRACE_LOG" ) &
@@ -131,8 +144,12 @@ start_traced_server() {
         [ -S "$sock" ] && return 0
         sleep 0.5
     done
-    echo "WARNING: traced wineserver never bound $sock -- this round would run" \
-         "untraced; treat its result as unmeasured" >&2
+    # stderr is the first thing lost under tee/nohup or a scrolled-back terminal,
+    # so mark the round in its own directory too: an untraced round must not be
+    # indistinguishable from a traced one in the artifacts someone reads later.
+    echo "WARNING: traced wineserver never bound $sock -- this round runs untraced" >&2
+    echo "traced wineserver never bound $sock" >"$(dirname "$1")/UNTRACED"
+    UNTRACED_ROUND=1
 }
 
 # Kill everything and *wait for it to be gone*. A survivor from the previous
@@ -195,7 +212,7 @@ for round in $(seq 1 "$ROUNDS"); do
     dir="$(printf '%s/round-%02d' "$OUT" "$round")"
     mkdir -p "$dir"
     cleanup
-    start_traced_server
+    start_traced_server "$dir/wineserver-trace.log"
 
     started=$(date +%s)
     (cd "$WINEBIN" && wine_env "$WINEBIN/wine64" start /unix "$STEAM_EXE") \
@@ -241,15 +258,24 @@ for round in $(seq 1 "$ROUNDS"); do
         # produces hundreds of MB of it, and what matters is the last select()
         # each thread issued and whether a *wakeup* ever followed. Kept per
         # round because the next round truncates the live file.
+        # The trace already lives in this round's directory, so there is nothing
+        # to copy -- only to bound. What matters is the tail: the last select()
+        # each thread issued and whether a *wakeup* ever followed.
         if [ "${WSTRACE:-0}" = 1 ] && [ -s "$WSTRACE_LOG" ]; then
-            tail -c "${WSTRACE_TAIL:-40000000}" "$WSTRACE_LOG" >"$dir/wineserver-trace-tail.log"
-            echo "  server trace: $(du -h "$dir/wineserver-trace-tail.log" | cut -f1)" \
-                 "of $(du -h "$WSTRACE_LOG" | cut -f1) total"
+            full=$(wc -c <"$WSTRACE_LOG" | tr -d ' ')
+            if [ "$full" -gt "${WSTRACE_TAIL:-40000000}" ]; then
+                tail -c "${WSTRACE_TAIL:-40000000}" "$WSTRACE_LOG" >"$WSTRACE_LOG.tail" &&
+                    mv "$WSTRACE_LOG.tail" "$WSTRACE_LOG"
+                echo "  server trace trimmed to $(du -h "$WSTRACE_LOG" | cut -f1) of ${full} bytes"
+            else
+                echo "  server trace: $(du -h "$WSTRACE_LOG" | cut -f1)"
+            fi
         fi
     fi
 
-    printf 'round %02d  %-7s  %3ds  webhelpers=%s\n' \
-        "$round" "$verdict" "$elapsed" "$helpers" | tee -a "$SUMMARY"
+    printf 'round %02d  %-7s  %3ds  webhelpers=%s%s\n' \
+        "$round" "$verdict" "$elapsed" "$helpers" \
+        "$([ "${UNTRACED_ROUND:-0}" = 1 ] && printf '  UNTRACED')" | tee -a "$SUMMARY"
 done
 
 cleanup

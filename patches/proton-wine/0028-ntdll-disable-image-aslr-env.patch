@@ -1,0 +1,90 @@
+Subject: ntdll: WINE_DISABLE_IMAGE_ASLR, to isolate relocation as a variable (temporary)
+
+Skips the server-assigned load address for DYNAMICBASE images, so a DLL lands on
+its own preferred base whenever that address is free.
+
+The question it answers: a DLL that checksums its own loaded image fails once it
+has been relocated, because relocation rewrites absolute addresses inside .text
+and the bytes stop matching what the checksum covered. Crypto++ built as a FIPS
+module does this, and SSFIV ships one -- preferred base 0x42900000, which Wine's
+ASLR moves into its 0x60000000-0x7c000000 window. The game then prints "In
+memory integrity check failed. This may be caused by debug breakpoints or DLL
+relocation." and exits(3). Whether that relocation is the cause is worth one
+measurement rather than more argument.
+
+This is not a candidate fix, and the comment says so at the switch:
+
+  - Windows relocates DYNAMICBASE images too, and the game runs there. Crypto++
+    has a disk-hash fallback precisely for this case, so the real question is
+    why that fallback does not save it here.
+  - It does not remove relocation in general: SSLEAY32, LIBEAY32 and OpenLDAP in
+    this same game all declare preferred base 0x10000000, so two of the three
+    are relocated either way.
+  - Wine's ASLR window keeps DLLs out of the low address space; letting them
+    scatter to preferred bases fragments the 2 GB a 32-bit game has, and a
+    resulting allocation failure looks nothing like its cause.
+
+Environment-gated, so an A/B costs a relaunch instead of a rebuild and the
+default is untouched. Drops with the other diagnostics.
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index b1cdccf68ab..b20020e9bd5 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -3618,6 +3618,47 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
+  *
+  * Map a PE image section into memory.
+  */
++/* ---- WINE_DISABLE_IMAGE_ASLR (diagnostic, temporary) ------------------------
++ * Skip the server-assigned load address for DYNAMICBASE images, so a DLL is
++ * mapped at its own preferred base whenever that address happens to be free.
++ *
++ * This exists to isolate one variable, not to be switched on. A DLL that
++ * checksums its own loaded image fails after relocation -- relocation rewrites
++ * absolute addresses inside .text, so the bytes no longer match what the
++ * checksum covered. Crypto++ built as a FIPS module does exactly that, and
++ * SSFIV ships one at preferred base 0x42900000, which Wine's ASLR moves into
++ * its 0x60000000-0x7c000000 window. The question this answers is whether the
++ * relocation is what breaks it.
++ *
++ * It is NOT a candidate fix, for three reasons worth writing down so nobody
++ * reaches for it later:
++ *
++ *   - Windows relocates DYNAMICBASE images too, and the game runs there, so
++ *     "don't relocate" is a way around the symptom rather than the cause.
++ *   - It does not even remove relocation in general. Three of this game's DLLs
++ *     (SSLEAY32, LIBEAY32, OpenLDAP) all declare the same preferred base
++ *     0x10000000; only the first can have it either way.
++ *   - Wine's ASLR window keeps DLLs out of the low address space. Letting them
++ *     scatter to their preferred bases fragments the 2 GB a 32-bit game has to
++ *     work in, and an allocation failure caused that way looks nothing like its
++ *     cause.
++ *
++ * Environment-gated rather than compiled in so an A/B costs a relaunch instead
++ * of a rebuild, and so the default behaviour is untouched.
++ */
++static BOOL image_aslr_disabled(void)
++{
++    static int disabled = -1;
++
++    if (disabled == -1)
++    {
++        const char *e = getenv( "WINE_DISABLE_IMAGE_ASLR" );
++        disabled = e && *e != '0';
++        if (disabled) ERR( "image ASLR disabled by WINE_DISABLE_IMAGE_ASLR\n" );
++    }
++    return disabled;
++}
++
+ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size_ptr, HANDLE shared_file,
+                                    ULONG_PTR limit_low, ULONG_PTR limit_high, ULONG alloc_type,
+                                    USHORT machine, struct pe_image_info *image_info,
+@@ -3643,7 +3684,7 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
+         return status;
+     }
+ 
+-    if (!image_info->map_addr &&
++    if (!image_info->map_addr && !image_aslr_disabled() &&
+         (image_info->image_charact & IMAGE_FILE_DLL) &&
+         (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated))
+     {
