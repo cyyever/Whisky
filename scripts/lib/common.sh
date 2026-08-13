@@ -271,6 +271,13 @@ wine_configure() {
         ../configure \
             --enable-archs=i386,x86_64 \
             --with-vulkan \
+            `# WMV is broken while this says --without: wmvcore's IWMSyncReader` \
+            `# lives in dlls/winegstreamer on wg_parser, so a game playing one` \
+            `# dies on the delay-load of winegstreamer.dll -- SSFIV's intro does,` \
+            `# at exit 255. tests/gstreamer/ measures exactly that and is RED.` \
+            `# Flip to --with-gstreamer in the commit that lands a built` \
+            `# GStreamer: configure hard-errors when it is asked for and absent,` \
+            `# so flipping it early breaks 'make proton' for everyone.` \
             --without-gstreamer \
             "$@" \
             --disable-win16 \
