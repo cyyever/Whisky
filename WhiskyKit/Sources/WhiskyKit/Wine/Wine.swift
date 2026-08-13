@@ -48,7 +48,15 @@ public class Wine {
         // `.environment` replaces, so a bare assignment leaves the bottle with no
         // HOME — the Vulkan loader's ICD search path. Guarded by
         // tests/env-contract-test.sh.
+        //
+        // DYLD_ is dropped rather than merged: we set DYLD_FALLBACK_LIBRARY_PATH,
+        // but an inherited DYLD_LIBRARY_PATH is a *different* key, so the merge
+        // never resolves the conflict and dyld searches it first. Running from
+        // Xcode injects exactly that, plus DYLD_INSERT_LIBRARIES. Ours are
+        // applied afterwards, so this only removes what the launcher inherited —
+        // and no launch ever inherited one (8/8 logs carry only our own).
         process.environment = ProcessInfo.processInfo.environment
+            .filter { !$0.key.hasPrefix("DYLD_") }
             .merging(environment, uniquingKeysWith: { $1 })
         process.qualityOfService = .userInitiated
 
@@ -160,6 +168,7 @@ public class Wine {
         // sets, because `generateRunCommand` renders it as a shell prefix.
         let wineEnv = constructWineEnvironment(for: bottle, environment: environment)
         process.environment = ProcessInfo.processInfo.environment
+            .filter { !$0.key.hasPrefix("DYLD_") }
             .merging(wineEnv, uniquingKeysWith: { $1 })
         process.qualityOfService = .userInitiated
         if let fileHandle = try? makeFileHandle() {
