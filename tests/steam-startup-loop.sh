@@ -26,11 +26,15 @@
 #
 # WHAT THIS REPLICATES. Whisky's GUI launch is Program.launch() ->
 # Wine.runProgram(): `wine64 start /unix <exe>`, cwd = the Wine bin folder, and
-# a *replaced* environment (Swift's Process.environment does not merge with the
-# parent) -- hence `env -i` and the explicit list below. It is constructed from
-# Wine.constructWineEnvironment() + the bottle's Metadata.plist + the
-# per-program Steam.exe.plist, so it must be re-checked when any of those
-# change.
+# an environment built from Wine.constructWineEnvironment() + the bottle's
+# Metadata.plist + the per-program Steam.exe.plist, so the list below must be
+# re-checked when any of those change.
+#
+# That environment is merged onto the host's, not substituted for it, so bare
+# `env -i` no longer matches -- host_base below restores the inherited half.
+# Without HOME, DXVK gets no Vulkan driver (tests/vulkan/vulkan-loader-test.sh).
+# Still a list rather than plain inheritance: a GUI launch gets launchd's 16
+# benign variables, a shell has far more.
 #
 # A bare `wine 'C:\Program Files (x86)\Steam\Steam.exe'` is NOT equivalent and
 # must not be used. It was once thought that `Client version: no bootstrapper
@@ -60,8 +64,17 @@ PROBE="$(cd "$(dirname "$0")" && pwd)/window-pump-test.exe"
 # not a guess at the fault's timescale.
 DEADLINE=150
 
+# Seven of launchd's sixteen; the nine omitted identify the launchd job itself.
+# Copied, never defaulted -- an unset name is dropped rather than invented.
+host_base=()
+for v in HOME PATH TMPDIR USER LOGNAME SHELL __CF_USER_TEXT_ENCODING; do
+    eval "host_base_val=\${$v-}"
+    [ -n "$host_base_val" ] && host_base+=("$v=$host_base_val")
+done
+
 wine_env() {
     env -i \
+        ${host_base[@]+"${host_base[@]}"} \
         WINEPREFIX="$BOTTLE" \
         WINEDEBUG="${WINEDEBUG:--all}" \
         WINE_DISABLE_IPV6=1 \
