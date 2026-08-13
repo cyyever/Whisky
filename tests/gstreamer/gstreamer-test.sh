@@ -36,6 +36,8 @@ WHISKY_LIB="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries
 WINE_LIB="$WHISKY_LIB/lib/wine"
 PROBE_SRC="$PROJECT_DIR/tests/gstreamer/wm-sync-reader-test.c"
 PROBE_EXE="$PROJECT_DIR/tests/gstreamer/wm-sync-reader-test.exe"
+PLAY_SRC="$PROJECT_DIR/tests/gstreamer/wmv-playback-test.c"
+PLAY_EXE="$PROJECT_DIR/tests/gstreamer/wmv-playback-test.exe"
 
 failures=0
 fail() { echo "FAIL  $*"; failures=$((failures + 1)); }
@@ -56,6 +58,16 @@ for arch in x86_64-windows i386-windows; do
     fi
 done
 
+# select_bottles exits 0 on a machine with no bottles, which would discard the
+# failures check 1 just recorded -- and check 1 is a property of the Wine install,
+# not of any prefix, so a Wine built --without-gstreamer must not report green
+# just because nothing is installed to run it against.
+if [ "$failures" -ne 0 ]; then
+    echo
+    echo "$failures failed check(s) — skipping the live check"
+    exit "$failures"
+fi
+
 # Any bottle: this is a property of the Wine install, not of the prefix.
 select_bottles "$@"
 BOTTLE="${bottles[0]}"
@@ -75,12 +87,48 @@ echo "$out" | sed 's/^/    /'
 
 if [ "$rc" -eq 0 ]; then
     pass "a sync reader was created"
+elif echo "$out" | grep -qE "returned 0x|IWMSyncReader created"; then
+    # It came back and said no. A different fault from the one below, and the
+    # HRESULT is in the output above.
+    fail "WMCreateSyncReader returned an error ($rc)"
 elif echo "$out" | grep -q "calling WMCreateSyncReader"; then
     fail "the probe did not return from WMCreateSyncReader ($rc)"
     echo "      That is the game's failure: the delay-load of winegstreamer.dll"
     echo "      raised EXCEPTION_WINE_STUB. Check 1 above says whether it exists."
 else
     fail "the probe failed before reaching WMCreateSyncReader ($rc)"
+fi
+
+# Check 3: decode, not just construct. Creating a reader builds no pipeline, so
+# check 2 passes on a GStreamer with no demuxer and no decoder -- it did, while
+# opening a real WMV hung. Only this one exercises asfdemux and libav.
+WMV_WIN='C:\\Program Files (x86)\\Steam\\steamapps\\common\\Super Street Fighter IV - Arcade Edition\\movie\\opening\\opening_tm_low.wmv'
+WMV_UNIX="$BOTTLE/drive_c/Program Files (x86)/Steam/steamapps/common/Super Street Fighter IV - Arcade Edition/movie/opening/opening_tm_low.wmv"
+echo
+echo "=== 3. decode a real WMV ==="
+if [ ! -f "$WMV_UNIX" ]; then
+    echo "SKIP: no WMV to decode at $WMV_UNIX"
+else
+    if [ ! -f "$PLAY_EXE" ] || [ "$PLAY_SRC" -nt "$PLAY_EXE" ]; then
+        i686-w64-mingw32-gcc -O2 -o "$PLAY_EXE" "$PLAY_SRC" -lole32 || exit 1
+    fi
+    # A timeout is part of the check: the failure this catches is a hang, not an
+    # error return -- decodebin stalls when nothing can decode the stream.
+    out=$( cd "$WHISKY_LIB/bin" && timeout 90 env -i HOME="$HOME" \
+        WINEPREFIX="$BOTTLE" WINEDEBUG=-all \
+        DYLD_FALLBACK_LIBRARY_PATH="$WHISKY_LIB/lib" \
+        GST_PLUGIN_PATH="$WHISKY_LIB/lib/gstreamer-1.0" \
+        ./wine64 "$PLAY_EXE" "$WMV_WIN" 2>/dev/null )
+    rc=$?
+    echo "$out" | grep -vE "machine-id" | sed 's/^/    /'
+    if [ "$rc" -eq 0 ]; then
+        pass "samples decoded"
+    elif [ "$rc" -eq 124 ]; then
+        fail "timed out in Open() — no decoder for the stream, so decodebin stalls"
+        echo "      GST_DEBUG=2 names it: \"Missing decoder: Windows Media Video 9\"."
+    else
+        fail "playback failed (rc=$rc)"
+    fi
 fi
 
 echo
