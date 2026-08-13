@@ -1,9 +1,10 @@
 #!/bin/bash
 set -e
 
-# Minimal x86_64 FFmpeg for Wine's winedmo (Media Foundation demux/decode).
-# Only libavformat/libavcodec/libavutil (+swresample/swscale) with the builtin
-# decoders/demuxers — no external codec libraries, no encoders/muxers/network.
+# Minimal x86_64 FFmpeg for Wine's winedmo (Media Foundation demux/decode) and
+# for gst-libav (build-gstreamer-x86.sh). libavformat/libavcodec/libavutil +
+# swresample/swscale/avfilter with the builtin decoders/demuxers — no external
+# codec libraries, no encoders/muxers/network.
 # Built from source because Homebrew has no usable x86_64 ffmpeg bottle on
 # Tahoe and its source build is gated on the newest Xcode.
 
@@ -32,7 +33,10 @@ echo "=== Configuring FFmpeg (x86_64, minimal) ==="
     --disable-programs \
     --disable-doc \
     --disable-avdevice \
-    --disable-avfilter \
+    `# avfilter is for gst-libav, not winedmo: its meson requires libavfilter` \
+    `# >= 7.16.100 with no wrap fallback, so a build without it stops at` \
+    `# configure. See build-gstreamer-x86.sh.` \
+    --enable-avfilter \
     --disable-encoders \
     --disable-muxers \
     --disable-network
