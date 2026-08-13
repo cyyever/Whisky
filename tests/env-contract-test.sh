@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# env-contract-test — assert Whisky's environment contract holds on both sides:
-# every variable it sets is read by something we ship, and every process it
-# spawns gets the host environment merged in rather than replaced.
+# env-contract-test — three contracts: every variable Whisky sets is read by
+# something we ship, every process it spawns gets the host environment merged in
+# rather than replaced, and the constants it stopped setting are still defaults
+# in the Wine code that reads them.
 #
 # WINEMSYNC_NO_ANON_AUTOEVENT was set in Wine.swift and in three scripts for
 # months. Nothing ever read it: msync_obj.c gates on _NO_EVENT, _NO_AUTOEVENT,
@@ -99,6 +100,28 @@ while read -r lineno; do
     fi
 done < <(grep -n 'process\.environment = ' "$SWIFT" | cut -d: -f1)
 
+# The constants that moved out of Wine.swift are defaults in Wine now, so the
+# sweep above no longer sees them. Each entry matches the expression that makes
+# the default a default -- not the variable name, which upstream Proton reads
+# whether or not our patch is applied.
+echo
+while IFS='|' read -r what file pattern; do
+    [ -n "$what" ] || continue
+    if grep -qE -- "$pattern" "$WINE_SRC/$file" 2>/dev/null; then
+        printf 'PASS %-32s default present in %s\n' "$what" "$(basename "$file")"
+    else
+        printf 'FAIL %-32s default MISSING from %s — was its patch dropped?\n' "$what" "$(basename "$file")"
+        fail=$((fail + 1))
+    fi
+done <<'CONTRACTS'
+WINE_DISABLE_IPV6|dlls/ws2_32/unixlib.c|no_v6\[0\] != '0'
+WINE_NX_COMPAT|dlls/ntdll/loader.c|if \(!nx_status && nx_value\.Length
+WINEMSYNC_NO_MANUALEVENT|dlls/ntdll/unix/msync_shm.c|gates\[i\]\.dflt
+PROTON_DISABLE_LSTEAMCLIENT|dlls/ntdll/loader.c|use = get_env\( L"PROTON_DISABLE_LSTEAMCLIENT"
+SDL_JOYSTICK_MFI|dlls/winebus.sys/bus_sdl.c|SDL_HINT_JOYSTICK_MFI
+CONTRACTS
+
+echo
 # Zero sites means the pattern was renamed, not that the contract holds.
 if [ "$sites" -eq 0 ]; then
     printf 'FAIL %-32s no `process.environment =` found in Wine.swift — has it been renamed?\n' \
@@ -116,4 +139,4 @@ if [ "$fail" -ne 0 ]; then
     echo "identical configurations."
     exit 1
 fi
-echo "OK (every variable has a reader, and every launch merges the host environment)"
+echo "OK (readers present, host environment merged, in-Wine defaults intact)"

@@ -58,7 +58,12 @@ for test in smoke compute triangle; do
     if echo "$out" | grep -qE 'ALL OK'; then
         echo "  PASS"; pass=$((pass + 1))
     else
-        echo "  FAIL: $(echo "$out" | grep -E 'E[0-9]{4}:|[Ff]ailed|FAIL' | tail -1)"
+        # Fall back to the last line of output, then to a plain statement: a bare
+        # "FAIL:" for a crash or a hang would be the same unreadable result the
+        # hardcoded string used to give.
+        why=$(echo "$out" | grep -E 'E[0-9]{4}:|[Ff]ailed|FAIL' | tail -1)
+        [ -n "$why" ] || why=$(echo "$out" | grep -v '^[[:space:]]*$' | tail -1)
+        echo "  FAIL: ${why:-no output captured (crash or hang?)}"
         fail=$((fail + 1))
     fi
 done
