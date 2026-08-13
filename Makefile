@@ -17,6 +17,11 @@ export DEVELOPER_DIR
 XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
 CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
+# proton, dxmt and dxvk all install into the same Libraries/Wine tree, and
+# install-app replaces a live /Applications/Whisky.app. None of that is safe to
+# interleave, and none of it is the slow part -- the scripts parallelise inside.
+.NOTPARALLEL:
+
 .PHONY: all help setup-x86-brew proton proton-debug clean-proton \
         dxmt dxvk proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
 
@@ -37,7 +42,22 @@ $(X86_BREW):
 
 proton: $(WINE_STAMP)  ## Build Proton x86_64 and install to Libraries/Wine
 
-$(WINE_STAMP): $(X86_BREW) $(wildcard $(CURDIR)/patches/proton-wine/*.patch) | check-proton-src
+# build-proton-x86.sh does two jobs: it builds Wine, and it assembles what ships
+# beside it -- DXMT and DXVK copied over wined3d's builtins, and KosmicKrisp's
+# ICD manifest copied to ~/.local/share/vulkan/icd.d. Each is an input, and a
+# missing one leaves the stamp newer than everything make knows about, so
+# `make proton` prints nothing and exits 0 having installed none of the change.
+# That already happened once, after an edit to the script itself.
+#
+# $(wildcard) rather than plain paths: the script skips each component when its
+# artifacts are absent, so their absence must not break the rule either.
+WINE_INPUTS := $(SCRIPTS_DIR)/build-proton-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
+               $(wildcard $(CURDIR)/patches/proton-wine/*.patch) \
+               $(wildcard $(CURDIR)/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib) \
+               $(wildcard $(CURDIR)/vendor/dxmt/build/src/d3d11/d3d11.dll) \
+               $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d9/d3d9.dll)
+
+$(WINE_STAMP): $(X86_BREW) $(WINE_INPUTS) | check-proton-src
 	$(SCRIPTS_DIR)/build-proton-x86.sh
 	@touch $@
 
@@ -66,7 +86,7 @@ dxmt: proton  ## Build DXMT from source and install into Wine (needs full Xcode 
 
 # === DXVK (D3D9 on KosmicKrisp) ===
 
-dxvk:  ## Build DXVK d3d9.dll (win32 + win64) and install into Libraries/DXVK
+dxvk: proton  ## Build DXVK d3d9.dll (win32 + win64) and install into Libraries/DXVK
 	$(SCRIPTS_DIR)/build-dxvk.sh
 
 proxychains:  ## Build x86_64 proxychains-ng into Libraries/ProxyChains (routes Steam through the system SOCKS proxy)
@@ -144,5 +164,5 @@ run: app  ## Build, install and run Whisky
 submodule:  ## Init/update git submodules
 	git submodule update --init --recursive
 
-clean: clean-proton  ## Remove all build artifacts
+clean: clean-proton  ## Remove Proton and Xcode build artifacts (not DXMT/DXVK/brew)
 	$(XCODEBUILD) clean 2>/dev/null || true
