@@ -48,6 +48,16 @@ ARM_BREW_PREFIX="$(brew --prefix)"
 # keep it off PATH), same as build-kosmickrisp-x86.sh.
 export PATH="$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+# A developer shell can point these at arm64 libraries, and they reach the
+# linker: with LD_LIBRARY_PATH=~/opt/lib set, ld found an arm64 libz, skipped it
+# as the wrong architecture, and failed on _uncompress -- 350 objects into the
+# build, naming zlib and not the environment. The Wine build avoids the whole
+# class by configuring inside `env -i`; this is the same idea, narrowed to the
+# variables that steer the compiler and the linker.
+unset LD_LIBRARY_PATH LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH \
+      CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH \
+      PKG_CONFIG_PATH LDFLAGS CPPFLAGS CFLAGS CXXFLAGS OBJCFLAGS
+
 # Outside the submodule: meson self-ignores its build dirs, a file in the source
 # root gets no such cover and leaves the parent repo reporting untracked content.
 CROSS_FILE="$PROJECT_DIR/build/gstreamer-x86_64-darwin-cross.ini"
@@ -64,6 +74,9 @@ pkg-config = '$ARM_BREW_PREFIX/bin/pkg-config'
 
 [host_machine]
 system = 'darwin'
+# Required: gstreamer's meson calls host_machine.subsystem(), which meson cannot
+# autodetect for a cross build and errors out on ("Subsystem not defined").
+subsystem = 'macos'
 cpu_family = 'x86_64'
 cpu = 'x86_64'
 endian = 'little'
@@ -96,6 +109,14 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     -Dgst-plugins-base:audioconvert=enabled
     -Dgst-plugins-base:audioresample=enabled
     -Dgst-plugins-base:videoconvertscale=enabled
+    # Wine's configure requires gstreamer-gl-1.0 alongside core/video/audio/tag
+    # and hard-errors without it, so GL is not optional here even though nothing
+    # in the WMV path uses it. Backends pinned to macOS's so autodetection cannot
+    # reach for X11 or EGL.
+    -Dgst-plugins-base:gl=enabled
+    -Dgst-plugins-base:gl_api=opengl
+    -Dgst-plugins-base:gl_platform=cgl
+    -Dgst-plugins-base:gl_winsys=cocoa
     -Dgst-plugins-ugly:asfdemux=enabled
     -Dgst-plugins-ugly:gpl=enabled )
 
@@ -103,8 +124,10 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
 # regeneration, so a build dir configured against a different one dies in
 # machinefile.py rather than reconfiguring. Start over instead.
 recorded="$BUILD_DIR/meson-private/cmd_line.txt"
-if [ -d "$BUILD_DIR" ] && [ -f "$recorded" ] && ! grep -qF "$CROSS_FILE" "$recorded"; then
-    echo "=== Build dir was configured against a different cross-file; starting over ==="
+if [ -d "$BUILD_DIR" ] && { [ ! -f "$recorded" ] || ! grep -qF "$CROSS_FILE" "$recorded"; }; then
+    # No cmd_line.txt means a previous `meson setup` died partway, and the
+    # `[ -d ] ||` below would then skip setup and hand ninja a broken dir.
+    echo "=== Build dir is stale or half-configured; starting over ==="
     rm -rf "$BUILD_DIR"
 fi
 

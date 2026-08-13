@@ -254,8 +254,8 @@ wine_configure() {
         CC="$cc_cmd" \
         CXX="$cxx_cmd" \
         PKG_CONFIG="$arm_prefix/bin/pkg-config" \
-        PKG_CONFIG_PATH="$x86_prefix/lib/pkgconfig:$x86_prefix/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
-        PKG_CONFIG_LIBDIR="$x86_prefix/lib/pkgconfig:$x86_prefix/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig" \
+        PKG_CONFIG_PATH="$x86_prefix/lib/pkgconfig:$x86_prefix/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig:$PROJECT_DIR/vendor/gstreamer-x86/lib/pkgconfig" \
+        PKG_CONFIG_LIBDIR="$x86_prefix/lib/pkgconfig:$x86_prefix/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig:$PROJECT_DIR/vendor/gstreamer-x86/lib/pkgconfig" \
         SDL2_CFLAGS="-I$x86_prefix/include/SDL2 -D_THREAD_SAFE" \
         SDL2_LIBS="-L$x86_prefix/lib -lSDL2" \
         LDFLAGS="-L$x86_prefix/lib -L$x86_prefix/opt/molten-vk/lib" \
@@ -271,14 +271,13 @@ wine_configure() {
         ../configure \
             --enable-archs=i386,x86_64 \
             --with-vulkan \
-            `# WMV is broken while this says --without: wmvcore's IWMSyncReader` \
-            `# lives in dlls/winegstreamer on wg_parser, so a game playing one` \
-            `# dies on the delay-load of winegstreamer.dll -- SSFIV's intro does,` \
-            `# at exit 255. tests/gstreamer/ measures exactly that and is RED.` \
-            `# Flip to --with-gstreamer in the commit that lands a built` \
-            `# GStreamer: configure hard-errors when it is asked for and absent,` \
-            `# so flipping it early breaks 'make proton' for everyone.` \
-            --without-gstreamer \
+            `# wmvcore's IWMSyncReader lives in dlls/winegstreamer on wg_parser;` \
+            `# without it a game playing a WMV dies on the delay-load. Asked for` \
+            `# explicitly, not left to autodetect: configure hard-errors when it` \
+            `# is requested and missing, which is the failure we want -- the` \
+            `# alternative is a Wine that silently cannot play video.` \
+            `# Built by scripts/build-gstreamer-x86.sh into vendor/gstreamer-x86.` \
+            --with-gstreamer \
             "$@" \
             --disable-win16 \
             --without-x \
