@@ -23,7 +23,7 @@ CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALL
 .NOTPARALLEL:
 
 .PHONY: all help setup-x86-brew proton proton-debug clean-proton \
-        dxmt dxvk proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
+        gstreamer dxmt dxvk proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -37,6 +37,17 @@ setup-x86-brew: $(X86_BREW)  ## Install x86_64 Homebrew and Wine build deps
 
 $(X86_BREW):
 	$(SCRIPTS_DIR)/setup-x86-brew.sh
+
+# === GStreamer (winegstreamer's backend, for WMV) ===
+
+# Wine is configured --with-gstreamer and configure hard-errors without it, so
+# this is a prerequisite of the Wine build rather than an optional extra.
+GST_STAMP := $(CURDIR)/vendor/gstreamer-x86/lib/libgstreamer-1.0.dylib
+
+gstreamer: $(GST_STAMP)  ## Build x86_64 GStreamer into vendor/gstreamer-x86 (needed by proton)
+
+$(GST_STAMP): $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh
+	$(SCRIPTS_DIR)/build-gstreamer-x86.sh
 
 # === Proton (the shipped Wine backend) ===
 
@@ -53,11 +64,12 @@ proton: $(WINE_STAMP)  ## Build Proton x86_64 and install to Libraries/Wine
 # artifacts are absent, so their absence must not break the rule either.
 WINE_INPUTS := $(SCRIPTS_DIR)/build-proton-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
                $(wildcard $(CURDIR)/patches/proton-wine/*.patch) \
+               $(wildcard $(CURDIR)/vendor/gstreamer-x86/lib/gstreamer-1.0/*.dylib) \
                $(wildcard $(CURDIR)/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib) \
                $(wildcard $(CURDIR)/vendor/dxmt/build/src/d3d11/d3d11.dll) \
                $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d9/d3d9.dll)
 
-$(WINE_STAMP): $(X86_BREW) $(WINE_INPUTS) | check-proton-src
+$(WINE_STAMP): $(X86_BREW) $(GST_STAMP) $(WINE_INPUTS) | check-proton-src
 	$(SCRIPTS_DIR)/build-proton-x86.sh
 	@touch $@
 

@@ -190,6 +190,23 @@ done
 # Minimal x86_64 FFmpeg for winedmo (built by build-ffmpeg-x86.sh)
 cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 
+# GStreamer for winegstreamer (built by build-gstreamer-x86.sh): the libraries,
+# the glib the wrap built beside them, and the plugin directory. Without this the
+# Libraries tree only works on the machine that built it -- winegstreamer.so and
+# GStreamer's compiled-in plugin path both point into vendor/gstreamer-x86, so a
+# tarball install or a cleaned build tree leaves wmvcore unable to create a sync
+# reader again. GST_PLUGIN_PATH is set alongside, because the compiled-in path is
+# the build tree's, not this one.
+GST_PREFIX="$PROJECT_DIR/vendor/gstreamer-x86"
+if [ -d "$GST_PREFIX/lib" ]; then
+    echo "=== Bundling GStreamer (winegstreamer's backend) ==="
+    cp -R "$GST_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+    rm -rf "$INSTALL_DIR/Wine/lib/gstreamer-1.0"
+    cp -R "$GST_PREFIX/lib/gstreamer-1.0" "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+    n=$(ls "$INSTALL_DIR/Wine/lib/gstreamer-1.0/"*.dylib 2>/dev/null | wc -l | tr -d ' ')
+    echo "GStreamer bundled: $n plugin(s)"
+fi
+
 # --- KosmicKrisp Vulkan driver (Mesa) loader swap ----------------------------
 # winevulkan dlopens the Vulkan implementation by leaf name: historically
 # "libMoltenVK.dylib", but a Wine configured against the x86 brew vulkan-loader
@@ -229,6 +246,18 @@ fi
 echo "=== Patching rpaths on Wine unix modules ==="
 for so in "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/"*.so; do
     install_name_tool -add_rpath '@loader_path/../..' "$so" 2>/dev/null || true
+    # An rpath only helps a leafname reference. A module linked against a library
+    # by ABSOLUTE path -- winegstreamer.so carries nine into vendor/gstreamer-x86,
+    # because that is where pkg-config pointed the linker -- ignores it entirely,
+    # and resolves only on the machine that built it. Rewrite those to @rpath so
+    # the rpath above (and the bundled copies) actually apply.
+    #
+    # It appeared to work without this: DYLD_FALLBACK_LIBRARY_PATH points at
+    # Wine/lib, so dyld found the bundled copy by leafname after the absolute path
+    # missed. That is a fallback catching a dangling reference, not a resolved one.
+    otool -L "$so" 2>/dev/null | awk -v p="$PROJECT_DIR/" '$1 ~ "^"p {print $1}' | while read -r dep; do
+        install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$so" 2>/dev/null || true
+    done
 done
 
 # On macOS 26, Wine's auto-detect of the graphics driver via explorer's

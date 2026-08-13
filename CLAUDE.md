@@ -13,12 +13,13 @@ Keep this file high-level. Details live in `docs/`, the build scripts, `patches/
 ## Build
 ```bash
 make setup-x86-brew   # one-time: x86_64 Homebrew + deps
+make gstreamer        # x86_64 GStreamer for winegstreamer (WMV); make proton needs it
 make proton           # build + install Proton (applies patches/proton-wine/*)
 make dxmt             # DXMT builtin (needs full Xcode + llvm@15)
 make dxvk             # DXVK d3d9.dll
 make app / make run   # build / run the app
 ```
-Fresh-machine order: ARM brew deps → `make setup-x86-brew` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` → `make dxmt` / `make dxvk`. The scripts own the decisions.
+Fresh-machine order: ARM brew deps → `make setup-x86-brew` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` (builds GStreamer first — Wine is configured `--with-gstreamer` and configure hard-errors without it) → `make dxmt` / `make dxvk`. The scripts own the decisions.
 
 ## Key paths
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`

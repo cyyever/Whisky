@@ -147,6 +147,5 @@ for p in libgstapp libgstplayback libgstasf libgstlibav libgsttypefindfunctions;
     ls "$OUT_DIR/lib/gstreamer-1.0/$p.dylib" >/dev/null 2>&1 && echo "ok" || echo "MISSING"
 done
 echo
-echo "Next: flip --without-gstreamer to --with-gstreamer in lib/common.sh's"
-echo "wine_configure, add $OUT_DIR/lib/pkgconfig to its PKG_CONFIG_PATH, then"
-echo "'make proton' and 'tests/gstreamer/gstreamer-test.sh'."
+echo "Wine picks this up through wine_configure's PKG_CONFIG_PATH (lib/common.sh)."
+echo "Verify with tests/gstreamer/gstreamer-test.sh after 'make proton'."
