@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
     int disabled = (!env || env[0] != '0');
     WSADATA wsa;
     struct addrinfo hints = {0}, *res = NULL, *p;
-    int v4 = 0, v6 = 0, other = 0, rc;
+    int v4 = 0, v6 = 0, other = 0, rc, want_v6_only = 0;
 
     setvbuf(stdout, NULL, _IONBF, 0);  /* Wine loses buffered stdout on exit */
 
@@ -49,7 +49,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    hints.ai_family = AF_UNSPEC;   /* the query Steam makes: any family */
+    /* argv[2] == "v6" asks for AF_INET6 explicitly. The pin must NOT apply
+     * there: an app that names a family has said something specific, and A
+     * records would be a wrong answer rather than a narrowed one. This arm is
+     * checkable even on a network with no AAAA at all -- what it asserts is the
+     * absence of AF_INET results, not the presence of AF_INET6 ones. */
+    if (argc > 2 && !strcmp(argv[2], "v6")) {
+        want_v6_only = 1;
+        hints.ai_family = AF_INET6;
+    } else {
+        hints.ai_family = AF_UNSPEC;   /* the query Steam makes: any family */
+    }
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
 
@@ -57,6 +67,9 @@ int main(int argc, char *argv[])
     if (rc) {
         printf("getaddrinfo(%s) failed: %d\n", host, rc);
         WSACleanup();
+        /* An AF_INET6 request that resolves to nothing is the correct outcome on
+         * a network with no AAAA -- the wrong outcome would be A records. */
+        if (want_v6_only) { printf("PASS (no results, and none of them IPv4)\n"); return 0; }
         /* A resolve failure is only conclusive when IPv6 was requested-off and
          * the host is IPv6-only; treat as fail so a broken hook is noticed. */
         return 1;
@@ -73,6 +86,11 @@ int main(int argc, char *argv[])
     printf("host=%s WINE_DISABLE_IPV6=%d -> AF_INET=%d AF_INET6=%d other=%d\n",
            host, disabled, v4, v6, other);
 
+    if (want_v6_only) {
+        printf("%s: explicit AF_INET6 request\n", v4 ? "FAIL" : "PASS");
+        if (v4) printf("FAIL: the IPv4 pin overrode an explicit AF_INET6 request\n");
+        return v4 ? 1 : 0;
+    }
     if (disabled && v6 > 0) {
         printf("FAIL: IPv6 not suppressed (patch 0019's default is not in this build)\n");
         return 1;

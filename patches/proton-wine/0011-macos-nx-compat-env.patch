@@ -1,6 +1,19 @@
-Subject: ntdll: WINE_NX_COMPAT env var to force DEP on legacy images (macOS/DXMT)
+Subject: ntdll: keep DEP on for legacy images by default (macOS/DXMT)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
-Ports Whisky wine patch 0002. Opts into keeping NX enabled so DXMT placed buffers do not turn games into a slideshow on macOS Tahoe (see 3Shain/dxmt#161).
+Ports Whisky wine patch 0002. Wine disables no-exec for images without
+IMAGE_DLLCHARACTERISTICS_NX_COMPAT, which forces PROT_EXEC onto data pages and
+turns DXMT placed buffers into a slideshow on macOS Tahoe (3Shain/dxmt#161).
+
+DEP now stays on. This was WINE_NX_COMPAT=1 set by the launcher on every bottle
+— a constant in the environment that every harness standing in for a GUI launch
+had to mirror by hand, and those mirrors drift.
+
+WINE_NX_COMPAT=0 restores upstream behaviour. That override has to work per
+program, because a game that genuinely needs the DEP-off legacy handling must
+have some way to ask for it.
 
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
 index bbb448cc69d..c06e82b4e84 100644

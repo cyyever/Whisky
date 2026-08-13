@@ -1,4 +1,4 @@
-Subject: ws2_32: force IPv4-only getaddrinfo when WINE_DISABLE_IPV6=1
+Subject: ws2_32: IPv4-only getaddrinfo by default, WINE_DISABLE_IPV6=0 opts out
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -9,14 +9,22 @@ to IPv6 addresses, connects to them, and hangs at login on
 STATUS_HOST_UNREACHABLE (0xc000023d) — the client never reaches a CM and the
 login window never appears.
 
-When WINE_DISABLE_IPV6=1 is set (Whisky sets it for the Steam bottle), pin
-getaddrinfo()'s ai_family to AF_INET so only A records are returned and
-steamclient uses the working IPv4 path. Unset (the default) leaves resolution
-unchanged. Confirmed with WINEDEBUG=+winsock: api.steampowered.com flips from
-AF_INET6 to AF_INET 184.31.138.105.
+Pin getaddrinfo()'s ai_family to AF_INET so only A records are returned and
+steamclient uses the working IPv4 path. Confirmed with WINEDEBUG=+winsock:
+api.steampowered.com flips from AF_INET6 to AF_INET 184.31.138.105.
+
+This is the default rather than an opt-in. It was WINE_DISABLE_IPV6=1 set by the
+launcher on every bottle, which made it a constant that every harness standing
+in for a GUI launch had to mirror by hand, and those mirrors drift.
+WINE_DISABLE_IPV6=0 restores upstream resolution, per bottle or per program.
+
+Only applied when the caller expressed no preference (ai_family == AF_UNSPEC).
+An app that asks for AF_INET6 has said something specific, and handing it A
+records would be a wrong answer rather than a narrowed one — addresses it cannot
+use, or EAI_* for an IPv6 literal, with nothing explaining why.
 
 diff --git a/dlls/ws2_32/unixlib.c b/dlls/ws2_32/unixlib.c
-index e0e1263e025..dfd0dc4c356 100644
+index e0e1263e025..4b71d560e54 100644
 --- a/dlls/ws2_32/unixlib.c
 +++ b/dlls/ws2_32/unixlib.c
 @@ -704,7 +704,7 @@ static NTSTATUS unix_getaddrinfo( void *args )
@@ -28,7 +36,7 @@ index e0e1263e025..dfd0dc4c356 100644
  
      /* servname tweak required by OSX and BSD kernels */
      if (service && !service[0]) service = "0";
-@@ -751,7 +751,21 @@ static NTSTATUS unix_getaddrinfo( void *args )
+@@ -751,7 +751,27 @@ static NTSTATUS unix_getaddrinfo( void *args )
          }
      }
  
@@ -37,10 +45,16 @@ index e0e1263e025..dfd0dc4c356 100644
 +     * working IPv6, Steam resolves its CM/directory hosts (api.steampowered.com,
 +     * *.steamserver.net) to dead IPv6 addresses, connects, and hangs at login
 +     * (STATUS_HOST_UNREACHABLE 0xc000023d). Pinning ai_family to AF_INET makes
-+     * getaddrinfo return only A records, so steamclient takes the IPv4 path. */
++     * getaddrinfo return only A records, so steamclient takes the IPv4 path.
++     *
++     * Only when the caller expressed no preference. An app that asks for
++     * AF_INET6 has said something specific, and answering with A records would
++     * be a wrong answer rather than a narrowed one -- it would get addresses it
++     * cannot use, or EAI_* for an IPv6 literal, with no way to tell why. This is
++     * a default for the ambiguous case, not an override of an explicit one. */
 +    {
 +        const char *no_v6 = getenv( "WINE_DISABLE_IPV6" );
-+        if (!no_v6 || no_v6[0] != '0')
++        if ((!no_v6 || no_v6[0] != '0') && unix_hints.ai_family == AF_UNSPEC)
 +        {
 +            unix_hints.ai_family = AF_INET;
 +            force_v4 = 1;
