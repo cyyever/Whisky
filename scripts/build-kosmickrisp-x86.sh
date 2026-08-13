@@ -42,7 +42,12 @@ if [ ! -x "$TOOLS_BIN/mesa_clc" ]; then
 fi
 
 DRIVER_BUILD="$MESA_SRC/build-x86_64"
-CROSS_FILE="$MESA_SRC/x86_64-darwin-cross.ini"
+# Outside the submodule. meson self-ignores its build dirs (it writes a
+# .gitignore containing `*` into each), but a file dropped in mesa's source root
+# does not get that, and left the parent repo reporting vendor/mesa as having
+# untracked content forever. build/ is already gitignored here.
+CROSS_FILE="$PROJECT_DIR/build/mesa-x86_64-darwin-cross.ini"
+mkdir -p "$(dirname "$CROSS_FILE")"
 cat > "$CROSS_FILE" <<EOF
 [binaries]
 c = ['clang', '-arch', 'x86_64']
