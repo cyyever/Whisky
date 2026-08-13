@@ -104,13 +104,16 @@ install-app:
 	rm -rf /Applications/Whisky.app; \
 	cp -R "$$built" /Applications/Whisky.app; \
 	sha=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown); \
-	git diff --quiet 2>/dev/null || sha="$$sha-dirty"; \
+	git diff --quiet HEAD --ignore-submodules=dirty 2>/dev/null || sha="$$sha-dirty"; \
 	plist=/Applications/Whisky.app/Contents/Info.plist; \
 	/usr/libexec/PlistBuddy -c "Add :WhiskyBuildSHA string $$sha" "$$plist" >/dev/null 2>&1 || \
 		/usr/libexec/PlistBuddy -c "Set :WhiskyBuildSHA $$sha" "$$plist"; \
 	stamp=$$(date -u +%Y-%m-%dT%H:%M:%SZ); \
 	/usr/libexec/PlistBuddy -c "Add :WhiskyBuildDate string $$stamp" "$$plist" >/dev/null 2>&1 || \
 		/usr/libexec/PlistBuddy -c "Set :WhiskyBuildDate $$stamp" "$$plist"; \
+	digest=$$(cat $(CURDIR)/patches/proton-wine/*.patch 2>/dev/null | shasum -a 256 | cut -c1-16); \
+	/usr/libexec/PlistBuddy -c "Add :WhiskyWinePatchDigest string $$digest" "$$plist" >/dev/null 2>&1 || \
+		/usr/libexec/PlistBuddy -c "Set :WhiskyWinePatchDigest $$digest" "$$plist"; \
 	echo "=== Installed $(CONFIG) build ($$sha, $$stamp) to /Applications/Whisky.app ==="
 
 # Lint is deliberately NOT a build phase. It used to be one, and when SwiftLint

@@ -42,4 +42,7 @@ Fresh-machine order: ARM brew deps → `make setup-x86-brew` → `scripts/build-
 - Deps: SemanticVersion, swift-argument-parser, SwiftyTextTable.
 
 ## Distribution
-- Version plist, Libraries tarball, and appcast under `https://cyyever.github.io/Whisky/` and the repo's GitHub releases.
+- No Libraries tarball or appcast: Wine is built from this checkout by `make proton`, never downloaded.
+- `make proton` and `make install-app` both stamp a digest of `patches/proton-wine/*.patch`
+  (into `WhiskyWineVersion.plist` and `Info.plist`). A mismatch means the installed Wine
+  predates what the app expects — it is reported in the launch log; fix with `make proton`.

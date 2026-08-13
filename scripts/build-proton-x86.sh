@@ -267,6 +267,11 @@ MINOR=$(echo "$WINE_VER" | cut -d. -f2)
 PATCH=$(echo "$WINE_VER" | cut -d. -f3)
 PATCH=${PATCH:-0}
 
+# Which patch series this Wine carries. MAJOR.MINOR.PATCH stays 11.0.0 however
+# much the series changes, so it cannot answer that. `make app` stamps the same
+# digest into Info.plist.
+PATCH_DIGEST=$(cat "$PROJECT_DIR"/patches/proton-wine/*.patch 2>/dev/null | shasum -a 256 | cut -c1-16)
+
 cat > "$INSTALL_DIR/WhiskyWineVersion.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -285,6 +290,8 @@ cat > "$INSTALL_DIR/WhiskyWineVersion.plist" << PLISTEOF
 		<key>build</key>
 		<string>0</string>
 	</dict>
+	<key>patchSeriesDigest</key>
+	<string>$PATCH_DIGEST</string>
 </dict>
 </plist>
 PLISTEOF

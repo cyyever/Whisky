@@ -36,6 +36,24 @@ public class WhiskyWineInstaller {
     }
 
     public static func whiskyWineVersion() -> SemanticVersion? {
+        return installedInfo()?.version
+    }
+
+    /// Digests of `patches/proton-wine/*.patch`, stamped into the Wine install by
+    /// build-proton-x86.sh and into the app by `make install-app`. A version
+    /// number cannot do this: the whole series can change while Wine stays
+    /// 11.0.0, and the app now depends on defaults those patches carry. Computed
+    /// on both sides, so neither can go stale.
+    public static func patchSeriesMismatch() -> (installed: String, expected: String)? {
+        guard
+            let expected = Bundle.main.object(forInfoDictionaryKey: "WhiskyWinePatchDigest") as? String,
+            !expected.isEmpty
+        else { return nil }  // an app built without the stamp has nothing to claim
+        let installed = installedInfo()?.patchSeriesDigest ?? ""
+        return installed == expected ? nil : (installed: installed, expected: expected)
+    }
+
+    private static func installedInfo() -> WhiskyWineVersion? {
         do {
             let versionPlist =
                 libraryFolder
@@ -44,8 +62,7 @@ public class WhiskyWineInstaller {
 
             let decoder = PropertyListDecoder()
             let data = try Data(contentsOf: versionPlist)
-            let info = try decoder.decode(WhiskyWineVersion.self, from: data)
-            return info.version
+            return try decoder.decode(WhiskyWineVersion.self, from: data)
         } catch {
             print(error)
             return nil
@@ -55,4 +72,6 @@ public class WhiskyWineInstaller {
 
 public struct WhiskyWineVersion: Codable {
     public var version = SemanticVersion(1, 0, 0)
+    /// "" for a Wine installed before the stamp existed — itself a mismatch.
+    public var patchSeriesDigest: String = ""
 }
