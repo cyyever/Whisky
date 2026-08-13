@@ -1,7 +1,17 @@
 /* Headless D3D12 compute test: compile an HLSL compute shader (DXBC via
  * D3DCompile), run a dispatch that writes buf[i]=i*2 through a root UAV, read
  * back and verify. Exercises the shader-compile + pipeline + dispatch path on
- * vkd3d-proton -> KosmicKrisp/Metal, past bare device creation. */
+ * vkd3d-proton -> KosmicKrisp/Metal, past bare device creation.
+ *
+ * RWByteAddressBuffer, not RWStructuredBuffer. It was the latter, and failed
+ * every run at D3DCompile with "E5017: Structured buffers store is not
+ * implemented" -- vkd3d-shader bails on that in HLSL lowering
+ * (libs/vkd3d/libs/vkd3d-shader/hlsl_codegen.c, on
+ * HLSL_SAMPLER_DIM_STRUCTURED_BUFFER), so the run ended three layers above the
+ * driver this file exists to exercise. A raw buffer keeps the root UAV valid --
+ * a typed RWBuffer would not; root UAV descriptors are raw/structured only --
+ * and the store lowers. Switch it back when that fixme lands, to cover the
+ * structured path too. */
 #define COBJMACROS
 #define INITGUID
 #include <windows.h>
@@ -15,9 +25,9 @@
 #define CHECK(hr, msg) do { if (FAILED(hr)) { printf("%s: 0x%08lx\n", msg, (unsigned long)(hr)); return 1; } } while (0)
 
 static const char *CS_SRC =
-    "RWStructuredBuffer<uint> buf : register(u0);\n"
+    "RWByteAddressBuffer buf : register(u0);\n"
     "[numthreads(64,1,1)]\n"
-    "void main(uint3 id : SV_DispatchThreadID) { buf[id.x] = id.x * 2; }\n";
+    "void main(uint3 id : SV_DispatchThreadID) { buf.Store(id.x * 4, id.x * 2); }\n";
 
 int main(void)
 {
