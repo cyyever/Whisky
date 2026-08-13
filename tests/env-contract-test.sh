@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# env-contract-test — assert every environment variable Whisky sets is actually
-# read by something we ship.
+# env-contract-test — assert Whisky's environment contract holds on both sides:
+# every variable it sets is read by something we ship, and every process it
+# spawns gets the host environment merged in rather than replaced.
 #
 # WINEMSYNC_NO_ANON_AUTOEVENT was set in Wine.swift and in three scripts for
 # months. Nothing ever read it: msync_obj.c gates on _NO_EVENT, _NO_AUTOEVENT,
@@ -80,9 +81,34 @@ for f in "$PROJECT_DIR"/scripts/*.sh "$PROJECT_DIR"/scripts/lib/*.sh; do
     done < <(grep -oE '^\s*unset (WINE|PROTON)[A-Z0-9_]*' "$f" 2>/dev/null | awk '{print $2}' | sort -u)
 done
 
+# The other direction: a variable can have a perfect reader and still never
+# arrive, because Process.environment REPLACES rather than extends.
+# tests/vulkan/vulkan-loader-test.sh cannot catch that -- it builds its own
+# environment with `env -i` and stays green whatever Wine.swift does.
+echo
+sites=0
+while read -r lineno; do
+    sites=$((sites + 1))
+    # Two-line window: the merge may wrap.
+    if sed -n "${lineno},$((lineno + 1))p" "$SWIFT" | grep -q 'ProcessInfo\.processInfo\.environment'; then
+        printf 'PASS %-32s host environment merged at Wine.swift:%s\n' "Process.environment" "$lineno"
+    else
+        printf 'FAIL %-32s Wine.swift:%s assigns a bare dictionary — the bottle loses HOME\n' \
+               "Process.environment" "$lineno"
+        fail=$((fail + 1))
+    fi
+done < <(grep -n 'process\.environment = ' "$SWIFT" | cut -d: -f1)
+
+# Zero sites means the pattern was renamed, not that the contract holds.
+if [ "$sites" -eq 0 ]; then
+    printf 'FAIL %-32s no `process.environment =` found in Wine.swift — has it been renamed?\n' \
+           "Process.environment"
+    fail=$((fail + 1))
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
-    echo "FAILED ($fail variable(s) with no reader)"
+    echo "FAILED ($fail contract violation(s))"
     echo
     echo "Either the name is wrong, or the patch that consumed it was dropped."
     echo "Setting a variable nothing reads is silent — the behaviour it selects"
@@ -90,4 +116,4 @@ if [ "$fail" -ne 0 ]; then
     echo "identical configurations."
     exit 1
 fi
-echo "OK (every variable has a reader)"
+echo "OK (every variable has a reader, and every launch merges the host environment)"

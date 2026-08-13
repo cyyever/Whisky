@@ -45,7 +45,11 @@ public class Wine {
         process.executableURL = executableURL
         process.arguments = args
         process.currentDirectoryURL = directory ?? executableURL.deletingLastPathComponent()
-        process.environment = environment
+        // `.environment` replaces, so a bare assignment leaves the bottle with no
+        // HOME — the Vulkan loader's ICD search path. Guarded by
+        // tests/env-contract-test.sh.
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(environment, uniquingKeysWith: { $1 })
         process.qualityOfService = .userInitiated
 
         Logger.wineKit.info("Running: \(executableURL.path) \(args.joined(separator: " "))")
@@ -152,7 +156,11 @@ public class Wine {
         process.executableURL = wineBinary(for: bottle)
         process.arguments = allArgs
         process.currentDirectoryURL = wineBinary(for: bottle).deletingLastPathComponent()
-        process.environment = constructWineEnvironment(for: bottle, environment: environment)
+        // As in `runProcess`. `constructWineEnvironment` returns only what Whisky
+        // sets, because `generateRunCommand` renders it as a shell prefix.
+        let wineEnv = constructWineEnvironment(for: bottle, environment: environment)
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(wineEnv, uniquingKeysWith: { $1 })
         process.qualityOfService = .userInitiated
         if let fileHandle = try? makeFileHandle() {
             fileHandle.writeApplicaitonInfo()
@@ -300,7 +308,6 @@ public class Wine {
             "WINEMSYNC_NO_MANUALEVENT": "1",
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
-        guard !environment.isEmpty else { return result }
         result.merge(environment, uniquingKeysWith: { $1 })
         return result
     }
@@ -330,7 +337,6 @@ public class Wine {
         // here is inert server-side but is inherited by the processes wineserver
         // spawns, same as SDL_JOYSTICK_MFI above.
         bottle.settings.environmentVariables(wineEnv: &result)
-        guard !environment.isEmpty else { return result }
         result.merge(environment, uniquingKeysWith: { $1 })
         return result
     }
