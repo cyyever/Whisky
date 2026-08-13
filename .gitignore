@@ -95,6 +95,7 @@ vendor/wine/build*/
 vendor/.wine-installed
 vendor/ffmpeg/
 vendor/ffmpeg-x86/
+vendor/gstreamer-x86/
 vendor/kosmickrisp/
 vendor/vkd3d-proton/
 tests/d3d12/.build/
