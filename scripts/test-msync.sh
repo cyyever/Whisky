@@ -89,7 +89,7 @@ echo ""
 # class is routed to the server in BOTH arms, so the diff compares two
 # configurations that agree by construction and the run proves nothing about that
 # class. Run this from a shell with none of them exported. Note the shipping
-# bottle does set WINEMSYNC_NO_MANUALEVENT=1 (WhiskyKit .../Wine.swift), so
+# build gates manual events by default (patch 0008 read_type_gates), so
 # manual events are outside what this harness can speak to either way.
 run_one() {
     local exe="$1" mode="$2" outfile="$3" rc

@@ -1839,10 +1839,10 @@ index 00000000000..bbcdbb4b804
 +}
 diff --git a/dlls/ntdll/unix/msync_shm.c b/dlls/ntdll/unix/msync_shm.c
 new file mode 100644
-index 00000000000..a6f18f60d40
+index 00000000000..0dcd8aad189
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync_shm.c
-@@ -0,0 +1,295 @@
+@@ -0,0 +1,296 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -2009,10 +2009,11 @@ index 00000000000..a6f18f60d40
 + * otherwise be able to change the answer mid-process, and two processes that
 + * disagree about a named object's type cannot share it.
 + *
-+ * DO NOT delete these as leftover debugging. WINEMSYNC_NO_MANUALEVENT=1 is set
-+ * unconditionally for every bottle (WhiskyKit/.../Wine/Wine.swift) as the shipped
-+ * workaround for the manual-event spin; removing that gate regresses Steam to a
-+ * 100%-CPU spin. The other gates really are bisection levers.
++ * DO NOT delete these as leftover debugging. MSYNC_MANUAL_EVENT is gated by
++ * default (the `dflt` column) as the shipped workaround for the manual-event
++ * spin; removing it regresses Steam to a 100%-CPU spin.
++ * WINEMSYNC_NO_MANUALEVENT=0 turns it off, so that A/B still runs without
++ * rebuilding Wine. The other gates default off and are bisection levers.
 + *
 + * A gate is NOT a way to identify which object class owns a bug: routing a class
 + * to the server makes any wait set that mixes it with the message queue take the
@@ -2023,12 +2024,12 @@ index 00000000000..a6f18f60d40
 +
 +static void read_type_gates(void)
 +{
-+    static const struct { enum msync_type type; const char *name; } gates[] =
++    static const struct { enum msync_type type; const char *name; int dflt; } gates[] =
 +    {
-+        { MSYNC_SEMAPHORE,    "WINEMSYNC_NO_SEMAPHORE" },
-+        { MSYNC_MUTEX,        "WINEMSYNC_NO_MUTEX" },
-+        { MSYNC_AUTO_EVENT,   "WINEMSYNC_NO_AUTOEVENT" },
-+        { MSYNC_MANUAL_EVENT, "WINEMSYNC_NO_MANUALEVENT" },
++        { MSYNC_SEMAPHORE,    "WINEMSYNC_NO_SEMAPHORE",   0 },
++        { MSYNC_MUTEX,        "WINEMSYNC_NO_MUTEX",       0 },
++        { MSYNC_AUTO_EVENT,   "WINEMSYNC_NO_AUTOEVENT",   0 },
++        { MSYNC_MANUAL_EVENT, "WINEMSYNC_NO_MANUALEVENT", 1 },
 +    };
 +    unsigned int i;
 +    const char *e;
@@ -2036,7 +2037,7 @@ index 00000000000..a6f18f60d40
 +    for (i = 0; i < sizeof(gates) / sizeof(gates[0]); i++)
 +    {
 +        e = getenv( gates[i].name );
-+        type_disabled[gates[i].type] = (e && *e != '0');
++        type_disabled[gates[i].type] = e ? (*e != '0') : gates[i].dflt;
 +    }
 +
 +    if ((e = getenv( "WINEMSYNC_NO_EVENT" )) && *e != '0')

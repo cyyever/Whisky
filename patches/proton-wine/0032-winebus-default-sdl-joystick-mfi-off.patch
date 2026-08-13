@@ -1,0 +1,32 @@
+Subject: winebus: default SDL's MFI joystick backend off on macOS
+
+macOS 26.0 and 27.0 both enumerate Xbox controllers through GameController but
+deliver no input from them; SDL's HIDAPI/IOKit path reads the HID reports fine
+and keeps rumble. Whisky set SDL_JOYSTICK_MFI=0 on every launch to select it.
+
+Set as a hint at SDL_HINT_DEFAULT priority rather than by putting the variable in
+the environment. SDL_GetHint returns the environment ahead of any hint below
+SDL_HINT_OVERRIDE, so this is a default the user can still undo with
+SDL_JOYSTICK_MFI=1 once a macOS GA release fixes the framework -- the same
+"default here, environment still wins" shape as the other launcher constants
+moved down in this series, and expressed in SDL's own mechanism rather than by
+writing to the process environment behind SDL's back.
+
+diff --git a/dlls/winebus.sys/bus_sdl.c b/dlls/winebus.sys/bus_sdl.c
+index fbea0cb00b9..cbc29006ab4 100644
+--- a/dlls/winebus.sys/bus_sdl.c
++++ b/dlls/winebus.sys/bus_sdl.c
+@@ -1181,6 +1181,13 @@ NTSTATUS sdl_bus_init(void *args)
+     pSDL_SetHintWithPriority("SteamVirtualGamepadInfo", "", SDL_HINT_OVERRIDE);
+     unsetenv("SteamVirtualGamepadInfo");
+ 
++    /* Skip SDL's GameController backend on macOS: 26.0 and 27.0 enumerate Xbox
++     * pads through it but deliver no input, while HIDAPI/IOKit reads the reports
++     * and keeps rumble. SDL_HINT_DEFAULT rather than OVERRIDE, because SDL_GetHint
++     * returns the environment ahead of any lower-priority hint -- so this is a
++     * default that SDL_JOYSTICK_MFI=1 can still undo when GA fixes the framework. */
++    pSDL_SetHintWithPriority(SDL_HINT_JOYSTICK_MFI, "0", SDL_HINT_DEFAULT);
++
+     if (pSDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC) < 0)
+     {
+         ERR("could not init SDL: %s\n", pSDL_GetError());

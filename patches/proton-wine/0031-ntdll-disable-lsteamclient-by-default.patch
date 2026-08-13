@@ -1,0 +1,35 @@
+Subject: ntdll: disable the lsteamclient bridge by default on macOS
+
+Proton redirects steamclient64.dll's and gameoverlayrenderer64.dll's tier0_s64 /
+vstdlib_s64 imports to ntdll so its Linux host-integrated tier0 shims serve
+games. That bridge cannot reach a Linux Steam on macOS, and against the real
+Windows Steam client the redirect strands g_pMemAllocSteam and friends on
+unimplemented ntdll stubs -- this fork's de-linux'd ntdll lacks those 297 symbols
+-- so steamclient64's DllMain access-violates on a garbage allocator vtable and
+Steam offers to reinstall itself.
+
+Whisky set PROTON_DISABLE_LSTEAMCLIENT=1 on every launch to get here. A constant
+in the launcher's environment is a constant every harness standing in for a GUI
+launch has to mirror by hand, and those mirrors drift: steam-startup-loop.sh was
+already missing a different one. The default belongs in the code that reads it.
+
+PROTON_DISABLE_LSTEAMCLIENT=0 restores upstream behaviour.
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index c06e82b4e84..ea1c254c294 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -1156,7 +1156,12 @@ static int use_lsteamclient(void)
+ 
+     if (use != -1) return use;
+ 
+-    use = !get_env( L"PROTON_DISABLE_LSTEAMCLIENT", env, sizeof(env) ) || *env == '0';
++    /* Off unless PROTON_DISABLE_LSTEAMCLIENT=0 asks for it. The bridge redirects
++     * steamclient64/gameoverlayrenderer64 imports to Proton's Linux-host tier0
++     * shims, which can never reach a Linux Steam on macOS -- and against the real
++     * Windows client it strands g_pMemAllocSteam on ntdll stubs this fork does not
++     * have, so steamclient64's DllMain access-violates and Steam says "reinstall". */
++    use = get_env( L"PROTON_DISABLE_LSTEAMCLIENT", env, sizeof(env) ) && *env == '0';
+     if (!use)
+         ERR("lsteamclient disabled.\n");
+     return use;

@@ -77,13 +77,8 @@ wine_env() {
         ${host_base[@]+"${host_base[@]}"} \
         WINEPREFIX="$BOTTLE" \
         WINEDEBUG="${WINEDEBUG:--all}" \
-        WINE_DISABLE_IPV6=1 \
         DYLD_FALLBACK_LIBRARY_PATH="$WINELIB" \
         GST_DEBUG=1 \
-        WINE_NX_COMPAT=1 \
-        SDL_JOYSTICK_MFI=0 \
-        PROTON_DISABLE_LSTEAMCLIENT=1 \
-        WINEMSYNC_NO_MANUALEVENT=1 \
         WHISKY_HIDE_VIRTUAL_AUDIO=1 \
         WINE_MRING="${WINE_MRING:-1}" \
         WINE_SEGV_TRACE="${WINE_SEGV_TRACE:-1}" \

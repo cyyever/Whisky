@@ -123,10 +123,10 @@ index bbcdbb4b804..051fae69ed1 100644
      return ret;
  }
 diff --git a/dlls/ntdll/unix/msync_shm.c b/dlls/ntdll/unix/msync_shm.c
-index a6f18f60d40..beb889d17c0 100644
+index 0dcd8aad189..20005241d9b 100644
 --- a/dlls/ntdll/unix/msync_shm.c
 +++ b/dlls/ntdll/unix/msync_shm.c
-@@ -233,6 +233,86 @@ void *msync_get_shm( unsigned int idx )
+@@ -234,6 +234,86 @@ void *msync_get_shm( unsigned int idx )
      return ret;
  }
  
@@ -213,7 +213,7 @@ index a6f18f60d40..beb889d17c0 100644
  void msync_init(void)
  {
      struct stat st;
-@@ -292,4 +372,16 @@ void msync_init(void)
+@@ -293,4 +373,16 @@ void msync_init(void)
          exit(1);
      }
  

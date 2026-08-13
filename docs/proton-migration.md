@@ -23,7 +23,7 @@ tree that plain WineHQ 11.13 lacks.
   (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
   redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
-  in main: `patches/proton-wine/` (**29-patch series**, base `c3007e6f` on Valve's
+  in main: `patches/proton-wine/` (**31-patch series**, base `c3007e6f` on Valve's
   `bleeding-edge`) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
   `scripts/build-dxmt.sh` defaults `DXMT_WINE_BUILD` to `vendor/proton-wine/build`.
@@ -55,7 +55,7 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 29-patch series
+## patches/proton-wine/ — 31-patch series
 Base: **`c3007e6f`** on Valve's `bleeding-edge` — the only branch Valve still pushes to
 (see the header comment in `scripts/build-proton-x86.sh`, which is the source of truth).
 
@@ -257,8 +257,8 @@ conformance work above: msync-only failures went **6 → 2**.
   (The number previously held `macos-kernelbase-ifeo-debugger`, deleted when `0020`
   retired the Steam webhelper wrapper that was its only consumer, along with
   `Steam.configure`'s per-bottle IFEO cleanup.)
-- `0011-macos-nx-compat-env` — `WINE_NX_COMPAT` env var to force DEP on legacy images
-  (fixes DXMT Tahoe slowness).
+- `0011-macos-nx-compat-env` — DEP stays on for legacy images by default (fixes DXMT
+  Tahoe slowness); `WINE_NX_COMPAT=0` restores upstream, per program.
 - `0012-macos-coreaudio-hide-virtual-devices` — hide virtual audio devices from games
   (`winecoreaudio.drv` + `mmdevapi`) — fixes device enum-loop hangs.
 - `0013-macos-server-fsync-delinux` — de-linux the `server/fsync.c` stubs for the macOS
@@ -316,7 +316,7 @@ Both are **PE** dlls built for BOTH arches (`dlls/{combase,ntdll}/{i386,x86_64}-
   double-calls), drop `fls_section` around the callback, re-acquire and `goto restart`.
   This is a genuine upstream Wine bug, not Proton- or msync-specific.
 
-### 0016–0030 — one line each
+### 0016–0032 — one line each
 Not written up individually: each patch file carries its own reasoning in its header,
 and that header is the source of truth. Listed here only so the enumeration above is
 not mistaken for the whole series.
@@ -325,7 +325,7 @@ not mistaken for the whole series.
 - `0017` ntdll: resolve the D3D/Vulkan builtins **ahead of the registry**, so a bottle's
   stale `DllOverrides` cannot make a shipped builtin unloadable.
 - `0018` ws2_32: resolve names from the prefix `hosts` file first.
-- `0019` ws2_32: IPv4-only `getaddrinfo` under `WINE_DISABLE_IPV6=1`.
+- `0019` ws2_32: IPv4-only `getaddrinfo` by default; `WINE_DISABLE_IPV6=0` opts out.
 - `0020` kernelbase: append `--no-sandbox --in-process-gpu` to steamwebhelper.exe.
 - `0021` ws2_32: `WSALookupServiceBegin` semi-stub succeeds with an empty set.
 - `0022` server: clear connection-failure events in `IOCTL_AFD_WINE_CONNECT`.
@@ -354,13 +354,17 @@ not mistaken for the whole series.
   break `IMAGE_SCN_MEM_SHARED|MEM_WRITE` sections, which are mapped MAP_SHARED
   across the prefix, so one process's relocations become another's wrong
   pointers. Plus the cap banner ordering and the environment branch's trace token.
+- `0031` ntdll: lsteamclient off by default; `PROTON_DISABLE_LSTEAMCLIENT=0` restores it.
+- `0032` winebus: SDL's MFI joystick backend off by default, set as an SDL hint at
+  `SDL_HINT_DEFAULT` priority so `SDL_JOYSTICK_MFI=1` still wins.
 
 
 ## Steam on Proton — launch investigation
 **Resolved 2026-07-24: Steam logs in fully.** Order of bugs hit and fixed to get there:
 1. **Proton lsteamclient tier0 crash** — the "reinstall Steam" box was Proton's
    lsteamclient redirect stranding `steamclient64`'s tier0 imports (`g_pMemAllocSteam`)
-   on ntdll stubs. Fixed with `PROTON_DISABLE_LSTEAMCLIENT=1` (wired into `Wine.swift`).
+   on ntdll stubs. Fixed by disabling the bridge by default (`0031`);
+   `PROTON_DISABLE_LSTEAMCLIENT=0` restores it.
    Proton-only bug, not upstream Wine.
 2. **msync mixed-wait deadlock** (now folded into `0008`) — blocked wine-mono MSI,
    cold-boot service handshake (left `syswow64` empty), and Steam's `reg add`.
@@ -409,7 +413,8 @@ source of truth):
   `WINEMSYNC_NO_EVENT` (all events → server), `WINEMSYNC_NO_AUTOEVENT`,
   `WINEMSYNC_NO_MANUALEVENT`, `WINEMSYNC_NO_SEMAPHORE`, `WINEMSYNC_NO_MUTEX`.
   `event_uses_msync()` takes only the type — there is **no** anon/named distinction.
-  `NO_MANUALEVENT` is the one that fixed the spin; the rest are for bisecting.
+  `NO_MANUALEVENT` is the one that fixed the spin, and is now ON by default in
+  `read_type_gates()` (`=0` turns it off); the rest are for bisecting.
   > ⚠️ **`WINEMSYNC_NO_ANON_AUTOEVENT` / `WINEMSYNC_NO_NAMED_AUTOEVENT` never existed.**
   > Nothing in the msync sources reads them (verified against `vendor/proton-wine` and every
   > revision of patch `0008` in git). They were **removed** from `Wine.swift` and from
@@ -439,7 +444,8 @@ source of truth):
   `WINEMSYNC` at all for the default `.msync` mode (only `.none` sets `WINEMSYNC=0`), and
   leaves WINEESYNC unset (the env dict fully replaces the parent, so unset ≡ 0). (There is no "DXMT esync-detection
   lie" — that was a myth; no such `lid3dshared.dylib` exists.)
-- **`PROTON_DISABLE_LSTEAMCLIENT=1`** (wired into `Wine.swift`).
+- **lsteamclient disabled by default** (patch `0031`; `PROTON_DISABLE_LSTEAMCLIENT=0`
+  restores it).
 - The Steam webhelper wrapper is applied automatically on launch — from the GUI or via
   `whisky run`, both through `Wine.prepareForLaunch` → `Steam.configure`.
 

@@ -16,7 +16,7 @@ unchanged. Confirmed with WINEDEBUG=+winsock: api.steampowered.com flips from
 AF_INET6 to AF_INET 184.31.138.105.
 
 diff --git a/dlls/ws2_32/unixlib.c b/dlls/ws2_32/unixlib.c
-index e0e1263e025..957ccd1372f 100644
+index e0e1263e025..dfd0dc4c356 100644
 --- a/dlls/ws2_32/unixlib.c
 +++ b/dlls/ws2_32/unixlib.c
 @@ -704,7 +704,7 @@ static NTSTATUS unix_getaddrinfo( void *args )
@@ -33,14 +33,14 @@ index e0e1263e025..957ccd1372f 100644
      }
  
 -    ret = getaddrinfo( params->node, service, hints ? &unix_hints : NULL, &unix_info );
-+    /* Force IPv4-only resolution when WINE_DISABLE_IPV6=1. On a network with no
++    /* IPv4-only resolution unless WINE_DISABLE_IPV6=0. On a network with no
 +     * working IPv6, Steam resolves its CM/directory hosts (api.steampowered.com,
 +     * *.steamserver.net) to dead IPv6 addresses, connects, and hangs at login
 +     * (STATUS_HOST_UNREACHABLE 0xc000023d). Pinning ai_family to AF_INET makes
-+     * getaddrinfo return only A records, so steamclient uses the working IPv4 path. */
++     * getaddrinfo return only A records, so steamclient takes the IPv4 path. */
 +    {
 +        const char *no_v6 = getenv( "WINE_DISABLE_IPV6" );
-+        if (no_v6 && no_v6[0] == '1')
++        if (!no_v6 || no_v6[0] != '0')
 +        {
 +            unix_hints.ai_family = AF_INET;
 +            force_v4 = 1;

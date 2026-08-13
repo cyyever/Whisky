@@ -3,33 +3,27 @@ Subject: ntdll: WINE_NX_COMPAT env var to force DEP on legacy images (macOS/DXMT
 Ports Whisky wine patch 0002. Opts into keeping NX enabled so DXMT placed buffers do not turn games into a slideshow on macOS Tahoe (see 3Shain/dxmt#161).
 
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index bbb448cc69d..f343d0786a1 100644
+index bbb448cc69d..c06e82b4e84 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
-@@ -1680,9 +1680,28 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
+@@ -1680,9 +1680,22 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
  
      if (!(nt->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT))
      {
 -        ULONG flags = MEM_EXECUTE_OPTION_ENABLE;
 -        WARN( "disabling no-exec because of %s\n", debugstr_w(wm->ldr.BaseDllName.Buffer) );
 -        NtSetInformationProcess( GetCurrentProcess(), ProcessExecuteFlags, &flags, sizeof(flags) );
-+        /* WINE_NX_COMPAT keeps DEP enabled for legacy (non-NX_COMPAT) images.
-+         * Disabling no-exec forces PROT_EXEC on data pages, which cripples
-+         * Metal/DXMT on macOS Tahoe (placed buffers turn games into a
-+         * slideshow); see 3Shain/dxmt#161. The env var opts into keeping NX on.
-+         *
-+         * "0" turns it back off, restoring upstream behaviour for one program.
-+         * Testing that needs to be per-program: the host sets WINE_NX_COMPAT for
-+         * every bottle, and a variable that only checked its own *presence*
-+         * could not be overridden by a per-program env at all -- a game that
-+         * needs upstream's DEP-off legacy handling had no way to ask for it. */
++        /* Keep DEP enabled for legacy (non-NX_COMPAT) images; WINE_NX_COMPAT=0
++         * restores upstream behaviour, per program, for a game that needs the
++         * DEP-off legacy handling. Disabling no-exec forces PROT_EXEC on data
++         * pages, which cripples Metal/DXMT on macOS Tahoe (placed buffers turn
++         * games into a slideshow); see 3Shain/dxmt#161. */
 +        UNICODE_STRING nx_name = RTL_CONSTANT_STRING( L"WINE_NX_COMPAT" );
 +        WCHAR nx_buf[8];
 +        UNICODE_STRING nx_value = { 0, sizeof(nx_buf), nx_buf };
 +        NTSTATUS nx_status = RtlQueryEnvironmentVariable_U( NULL, &nx_name, &nx_value );
 +
-+        if (nx_status == STATUS_VARIABLE_NOT_FOUND ||
-+            (!nx_status && nx_value.Length == sizeof(WCHAR) && nx_buf[0] == '0'))
++        if (!nx_status && nx_value.Length == sizeof(WCHAR) && nx_buf[0] == '0')
 +        {
 +            ULONG flags = MEM_EXECUTE_OPTION_ENABLE;
 +            WARN( "disabling no-exec because of %s\n", debugstr_w(wm->ldr.BaseDllName.Buffer) );

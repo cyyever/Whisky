@@ -273,48 +273,18 @@ public class Wine {
     ) -> [String: String] {
         let wineLibPath = WhiskyWineInstaller.libraryFolder
             .appending(path: "Wine").appending(path: "lib").path
+        // Only what the launcher alone can know. The constants that used to sit
+        // here — WINE_DISABLE_IPV6, WINE_NX_COMPAT, WINEMSYNC_NO_MANUALEVENT,
+        // PROTON_DISABLE_LSTEAMCLIENT, SDL_JOYSTICK_MFI — are now defaults in the
+        // code that reads them (patches 0011, 0019, 0008, 0031, 0032), each still
+        // overridable by setting the variable to "0". A constant set here has to
+        // be mirrored by hand in every harness that stands in for a GUI launch,
+        // and those mirrors drift.
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-all",
-            // Force IPv4-only name resolution. This Mac (and many behind a
-            // proxy/VPN) has no working IPv6, but Steam resolves its CM/directory
-            // hosts to IPv6 and hangs at login trying dead IPv6 addresses. Honoured
-            // by the WINE_DISABLE_IPV6 hook in dlls/ws2_32/unixlib.c getaddrinfo().
-            "WINE_DISABLE_IPV6": "1",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
             "GST_DEBUG": "1",
-            // Keep DEP on for legacy 32-bit images so Wine doesn't force PROT_EXEC
-            // on data pages, which makes DXMT/Metal a slideshow on macOS Tahoe
-            // (3Shain/dxmt#161). Honoured by patches/wine/0002-nx-compat-env-var.patch.
-            "WINE_NX_COMPAT": "1",
-            // Gamepads: skip SDL's GCController backend. On macOS 27.0 beta the
-            // GameController framework enumerates Xbox pads but delivers no input
-            // (26.0 had the same regression); SDL's HIDAPI/IOKit path reads the
-            // HID reports fine and keeps rumble. Revisit when GA fixes it.
-            "SDL_JOYSTICK_MFI": "0",
-            // Proton only: disable the lsteamclient bridge. Proton redirects the
-            // tier0_s64/vstdlib_s64 imports of steamclient64.dll and
-            // gameoverlayrenderer64.dll to ntdll so its Linux host-integrated
-            // tier0 shims are used for games. That bridge can never reach a Linux
-            // Steam on macOS, and when we run the real Windows Steam client the
-            // redirect strands g_pMemAllocSteam et al. on unimplemented ntdll
-            // stubs (our de-linux'd ntdll lacks those 297 symbols) -> steamclient64
-            // DllMain access-violates on a garbage allocator vtable and Steam shows
-            // "reinstall Steam". Ignored by Whisky-Wine 11.13 (no such code).
-            "PROTON_DISABLE_LSTEAMCLIENT": "1",
-            // Proton msync: route MANUAL-reset events (and anonymous auto-reset
-            // events) to server-sync; everything else -- semaphore, mutex, named
-            // auto-events, msg-queue -- stays on the fast msync path. This kills a
-            // full-msync 100%-CPU spin: steam.exe pins a core inside
-            // msync_wait_multiple on a rapidly set/reset MANUAL event, and once the
-            // update thread is spinning the login window never gets drawn.
-            // Reproduced and bisected with
-            // scripts/msync-manualevent-spin-test.c: under plain msync the flapping
-            // manual event burns ~13.6 CPU-s / 12.6M wakeups; NO_MANUALEVENT drops
-            // it to the wineserver baseline (~6.2 CPU-s / 0.6M wakeups), matching
-            // WINEMSYNC=0. Coarser lever if it ever regresses: WINEMSYNC_NO_EVENT=1
-            // (all events -> server). Ignored when msync is off / lever absent.
-            "WINEMSYNC_NO_MANUALEVENT": "1",
         ]
         bottle.settings.environmentVariables(wineEnv: &result)
         result.merge(environment, uniquingKeysWith: { $1 })
@@ -332,9 +302,6 @@ public class Wine {
             "WINEDEBUG": "-all",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
             "GST_DEBUG": "1",
-            // winedevice.exe (hosting winebus.sys) inherits its unix environment
-            // from wineserver, so the gamepad workaround must be set here too.
-            "SDL_JOYSTICK_MFI": "0",
         ]
         // The same bottle settings the clients get. WINEMSYNC is the one that
         // must not diverge: server/msync.c has its own do_msync(), so leaving
@@ -344,7 +311,7 @@ public class Wine {
         // and it silently invalidates any msync A/B run through this path,
         // because only one side of the pair actually changed. Everything else
         // here is inert server-side but is inherited by the processes wineserver
-        // spawns, same as SDL_JOYSTICK_MFI above.
+        // spawns.
         bottle.settings.environmentVariables(wineEnv: &result)
         result.merge(environment, uniquingKeysWith: { $1 })
         return result

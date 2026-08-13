@@ -45,7 +45,7 @@ thread is not pumping; `sample` puts `CrBrowserMain` in `msync_wait_single` /
 `msync_wait_multiple`. Setting the bottle's enhanced sync to **none** (`WINEMSYNC=0`)
 closes the window, and a `sample` of that run has zero `msync_wait_single` frames and 47
 `server_select` frames — so msync is the cause, not the window system. The object type is
-**not** yet narrowed: Whisky already sets `WINEMSYNC_NO_MANUALEVENT=1`, so the remaining
+**not** yet narrowed: manual events are already gated to server-sync by default, so the remaining
 candidates are auto-events, semaphores and mutexes.
 
 Read that A/B narrowly. Until `7ea00fa1`, `constructWineServerEnvironment()` did not apply
