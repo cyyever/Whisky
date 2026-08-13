@@ -71,12 +71,23 @@ EOF
 echo "=== Phase 2: x86_64 KosmicKrisp driver ==="
 export PATH="$TOOLS_BIN:$PATH"
 export PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig"
-if [ ! -d "$DRIVER_BUILD" ]; then
-    meson setup "$DRIVER_BUILD" "$MESA_SRC" --cross-file "$CROSS_FILE" \
-        -Dbuildtype=release -Dplatforms=macos \
-        -Dvulkan-drivers=kosmickrisp -Dgallium-drivers= -Dopengl=false \
-        -Dmesa-clc=system -Dzstd=disabled
+meson_args=( "$DRIVER_BUILD" "$MESA_SRC" --cross-file "$CROSS_FILE"
+    -Dbuildtype=release -Dplatforms=macos
+    -Dvulkan-drivers=kosmickrisp -Dgallium-drivers= -Dopengl=false
+    -Dmesa-clc=system -Dzstd=disabled )
+# meson records the cross-file's absolute path in meson-private/cmd_line.txt and
+# re-reads it on every regeneration -- including from `ninja`, before it can be
+# told a new one. So a build dir configured against a cross-file that has since
+# moved cannot be repaired by --reconfigure or --wipe; it dies in
+# machinefile.py with a FileNotFoundError that names the path and nothing else.
+# Start over instead. Costs one full rebuild, once.
+recorded="$DRIVER_BUILD/meson-private/cmd_line.txt"
+if [ -d "$DRIVER_BUILD" ] && [ -f "$recorded" ] &&
+   ! grep -qF "$CROSS_FILE" "$recorded"; then
+    echo "=== Build dir was configured against a different cross-file; reconfiguring from scratch ==="
+    rm -rf "$DRIVER_BUILD"
 fi
+[ -d "$DRIVER_BUILD" ] || meson setup "${meson_args[@]}"
 ninja -C "$DRIVER_BUILD"
 
 echo "=== Installing to $OUT_DIR ==="
