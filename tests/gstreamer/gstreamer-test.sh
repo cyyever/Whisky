@@ -102,32 +102,37 @@ fi
 # Check 3: decode, not just construct. Creating a reader builds no pipeline, so
 # check 2 passes on a GStreamer with no demuxer and no decoder -- it did, while
 # opening a real WMV hung. Only this one exercises asfdemux and libav.
-WMV_WIN='C:\\Program Files (x86)\\Steam\\steamapps\\common\\Super Street Fighter IV - Arcade Edition\\movie\\opening\\opening_tm_low.wmv'
+WMV_WIN='C:\Program Files (x86)\Steam\steamapps\common\Super Street Fighter IV - Arcade Edition\movie\opening\opening_tm_low.wmv'
 WMV_UNIX="$BOTTLE/drive_c/Program Files (x86)/Steam/steamapps/common/Super Street Fighter IV - Arcade Edition/movie/opening/opening_tm_low.wmv"
 echo
 echo "=== 3. decode a real WMV ==="
 if [ ! -f "$WMV_UNIX" ]; then
     echo "SKIP: no WMV to decode at $WMV_UNIX"
 else
-    if [ ! -f "$PLAY_EXE" ] || [ "$PLAY_SRC" -nt "$PLAY_EXE" ]; then
-        i686-w64-mingw32-gcc -O2 -o "$PLAY_EXE" "$PLAY_SRC" -lole32 || exit 1
-    fi
-    # A timeout is part of the check: the failure this catches is a hang, not an
-    # error return -- decodebin stalls when nothing can decode the stream.
-    out=$( cd "$WHISKY_LIB/bin" && timeout 90 env -i HOME="$HOME" \
-        WINEPREFIX="$BOTTLE" WINEDEBUG=-all \
-        DYLD_FALLBACK_LIBRARY_PATH="$WHISKY_LIB/lib" \
-        GST_PLUGIN_PATH="$WHISKY_LIB/lib/gstreamer-1.0" \
-        ./wine64 "$PLAY_EXE" "$WMV_WIN" 2>/dev/null )
-    rc=$?
-    echo "$out" | grep -vE "machine-id" | sed 's/^/    /'
-    if [ "$rc" -eq 0 ]; then
-        pass "samples decoded"
-    elif [ "$rc" -eq 124 ]; then
-        fail "timed out in Open() — no decoder for the stream, so decodebin stalls"
-        echo "      GST_DEBUG=2 names it: \"Missing decoder: Windows Media Video 9\"."
+    # Only check 3 needs it, and it is not in base macOS. Guarding at the top
+    # would skip checks 1 and 2 as well, which need nothing but wine.
+    if ! command -v timeout >/dev/null; then
+        echo "SKIP: timeout not found (brew install coreutils)"
     else
-        fail "playback failed (rc=$rc)"
+        if [ ! -f "$PLAY_EXE" ] || [ "$PLAY_SRC" -nt "$PLAY_EXE" ]; then
+            i686-w64-mingw32-gcc -O2 -o "$PLAY_EXE" "$PLAY_SRC" -lole32 || exit 1
+        fi
+        # A timeout is part of the check: the failure this catches is a hang, not
+        # an error return -- decodebin stalls when nothing can decode the stream.
+        out=$( cd "$WHISKY_LIB/bin" && timeout 90 env -i HOME="$HOME" \
+            WINEPREFIX="$BOTTLE" WINEDEBUG=-all \
+            DYLD_FALLBACK_LIBRARY_PATH="$WHISKY_LIB/lib" \
+            ./wine64 "$PLAY_EXE" "$WMV_WIN" 2>/dev/null )
+        rc=$?
+        echo "$out" | grep -vE "machine-id" | sed 's/^/    /'
+        if [ "$rc" -eq 0 ]; then
+            pass "samples decoded"
+        elif [ "$rc" -eq 124 ]; then
+            fail "timed out in Open() — no decoder for the stream, so decodebin stalls"
+            echo "      GST_DEBUG=2 names it: \"Missing decoder: Windows Media Video 9\"."
+        else
+            fail "playback failed (rc=$rc)"
+        fi
     fi
 fi
 

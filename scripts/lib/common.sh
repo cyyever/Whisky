@@ -287,3 +287,80 @@ wine_configure() {
             --without-pcap \
             --without-pcsclite
 }
+
+# The build-tree prefixes whose libraries get copied into Wine/lib. Scope for
+# relocate_to_rpath below, and it must stay this narrow: vendor/homebrew-x86 is
+# under PROJECT_DIR too, so matching on "$PROJECT_DIR/" rewrites brew
+# dependencies as well. That broke DXMT -- winemetal.so links llvm@15's
+# libunwind.1.dylib, llvm@15 is keg-only so nothing bundles it, and the
+# rewritten @rpath/libunwind.1.dylib resolved nowhere. The module failed to
+# load and took D3D11 with it, silently.
+bundled_prefixes() {
+    echo "$PROJECT_DIR/vendor/gstreamer-x86/ $PROJECT_DIR/vendor/ffmpeg-x86/"
+}
+
+# Point one Mach-O at the copies bundled in Wine/lib instead of the build tree:
+#
+#   - LC_LOAD_DYLIB absolute paths under a bundled prefix -> @rpath/<leaf>.
+#     An rpath only helps a leafname reference; a library linked by absolute
+#     path ignores it and resolves only on the machine that built it. FFmpeg
+#     bakes its --prefix into LC_ID_DYLIB, so libgstlibav carries
+#     vendor/ffmpeg-x86 paths -- hence both prefixes, not just GStreamer's.
+#   - LC_RPATH entries into the build tree, deleted. A dependency can be a
+#     clean @rpath/libfoo.dylib and still resolve to vendor/, because the
+#     linker recorded its -L paths as LC_RPATH: winegstreamer.so carried
+#     vendor/gstreamer-x86/lib ahead of @loader_path/../.., so the bundled copy
+#     was never reached and the process ended up with two libgstreamers and two
+#     GType systems. `otool -L` shows none of this -- it lists LC_LOAD_DYLIB
+#     only. Use `otool -l | grep LC_RPATH`.
+#
+# Both parses use sed, not `awk '{print $2}'`: otool splits on whitespace, so a
+# path containing a space yields a fragment, install_name_tool silently no-ops
+# under `|| true`, and the install keeps its build-tree paths with no error.
+#
+# Prefix matching is a `case` glob, not grep: it anchors at the start (a grep
+# would also match a prefix appearing mid-path) and needs no regex escaping for
+# a checkout path containing [, \ or |.
+# Does this Mach-O still point into a bundled build-tree prefix, by any of the
+# three tables? The gate for the loops below -- a file with no such reference
+# needs no rewriting, and adding an rpath to it is pure noise.
+has_bundled_ref() {
+    local f="$1" p
+    for p in $(bundled_prefixes); do
+        otool -l "$f" 2>/dev/null | grep -qF "$p" && return 0
+    done
+    return 1
+}
+
+relocate_to_rpath() {
+    local f="$1" prefixes dep rp p id
+    prefixes=$(bundled_prefixes)
+    # LC_ID_DYLIB first: it is the library's own recorded path, `-change` does
+    # not touch it, and leaving it in the build tree makes dyld load THAT copy
+    # for anything resolving by it -- two libgstreamers in one process, two
+    # plugin registries, and "no such element factory decodebin" for a plugin
+    # that registered in the other one. FFmpeg bakes its --prefix in here, so
+    # the libav* copies need it as much as GStreamer's own.
+    id=$(otool -D "$f" 2>/dev/null | tail -n +2)
+    for p in $prefixes; do
+        case "$id" in "$p"*)
+            install_name_tool -id "@rpath/$(basename "$id")" "$f" 2>/dev/null || true ;;
+        esac
+    done
+    otool -L "$f" 2>/dev/null | tail -n +2 \
+        | sed -n 's|^	\(.*\) (compatibility.*|\1|p' | while read -r dep; do
+        for p in $prefixes; do
+            case "$dep" in "$p"*)
+                install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$f" 2>/dev/null || true ;;
+            esac
+        done
+    done
+    otool -l "$f" 2>/dev/null \
+        | sed -n 's|^ *path \(.*\) (offset.*|\1|p' | while read -r rp; do
+        for p in $prefixes; do
+            case "$rp" in "$p"*)
+                install_name_tool -delete_rpath "$rp" "$f" 2>/dev/null || true ;;
+            esac
+        done
+    done
+}

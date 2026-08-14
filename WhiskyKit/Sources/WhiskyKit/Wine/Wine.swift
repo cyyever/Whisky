@@ -284,13 +284,12 @@ public class Wine {
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-all",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
-            // Where build-proton-x86.sh bundled GStreamer's plugins. Needed
-            // because the path compiled into the libraries is the build tree's,
-            // which does not exist on a machine that installed the Libraries
-            // rather than built them -- and without the plugins winegstreamer
-            // loads but cannot build a pipeline, so wmvcore fails at the next
-            // layer down instead of the delay-load.
-            "GST_PLUGIN_PATH": wineLibPath + "/gstreamer-1.0",
+            // No GST_PLUGIN_PATH / GST_PLUGIN_SCANNER: GStreamer locates both
+            // relative to libgstreamer-1.0.dylib's own load address (dladdr, see
+            // priv_gst_get_relocated_libgstreamer), which lands in Wine/lib once
+            // build-proton-x86.sh has fixed the install names and rpaths. Setting
+            // them made no measurable difference, and a constant here has to be
+            // mirrored by hand in every harness that stands in for a GUI launch.
             "GST_DEBUG": "1",
         ]
         bottle.settings.environmentVariables(wineEnv: &result)

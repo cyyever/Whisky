@@ -1,0 +1,45 @@
+diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
+index 074f3f14872..25b64ecf3f5 100644
+--- a/dlls/winegstreamer/wg_parser.c
++++ b/dlls/winegstreamer/wg_parser.c
+@@ -581,9 +581,18 @@ static GstAutoplugSelectResult autoplug_select_cb(GstElement *bin, GstPad *pad,
+         GST_WARNING("Disabled video acceleration since it breaks in wine.");
+         return GST_AUTOPLUG_SELECT_SKIP;
+     }
+-    if (!strcmp(name, "Proton video converter") && !parser->use_mediaconv)
+-    {
+-        GST_INFO("Skipping \"Proton video converter\".");
++    /* The audio converters belong under the same guard as the video one: they
++     * are the mediaconv transcoding path, they only work when Proton's launcher
++     * has set MEDIACONV_AUDIO_DUMP_FILE et al, and they outrank the real decoder.
++     * Without this they are autoplugged, fail in change_state ("Failed to open
++     * dump fozdb"), and the audio branch never links -- so wg_parser_connect
++     * waits for a stream that never arrives and Open() blocks forever. */
++    if (!parser->use_mediaconv
++            && (!strcmp(name, "Proton video converter")
++                || !strcmp(name, "Proton audio converter")
++                || !strcmp(name, "Proton audio converter with rate fixup")))
++    {
++        GST_INFO("Skipping \"%s\".", name);
+         return GST_AUTOPLUG_SELECT_SKIP;
+     }
+ 
+@@ -1290,7 +1299,17 @@ static bool stream_decodebin_create(struct wg_parser_stream *stream)
+     gst_bin_add(GST_BIN(parser->container), stream->decodebin);
+ 
+     g_signal_connect(stream->decodebin, "pad-added", G_CALLBACK(stream_decodebin_pad_added_cb), stream);
+-    g_signal_connect(stream->decodebin, "autoplug-select", G_CALLBACK(autoplug_select_cb), stream);
++    /* autoplug_select_cb takes a struct wg_parser *, not a stream: passing the
++     * stream reinterprets it as a parser, so the very first thing the callback
++     * reads -- parser->error -- comes from whatever wg_parser_stream field
++     * lands at that offset. It is reliably non-zero, so the callback returns
++     * SKIP for every factory decodebin proposes, silently. The main decodebin
++     * (which gets the demuxer) connects the same callback with `parser` and
++     * works; only the per-stream decodebins, which autoplug the DECODERS, are
++     * affected. Net effect: every codec is rejected and decodebin reports
++     * "no suitable plugins found: Missing decoder", so a WMV looks exactly
++     * like a GStreamer with no libav installed. */
++    g_signal_connect(stream->decodebin, "autoplug-select", G_CALLBACK(autoplug_select_cb), parser);
+     g_signal_connect(stream->decodebin, "no-more-pads", G_CALLBACK(stream_decodebin_no_more_pads_cb), stream);
+ 
+     pthread_mutex_lock(&parser->mutex);

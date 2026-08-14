@@ -203,8 +203,43 @@ if [ -d "$GST_PREFIX/lib" ]; then
     cp -R "$GST_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
     rm -rf "$INSTALL_DIR/Wine/lib/gstreamer-1.0"
     cp -R "$GST_PREFIX/lib/gstreamer-1.0" "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+    # The plugin scanner: GStreamer registers plugins by running this helper, and
+    # without it the in-process fallback silently drops libav -- no WMV decoder.
+    mkdir -p "$INSTALL_DIR/Wine/libexec/gstreamer-1.0"
+    cp "$GST_PREFIX/libexec/gstreamer-1.0/gst-plugin-scanner" \
+       "$INSTALL_DIR/Wine/libexec/gstreamer-1.0/" 2>/dev/null || true
+
+    # Same absolute-path problem as the unix modules below, and the same fix: the
+    # plugins and the scanner were linked against vendor/gstreamer-x86 by
+    # pkg-config, so they resolve only on the machine that built them.
+    # One rpath per location, pointing at Wine/lib where every dependency is --
+    # not a handful of guesses, which only differ in how far up they climb.
+    # Every dylib in lib/, not just libgst*: the GStreamer prefix also holds the
+    # glib the wrap built (glib, gobject, gio, gmodule, ffi), and leaving those
+    # pointing at the build tree pulled the whole build-tree branch back in --
+    # two libgstreamers again, by a different route than the install names.
+    for f in "$INSTALL_DIR/Wine/lib/gstreamer-1.0/"*.dylib \
+             "$INSTALL_DIR/Wine/lib/"*.dylib \
+             "$INSTALL_DIR/Wine/libexec/gstreamer-1.0/gst-plugin-scanner"; do
+        [ -f "$f" ] || continue
+        # Symlinks: install_name_tool follows them and rewrites the target, so a
+        # versioned pair gets patched twice and the ID ends up under the link's
+        # name while dependents record the real one.
+        [ -L "$f" ] && continue
+        # Only what came from a bundled build-tree prefix (see bundled_prefixes).
+        # Not `grep "$PROJECT_DIR/"`: X86_BREW_HOME is under PROJECT_DIR too.
+        has_bundled_ref "$f" || continue
+        case "$f" in
+        */lib/gstreamer-1.0/*)     rp='@loader_path/..' ;;
+        */libexec/gstreamer-1.0/*) rp='@loader_path/../../lib' ;;
+        *)                         rp='@loader_path' ;;
+        esac
+        install_name_tool -add_rpath "$rp" "$f" 2>/dev/null || true
+        relocate_to_rpath "$f"
+    done
+
     n=$(ls "$INSTALL_DIR/Wine/lib/gstreamer-1.0/"*.dylib 2>/dev/null | wc -l | tr -d ' ')
-    echo "GStreamer bundled: $n plugin(s)"
+    echo "GStreamer bundled: $n plugin(s), scanner $([ -x "$INSTALL_DIR/Wine/libexec/gstreamer-1.0/gst-plugin-scanner" ] && echo present || echo MISSING)"
 fi
 
 # --- KosmicKrisp Vulkan driver (Mesa) loader swap ----------------------------
@@ -246,18 +281,7 @@ fi
 echo "=== Patching rpaths on Wine unix modules ==="
 for so in "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/"*.so; do
     install_name_tool -add_rpath '@loader_path/../..' "$so" 2>/dev/null || true
-    # An rpath only helps a leafname reference. A module linked against a library
-    # by ABSOLUTE path -- winegstreamer.so carries nine into vendor/gstreamer-x86,
-    # because that is where pkg-config pointed the linker -- ignores it entirely,
-    # and resolves only on the machine that built it. Rewrite those to @rpath so
-    # the rpath above (and the bundled copies) actually apply.
-    #
-    # It appeared to work without this: DYLD_FALLBACK_LIBRARY_PATH points at
-    # Wine/lib, so dyld found the bundled copy by leafname after the absolute path
-    # missed. That is a fallback catching a dangling reference, not a resolved one.
-    otool -L "$so" 2>/dev/null | awk -v p="$PROJECT_DIR/" '$1 ~ "^"p {print $1}' | while read -r dep; do
-        install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$so" 2>/dev/null || true
-    done
+    relocate_to_rpath "$so"
 done
 
 # On macOS 26, Wine's auto-detect of the graphics driver via explorer's

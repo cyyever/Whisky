@@ -48,7 +48,13 @@ int main( int argc, char *argv[] )
         printf( "usage: wmv-playback-test <file.wmv>\n" );
         return 1;
     }
-    MultiByteToWideChar( CP_ACP, 0, argv[1], -1, path, MAX_PATH );
+    if (!MultiByteToWideChar( CP_ACP, 0, argv[1], -1, path, MAX_PATH ))
+    {
+        /* Unchecked, a path too long for MAX_PATH leaves `path` uninitialised
+         * stack and hands that to Open(). */
+        printf( "FAIL  path does not fit MAX_PATH: %s\n", argv[1] );
+        return 1;
+    }
 
     hr = CoInitializeEx( NULL, COINIT_MULTITHREADED );
     if (FAILED( hr )) { printf( "FAIL  CoInitializeEx 0x%08lx\n", (unsigned long)hr ); return 1; }
