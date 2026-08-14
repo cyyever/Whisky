@@ -31,6 +31,7 @@ set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$PROJECT_DIR/tests/lib/bottles.sh"
+. "$PROJECT_DIR/scripts/lib/common.sh"
 
 WHISKY_LIB="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine"
 WINE_LIB="$WHISKY_LIB/lib/wine"
@@ -78,15 +79,25 @@ fi
 
 echo
 echo "=== 2. WMCreateSyncReader returns a reader (bottle: $(basename "$BOTTLE")) ==="
-out=$( cd "$WHISKY_LIB/bin" && env -i HOME="$HOME" \
-    WINEPREFIX="$BOTTLE" WINEDEBUG=-all \
-    DYLD_FALLBACK_LIBRARY_PATH="$WHISKY_LIB/lib" \
-    ./wine64 "$PROBE_EXE" 2>/dev/null )
+# bottle_shellenv, not a hand-built `env -i`: it emits WINEMSYNC from the
+# bottle's enhancedSync. Get that wrong against a running wineserver and the
+# probe dies in msync_init before main(), printing nothing at all -- which this
+# script then reports as "failed before reaching WMCreateSyncReader".
+eval "$(bottle_shellenv "$BOTTLE")"
+export WINEDEBUG=-all
+out=$( "$WHISKY_LIB/bin/wine64" "$PROBE_EXE" </dev/null 2>/dev/null )
 rc=$?
 echo "$out" | sed 's/^/    /'
 
 if [ "$rc" -eq 0 ]; then
     pass "a sync reader was created"
+elif echo "$out" | grep -qE "returned 0x|IWMSyncReader created"; then
+    # Reachable, contrary to an earlier "unreachable" reading: the probe prints
+    # the "calling" line BEFORE the call and, on a failing HRESULT, prints
+    # "returned 0x…" and exits 1. Without this arm that run falls into the next
+    # one and is reported as a hang -- the opposite diagnosis, for the one case
+    # where the HRESULT is right there in the output.
+    fail "WMCreateSyncReader returned an error ($rc)"
 elif echo "$out" | grep -q "calling WMCreateSyncReader"; then
     fail "the probe did not return from WMCreateSyncReader ($rc)"
     echo "      That is the game's failure: the delay-load of winegstreamer.dll"
@@ -120,10 +131,8 @@ else
         # command substitution blocking forever, so the hang this check exists
         # to catch hangs the harness instead of failing it. </dev/null for the
         # same reason from the other end.
-        out=$( cd "$WHISKY_LIB/bin" && timeout -k 10 90 env -i HOME="$HOME" \
-            WINEPREFIX="$BOTTLE" WINEDEBUG=-all \
-            DYLD_FALLBACK_LIBRARY_PATH="$WHISKY_LIB/lib" \
-            ./wine64 "$PLAY_EXE" "$WMV_WIN" </dev/null 2>/dev/null )
+        out=$( timeout -k 10 90 "$WHISKY_LIB/bin/wine64" \
+            "$PLAY_EXE" "$WMV_WIN" </dev/null 2>/dev/null )
         rc=$?
         echo "$out" | grep -vE "machine-id" | sed 's/^/    /'
         if [ "$rc" -eq 0 ]; then

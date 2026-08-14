@@ -53,7 +53,11 @@ int main( int argc, char **argv )
     HANDLE thread;
     DWORD ret;
 
-    done = CreateEventW( NULL, TRUE, FALSE, NULL );
+    if (!(done = CreateEventW( NULL, TRUE, FALSE, NULL )))
+    {
+        printf( "FAIL  CreateEventW %lu\n", GetLastError() );
+        return 2;
+    }
     if (!(thread = CreateThread( NULL, 0, worker, NULL, 0, NULL )))
     {
         printf( "FAIL  CreateThread %lu\n", GetLastError() );
@@ -63,17 +67,29 @@ int main( int argc, char **argv )
     /* MsgWaitForMultipleObjects, not WaitForSingleObject: this thread owns the
      * process's first message queue, and a driver that dispatches window
      * creation to it deadlocks against a thread that only ever blocks. Pumping
-     * here is what a real app does, so a hang under it is a real hang. */
-    for (;;)
+     * here is what a real app does, so a hang under it is a real hang.
+     *
+     * Against an ABSOLUTE deadline, not `secs` handed to each call: the failure
+     * this looks for is a driver posting messages to this thread, so every batch
+     * would re-arm the timeout from zero and the probe would pump forever
+     * instead of ever reporting the hang. */
     {
-        MSG msg;
-        ret = MsgWaitForMultipleObjects( 1, &done, FALSE, secs * 1000, QS_ALLINPUT );
-        if (ret == WAIT_OBJECT_0) { printf( "pass  window created off-thread\n" ); return 0; }
-        if (ret == WAIT_TIMEOUT)  { printf( "FAIL  timed out after %lu s\n", secs ); return 1; }
-        while (PeekMessageW( &msg, NULL, 0, 0, PM_REMOVE ))
+        ULONGLONG deadline = GetTickCount64() + (ULONGLONG)secs * 1000;
+        for (;;)
         {
-            TranslateMessage( &msg );
-            DispatchMessageW( &msg );
+            ULONGLONG now = GetTickCount64();
+            MSG msg;
+
+            if (now >= deadline) { printf( "FAIL  timed out after %lu s\n", secs ); return 1; }
+            ret = MsgWaitForMultipleObjects( 1, &done, FALSE, (DWORD)(deadline - now), QS_ALLINPUT );
+            if (ret == WAIT_OBJECT_0) { printf( "pass  window created off-thread\n" ); return 0; }
+            if (ret == WAIT_TIMEOUT)  { printf( "FAIL  timed out after %lu s\n", secs ); return 1; }
+            if (ret == WAIT_FAILED)   { printf( "FAIL  MsgWaitForMultipleObjects %lu\n", GetLastError() ); return 2; }
+            while (PeekMessageW( &msg, NULL, 0, 0, PM_REMOVE ))
+            {
+                TranslateMessage( &msg );
+                DispatchMessageW( &msg );
+            }
         }
     }
 }

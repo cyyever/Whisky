@@ -1,20 +1,45 @@
 diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
-index e93e69d113f..7899c48bd09 100644
+index e93e69d113f..24a36856a9a 100644
 --- a/dlls/winegstreamer/wg_transform.c
 +++ b/dlls/winegstreamer/wg_transform.c
-@@ -681,6 +681,15 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
-             goto done;
-         }
+@@ -621,6 +621,7 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
+     GstElement *element, *capsfilter;
+     const char *shortname = NULL;
+     GstElementFactory *factory;
++    bool have_parser = true;
+     bool ret = false;
+     char *str;
  
-+        /* When no parser was found above, parsed_caps is a second reference to
-+         * transform->input_caps, which the transform still owns -- so it is not
-+         * writable, gst_caps_set_simple() refuses to touch it, and the caps stay
-+         * avc. GStreamer only logs a CRITICAL for that, so the capsfilter is
-+         * built from exactly the caps this workaround exists to replace, and the
-+         * failure surfaces two layers down as avdec_h264 rejecting every packet
-+         * and wg_transform_create() giving up at the "caps event accepted" gate.
-+         * make_writable copies only when shared, so the parser path is unchanged. */
-+        parsed_caps = gst_caps_make_writable(parsed_caps);
-         gst_caps_set_simple(parsed_caps, "stream-format", G_TYPE_STRING, "byte-stream", NULL);
-         gst_caps_set_simple(parsed_caps, "alignment", G_TYPE_STRING, "au", NULL);
+@@ -658,6 +659,7 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
+     {
+         gst_caps_unref(parsed_caps);
+         parsed_caps = gst_caps_ref(transform->input_caps);
++        have_parser = false;
+     }
  
+     if (!(element = find_element(GST_ELEMENT_FACTORY_TYPE_DECODER, parsed_caps, sink_caps)))
+@@ -669,10 +671,21 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
+      * packet it receives.
+      * As a workaround, we need to insert a capsfilter for avdec_h264 in order for it to use
+      * the byte-stream stream-format.
++     *
++     * Only when a parser was actually found -- it is h264parse's bug, so with no
++     * h264parse there is nothing to work around. It was unconditional, and the
++     * no-parser case was doubly wrong: parsed_caps is then a second reference to
++     * transform->input_caps, so gst_caps_set_simple() refused to touch it and
++     * only logged a GLib CRITICAL (leaving the filter equal to the input caps),
++     * and had it succeeded the filter would have been the FIRST element, forced
++     * to byte-stream, with the input caps event carrying stream-format=avc --
++     * an empty intersection, so push_event fails and creation dies at the
++     * "caps event accepted" gate instead.
+      */
+-    if ((factory = gst_element_get_factory(element)) &&
+-            (shortname = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory))) &&
+-            !strcmp(shortname, "avdec_h264"))
++    if (have_parser
++            && (factory = gst_element_get_factory(element))
++            && (shortname = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)))
++            && !strcmp(shortname, "avdec_h264"))
+     {
+         if (!(capsfilter = create_element("capsfilter", "good")) ||
+                 !append_element(transform->container, capsfilter, first, last))

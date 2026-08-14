@@ -357,6 +357,19 @@ not mistaken for the whole series.
 - `0031` ntdll: lsteamclient off by default; `PROTON_DISABLE_LSTEAMCLIENT=0` restores it.
 - `0032` winebus: SDL's MFI joystick backend off by default, set as an SDL hint at
   `SDL_HINT_DEFAULT` priority so `SDL_JOYSTICK_MFI=1` still wins.
+- `0033` winegstreamer: two faults in `autoplug_select_cb`. `stream_decodebin_create`
+  connected it with `stream` where the callback reads its user_data as a
+  `struct wg_parser *`, so `parser->error` came from the wrong offset and every
+  decoder was silently SKIPped — present in upstream WineHQ too. And the mediaconv
+  audio converters had no `!use_mediaconv` guard, so they outranked the real decoder
+  and then failed in `change_state`. Symptom of either: "Missing decoder" on a Wine
+  whose libav is registered and whose caps match.
+- `0034` winegstreamer: the avdec_h264 capsfilter workaround is now gated on a parser
+  actually having been found. Without one, `parsed_caps` is a second reference to
+  `transform->input_caps` — `gst_caps_set_simple()` refuses to touch shared caps and
+  only logs a GLib CRITICAL — and the filter would be the first element, forced to
+  byte-stream against an avc caps event. It is h264parse's bug, so with no h264parse
+  there is nothing to work around.
 
 
 ## Steam on Proton — launch investigation

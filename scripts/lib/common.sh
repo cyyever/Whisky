@@ -367,7 +367,7 @@ relocate_to_rpath() {
     done
     otool -L "$f" 2>/dev/null | tail -n +2 \
         | sed -n 's|^	\(.*\) (compatibility.*|\1|p' | while read -r dep; do
-        for p in $prefixes; do
+        for p in "${prefixes[@]}"; do
             case "$dep" in "$p"*)
                 install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$f" 2>/dev/null || true ;;
             esac

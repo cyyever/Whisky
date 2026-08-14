@@ -50,12 +50,15 @@ gstreamer: $(GST_STAMP)  ## Build x86_64 GStreamer into vendor/gstreamer-x86 (ne
 # --remote vendor/gstreamer` the stamp is still newer than both scripts, `make
 # gstreamer` reports nothing to do, and `make proton` links the stale tree --
 # the same "silently built the wrong thing" shape WINE_INPUTS exists to avoid.
-# vendor/gstreamer/.git is a real directory here, not a gitlink file, so HEAD
-# lives inside it rather than under .git/modules. wildcard, so a checkout that
-# vendors the tree without git still builds.
-GST_SRC_HEAD := $(CURDIR)/vendor/gstreamer/.git/HEAD
+# Both submodule layouts: `git submodule update --init` leaves vendor/gstreamer/.git
+# as a gitlink FILE with HEAD under .git/modules, while a directly-cloned tree has
+# a real .git directory. Checking only one silently expands to nothing on the other
+# and the staleness this dependency prevents comes back, quietly. firstword so a
+# checkout with neither (a vendored tarball) still builds.
+GST_SRC_HEAD := $(firstword $(wildcard $(CURDIR)/vendor/gstreamer/.git/HEAD \
+                                       $(CURDIR)/.git/modules/vendor/gstreamer/HEAD))
 
-$(GST_STAMP): $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh $(wildcard $(GST_SRC_HEAD))
+$(GST_STAMP): $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh $(GST_SRC_HEAD)
 	$(SCRIPTS_DIR)/build-gstreamer-x86.sh
 
 # === Proton (the shipped Wine backend) ===
