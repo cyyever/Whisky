@@ -33,6 +33,11 @@ int main( int argc, char **argv )
     long code = 0, secs = 20;
     HRESULT hr;
 
+    /* Unbuffered: this test can hang, and on a timeout kill a block-buffered
+     * stdout is discarded -- "printed nothing" then reads as "hung on the first
+     * call" when it may have hung several steps later. */
+    setvbuf( stdout, NULL, _IONBF, 0 );
+
     if (argc < 2)
     {
         printf( "usage: wmv-render-test <file.wmv> [seconds]\n" );

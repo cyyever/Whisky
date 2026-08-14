@@ -87,10 +87,6 @@ echo "$out" | sed 's/^/    /'
 
 if [ "$rc" -eq 0 ]; then
     pass "a sync reader was created"
-elif echo "$out" | grep -qE "returned 0x|IWMSyncReader created"; then
-    # It came back and said no. A different fault from the one below, and the
-    # HRESULT is in the output above.
-    fail "WMCreateSyncReader returned an error ($rc)"
 elif echo "$out" | grep -q "calling WMCreateSyncReader"; then
     fail "the probe did not return from WMCreateSyncReader ($rc)"
     echo "      That is the game's failure: the delay-load of winegstreamer.dll"
@@ -119,10 +115,15 @@ else
         fi
         # A timeout is part of the check: the failure this catches is a hang, not
         # an error return -- decodebin stalls when nothing can decode the stream.
-        out=$( cd "$WHISKY_LIB/bin" && timeout 90 env -i HOME="$HOME" \
+        # -k: plain SIGTERM is not enough -- a wine64 wedged in a GStreamer
+        # streaming thread can ignore it, keep the pipe open, and leave the
+        # command substitution blocking forever, so the hang this check exists
+        # to catch hangs the harness instead of failing it. </dev/null for the
+        # same reason from the other end.
+        out=$( cd "$WHISKY_LIB/bin" && timeout -k 10 90 env -i HOME="$HOME" \
             WINEPREFIX="$BOTTLE" WINEDEBUG=-all \
             DYLD_FALLBACK_LIBRARY_PATH="$WHISKY_LIB/lib" \
-            ./wine64 "$PLAY_EXE" "$WMV_WIN" 2>/dev/null )
+            ./wine64 "$PLAY_EXE" "$WMV_WIN" </dev/null 2>/dev/null )
         rc=$?
         echo "$out" | grep -vE "machine-id" | sed 's/^/    /'
         if [ "$rc" -eq 0 ]; then

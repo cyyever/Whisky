@@ -197,6 +197,12 @@ cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/
 # tarball install or a cleaned build tree leaves wmvcore unable to create a sync
 # reader again. GST_PLUGIN_PATH is set alongside, because the compiled-in path is
 # the build tree's, not this one.
+# The absent prefix is fatal, not a skipped optional feature: Wine is configured
+# --with-gstreamer unconditionally. Delete
+# vendor/gstreamer-x86 while build/ is up to date and make relinks nothing,
+# `make install` succeeds, this block would silently not run, and the installed
+# winegstreamer.so points at a prefix that no longer exists -- with no message
+# anywhere until a game plays a WMV and hangs.
 GST_PREFIX="$PROJECT_DIR/vendor/gstreamer-x86"
 if [ -d "$GST_PREFIX/lib" ]; then
     echo "=== Bundling GStreamer (winegstreamer's backend) ==="
@@ -239,7 +245,18 @@ if [ -d "$GST_PREFIX/lib" ]; then
     done
 
     n=$(ls "$INSTALL_DIR/Wine/lib/gstreamer-1.0/"*.dylib 2>/dev/null | wc -l | tr -d ' ')
-    echo "GStreamer bundled: $n plugin(s), scanner $([ -x "$INSTALL_DIR/Wine/libexec/gstreamer-1.0/gst-plugin-scanner" ] && echo present || echo MISSING)"
+    # Fatal, not a word inside an echo. GStreamer registers plugins by running
+    # this helper; without it the in-process fallback drops libav, and the only
+    # symptom is a WMV that finds no decoder and stalls at runtime. Reporting
+    # "scanner MISSING" and exiting 0 hides a broken install behind a green build.
+    if [ ! -x "$INSTALL_DIR/Wine/libexec/gstreamer-1.0/gst-plugin-scanner" ]; then
+        echo "ERROR: gst-plugin-scanner missing from the install; plugins will not register" >&2
+        exit 1
+    fi
+    echo "GStreamer bundled: $n plugin(s), scanner present"
+else
+    echo "ERROR: no x86_64 GStreamer at $GST_PREFIX (run 'make gstreamer')" >&2
+    exit 1
 fi
 
 # --- KosmicKrisp Vulkan driver (Mesa) loader swap ----------------------------

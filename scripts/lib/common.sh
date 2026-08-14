@@ -140,9 +140,16 @@ apply_patches() {
 #   * PATH gains Wine/bin so wine64/wineserver are directly on PATH;
 #   * WINEPREFIX points at the bottle;
 #   * DYLD_FALLBACK_LIBRARY_PATH points at Wine/lib (dylib resolution);
+#   * WINEMSYNC mirrors the bottle's enhancedSync, exactly as
+#     BottleSettings.environmentVariables does: "0" for .none, nothing for
+#     .msync (msync is proton-wine's default, so there is nothing to set).
+#     Emitted as ${WINEMSYNC:-0} so the msync A/B scripts, which export it
+#     before the eval, still win. Leaving it out entirely was the earlier
+#     design and it is a trap: the client then defaults to msync-on against a
+#     wineserver started with it off, and every wine invocation dies in
+#     msync_init before main() -- which looks like "the tool printed nothing".
 # Deliberately does NOT emit WINEDLLOVERRIDES (the app no longer sets it — patch
-# 0017's builtin load order handles D3D/Vulkan) nor WINEMSYNC (the msync test
-# scripts drive WINEMSYNC=1 vs =0 themselves; the helper must not clobber that).
+# 0017's builtin load order handles D3D/Vulkan).
 bottle_shellenv() {
     local bottle_dir="$1"
     if [ -z "$bottle_dir" ] || [ ! -d "$bottle_dir" ]; then
@@ -153,6 +160,10 @@ bottle_shellenv() {
     printf 'export PATH=%q\n' "$wine_dir/bin:$PATH"
     printf 'export WINEPREFIX=%q\n' "$bottle_dir"
     printf 'export DYLD_FALLBACK_LIBRARY_PATH=%q\n' "$wine_dir/lib"
+    if plutil -p "$bottle_dir/Metadata.plist" 2>/dev/null |
+            grep -A2 '"enhancedSync"' | grep -q '"none"'; then
+        printf 'export WINEMSYNC=${WINEMSYNC:-0}\n'
+    fi
 }
 
 # whisky_ncpu — parallelism for make/ninja (physical CPU count). A function, not
@@ -295,8 +306,14 @@ wine_configure() {
 # libunwind.1.dylib, llvm@15 is keg-only so nothing bundles it, and the
 # rewritten @rpath/libunwind.1.dylib resolved nowhere. The module failed to
 # load and took D3D11 with it, silently.
+# One per line, and every reader consumes it with `while IFS= read -r`: joined
+# with spaces and word-split by $(...) it breaks on a checkout path containing a
+# space -- "/Users/me/My Code/Whisky/vendor/..." becomes the tokens
+# "/Users/me/My" and "Code/Whisky/vendor/...", and the first one prefix-matches
+# everything under the home directory, including the brew keg this scope exists
+# to exclude. That is the DXMT breakage above, reintroduced by a quoting bug.
 bundled_prefixes() {
-    echo "$PROJECT_DIR/vendor/gstreamer-x86/ $PROJECT_DIR/vendor/ffmpeg-x86/"
+    printf '%s\n' "$PROJECT_DIR/vendor/gstreamer-x86/" "$PROJECT_DIR/vendor/ffmpeg-x86/"
 }
 
 # Point one Mach-O at the copies bundled in Wine/lib instead of the build tree:
@@ -326,15 +343,16 @@ bundled_prefixes() {
 # needs no rewriting, and adding an rpath to it is pure noise.
 has_bundled_ref() {
     local f="$1" p
-    for p in $(bundled_prefixes); do
+    while IFS= read -r p; do
         otool -l "$f" 2>/dev/null | grep -qF "$p" && return 0
-    done
+    done < <(bundled_prefixes)
     return 1
 }
 
 relocate_to_rpath() {
-    local f="$1" prefixes dep rp p id
-    prefixes=$(bundled_prefixes)
+    local f="$1" dep rp p id
+    local prefixes=()
+    while IFS= read -r p; do prefixes+=("$p"); done < <(bundled_prefixes)
     # LC_ID_DYLIB first: it is the library's own recorded path, `-change` does
     # not touch it, and leaving it in the build tree makes dyld load THAT copy
     # for anything resolving by it -- two libgstreamers in one process, two
@@ -342,7 +360,7 @@ relocate_to_rpath() {
     # that registered in the other one. FFmpeg bakes its --prefix in here, so
     # the libav* copies need it as much as GStreamer's own.
     id=$(otool -D "$f" 2>/dev/null | tail -n +2)
-    for p in $prefixes; do
+    for p in "${prefixes[@]}"; do
         case "$id" in "$p"*)
             install_name_tool -id "@rpath/$(basename "$id")" "$f" 2>/dev/null || true ;;
         esac
@@ -357,7 +375,7 @@ relocate_to_rpath() {
     done
     otool -l "$f" 2>/dev/null \
         | sed -n 's|^ *path \(.*\) (offset.*|\1|p' | while read -r rp; do
-        for p in $prefixes; do
+        for p in "${prefixes[@]}"; do
             case "$rp" in "$p"*)
                 install_name_tool -delete_rpath "$rp" "$f" 2>/dev/null || true ;;
             esac

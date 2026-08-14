@@ -46,7 +46,16 @@ GST_STAMP := $(CURDIR)/vendor/gstreamer-x86/lib/libgstreamer-1.0.dylib
 
 gstreamer: $(GST_STAMP)  ## Build x86_64 GStreamer into vendor/gstreamer-x86 (needed by proton)
 
-$(GST_STAMP): $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh
+# The submodule's HEAD too, not just the scripts: after a `git submodule update
+# --remote vendor/gstreamer` the stamp is still newer than both scripts, `make
+# gstreamer` reports nothing to do, and `make proton` links the stale tree --
+# the same "silently built the wrong thing" shape WINE_INPUTS exists to avoid.
+# vendor/gstreamer/.git is a real directory here, not a gitlink file, so HEAD
+# lives inside it rather than under .git/modules. wildcard, so a checkout that
+# vendors the tree without git still builds.
+GST_SRC_HEAD := $(CURDIR)/vendor/gstreamer/.git/HEAD
+
+$(GST_STAMP): $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh $(wildcard $(GST_SRC_HEAD))
 	$(SCRIPTS_DIR)/build-gstreamer-x86.sh
 
 # === Proton (the shipped Wine backend) ===
