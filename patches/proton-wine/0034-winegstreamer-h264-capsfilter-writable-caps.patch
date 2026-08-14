@@ -1,0 +1,20 @@
+diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
+index e93e69d113f..7899c48bd09 100644
+--- a/dlls/winegstreamer/wg_transform.c
++++ b/dlls/winegstreamer/wg_transform.c
+@@ -681,6 +681,15 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
+             goto done;
+         }
+ 
++        /* When no parser was found above, parsed_caps is a second reference to
++         * transform->input_caps, which the transform still owns -- so it is not
++         * writable, gst_caps_set_simple() refuses to touch it, and the caps stay
++         * avc. GStreamer only logs a CRITICAL for that, so the capsfilter is
++         * built from exactly the caps this workaround exists to replace, and the
++         * failure surfaces two layers down as avdec_h264 rejecting every packet
++         * and wg_transform_create() giving up at the "caps event accepted" gate.
++         * make_writable copies only when shared, so the parser path is unchanged. */
++        parsed_caps = gst_caps_make_writable(parsed_caps);
+         gst_caps_set_simple(parsed_caps, "stream-format", G_TYPE_STRING, "byte-stream", NULL);
+         gst_caps_set_simple(parsed_caps, "alignment", G_TYPE_STRING, "au", NULL);
+ 

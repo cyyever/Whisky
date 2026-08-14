@@ -16,8 +16,9 @@ set -e
 # Only what decoding a WMV needs, via -Dauto_features=disabled plus an explicit
 # enable list: core, the base plugins wg_parser drives (app for appsrc/appsink,
 # playback for decodebin, the converters), asfdemux for the container, and libav
-# for the codec. Everything else -- good, bad, rs, devtools, introspection, the
-# GTK and X11 sinks -- stays off. FFmpeg comes from vendor/ffmpeg-x86, already
+# for the codec, plus the handful of good/bad plugins winegstreamer creates by
+# name (see the enable list below). Everything else -- rs, devtools,
+# introspection, the GTK and X11 sinks -- stays off. FFmpeg comes from vendor/ffmpeg-x86, already
 # built by build-ffmpeg-x86.sh, not from the FFmpeg.wrap subproject.
 #
 # glib comes from subprojects/glib.wrap: the x86_64 brew cannot provide that
@@ -106,7 +107,7 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     --prefix "$OUT_DIR"
     -Dbuildtype=release
     -Dauto_features=disabled
-    # The three subprojects we need, and every other one off.
+    # The subprojects we need, and every other one off.
     -Dbase=enabled -Dugly=enabled -Dlibav=enabled
     -Dgood=enabled -Dbad=enabled -Drs=disabled -Ddevtools=disabled
     -Dges=disabled -Drtsp_server=disabled -Dpython=disabled -Dsharp=disabled
@@ -162,7 +163,14 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     -Dgst-plugins-good:videofilter=enabled
     -Dgst-plugins-good:deinterlace=enabled
     -Dgst-plugins-good:debugutils=enabled
-    -Dgst-plugins-bad:audiobuffersplit=enabled )
+    -Dgst-plugins-bad:audiobuffersplit=enabled
+    # h264parse. wg_transform's decoder chain looks for a parser first and only
+    # falls back to feeding the decoder the raw input caps; without it Steam's
+    # CEF video hits that fallback, where an avdec_h264 workaround tries to
+    # rewrite caps it does not own -- see patch 0034. The parser is the path
+    # that code was written for, so build it rather than only fixing the
+    # fallback.
+    -Dgst-plugins-bad:videoparsers=enabled )
 
 # meson records the cross-file's absolute path and re-reads it on every
 # regeneration, so a build dir configured against a different one dies in
