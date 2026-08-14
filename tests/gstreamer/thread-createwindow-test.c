@@ -1,13 +1,18 @@
 /*
  * thread-createwindow-test — CreateWindowExW off the main thread, nothing else.
  *
- *   wine64 thread-createwindow-test.exe [seconds]
+ *   wine64 thread-createwindow-test.exe [seconds] [nopump]
  *
  * The 32-bit DirectShow hang (tests/gstreamer/dshow-render-test.sh) ends in
  * quartz's message thread, blocked in CreateWindowExW -> NtUserCreateWindowEx
  * while autoplug waits on it. That stack has quartz, devenum, combase and
  * winegstreamer in it, any of which could be the real culprit. This strips all
  * of them: one worker thread, one window, no COM, no media.
+ *
+ * "nopump" is the mode that matches the real failure: quartz's caller is inside
+ * a synchronous RenderFile and cannot pump, so if window creation needs the
+ * first thread to service it, it never gets serviced. The default (pumping)
+ * mode is the control -- it is what a well-behaved app does, and it passes.
  *
  * If this hangs in a 32-bit process and completes in a 64-bit one, the fault is
  * in win32u/winemac window creation under WoW64 and DirectShow is only the
@@ -21,6 +26,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static HANDLE done;
 
@@ -50,6 +56,7 @@ int main( int argc, char **argv )
     setvbuf( stdout, NULL, _IONBF, 0 );
 
     DWORD secs = (argc > 1) ? (DWORD)atol( argv[1] ) : 20;
+    BOOL nopump = (argc > 2 && !strcmp( argv[2], "nopump" ));
     HANDLE thread;
     DWORD ret;
 
@@ -73,6 +80,15 @@ int main( int argc, char **argv )
      * this looks for is a driver posting messages to this thread, so every batch
      * would re-arm the timeout from zero and the probe would pump forever
      * instead of ever reporting the hang. */
+    if (nopump)
+    {
+        printf( "      main: blocking WITHOUT pumping (the RenderFile case)\n" );
+        ret = WaitForSingleObject( done, secs * 1000 );
+        if (ret == WAIT_OBJECT_0) { printf( "pass  window created off-thread\n" ); return 0; }
+        printf( "FAIL  timed out after %lu s (no pump)\n", secs );
+        return 1;
+    }
+
     {
         ULONGLONG deadline = GetTickCount64() + (ULONGLONG)secs * 1000;
         for (;;)
