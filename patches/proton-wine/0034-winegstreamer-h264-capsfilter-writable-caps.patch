@@ -1,3 +1,16 @@
+Subject: winegstreamer: gate the avdec_h264 capsfilter on a parser being found
+
+The workaround exists for an h264parse bug, so with no h264parse there is
+nothing to work around -- and applying it anyway was wrong twice over: with no
+parser, parsed_caps is a second reference to transform->input_caps, so
+gst_caps_set_simple() refused to touch it and only logged a GLib CRITICAL
+("assertion 'IS_WRITABLE (caps)' failed"), leaving the filter equal to the
+caps the workaround exists to replace; and had it succeeded, the capsfilter
+would have been the FIRST element, forced to byte-stream against an avc caps
+event -- an empty intersection, a failed push_event, and wg_transform_create
+dying at the "caps event accepted" gate. Seen as Steam's CEF video failing
+with two CRITICALs and "Failed to create winegstreamer transform".
+
 diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
 index e93e69d113f..24a36856a9a 100644
 --- a/dlls/winegstreamer/wg_transform.c

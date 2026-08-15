@@ -1,3 +1,20 @@
+Subject: winegstreamer: fix two autoplug-select faults that hid every decoder
+
+stream_decodebin_create connected autoplug_select_cb with `stream`, but the
+callback reads its user_data as a struct wg_parser *; parser->error came from
+whatever stream field lands at that offset -- reliably non-zero -- so every
+decoder decodebin proposed was skipped silently. The per-stream decodebins are
+the ones that autoplug DECODERS, so a WMV reported "Missing decoder" on a Wine
+whose libav was registered and whose caps matched. The main decodebin passes
+`parser` and worked, which is why the demuxer was found and nothing else was.
+Present in upstream wine-mirror/wine master too.
+
+The mediaconv audio converters also had no !use_mediaconv guard, only the
+video one did. They outrank the real decoder, get autoplugged, then fail in
+change_state ("Failed to open dump fozdb") because nothing set
+MEDIACONV_AUDIO_DUMP_FILE -- the audio branch never linked and Open() blocked
+forever.
+
 diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
 index 074f3f14872..25b64ecf3f5 100644
 --- a/dlls/winegstreamer/wg_parser.c

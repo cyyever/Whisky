@@ -147,11 +147,11 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     -Dgst-plugins-base:gl_api=opengl
     -Dgst-plugins-base:gl_platform=cgl
     -Dgst-plugins-base:gl_winsys=cocoa
-    # glvideoflip (one of the elements wg_parser creates by name when the PE side
-    # asks for the OpenGL path) is compiled only when graphene is found -- see
-    # gst-plugins-base/ext/gl/meson.build. Without it winegstreamer logs
-    # "failed to create glvideoflip" and Open() never returns. graphene comes
-    # from a wrap, so this costs one more subproject and no system dependency.
+    # glvideoflip is compiled only when graphene is found -- see
+    # gst-plugins-base/ext/gl/meson.build. NOTE: since proton-wine patch 0035
+    # (no GL display on macOS) winegstreamer's GL element chain is never built
+    # here, so this exists only to keep the plugin set complete for a future
+    # re-enable; Wine's configure needs just the gstreamer-gl-1.0 LIBRARY.
     -Dgst-plugins-base:gl-graphene=enabled
     -Dgst-plugins-ugly:asfdemux=enabled
     -Dgst-plugins-ugly:gpl=enabled

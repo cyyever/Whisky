@@ -1,35 +1,47 @@
+Subject: winegstreamer: no GL display on macOS
+
+The display itself is harmless -- with GST_GL_WINDOW=x11 not compiled in, it
+is an inert dummy -- but a non-NULL display flips wg_parser_create()'s
+"use_opengl && gl_display" gate, and the glupload chain then creates a Cocoa
+GL CONTEXT. gst_gl_invoke_on_main() hands that to the process's Cocoa main
+thread; the block faults, and Wine's init_handler runs on a thread with no
+Wine TEB, poisoning its TSD base before any handler logic. The main thread
+freezes inside a mach trap where signals are never delivered: the main
+dispatch queue stops draining, CFRunLoopWakeUp is a no-op, and every
+OnMainThread() caller in winemac.drv deadlocks. Observed as a 32-bit
+DirectShow RenderFile that never returns -- SSFIV frozen on its first movie --
+while 64-bit passes by never requesting GL (wm_reader enables it only for
+sizeof(void*) == 4).
+
+The trade, stated plainly: 32-bit wm_reader loses the GL I420->RGBA converter
+chain it requests for exactly this case, and colour-converts on the CPU
+instead. That path never worked on macOS (the process froze before a single
+frame), so nothing that works today is lost; if the foreign-thread fault
+handling is ever hardened, this can be revisited.
+
+tests/gstreamer/dshow-render-test.sh reproduces the hang in both bitnesses
+without Steam or a game.
+
 diff --git a/dlls/winegstreamer/unixlib.c b/dlls/winegstreamer/unixlib.c
-index b259388026b..b6451290e35 100644
+index b259388026b..30fecd57ba5 100644
 --- a/dlls/winegstreamer/unixlib.c
 +++ b/dlls/winegstreamer/unixlib.c
-@@ -276,7 +276,9 @@ NTSTATUS wg_init_gstreamer(void *arg)
-     if (params->err_on)
-         setenv("GST_DEBUG", "1", FALSE);
-     setenv("GST_DEBUG_NO_COLOR", "1", FALSE);
-+#ifndef __APPLE__
-     setenv("GST_GL_WINDOW", "x11", 1);
-+#endif
- 
-     /* GStreamer installs a temporary SEGV handler when it loads plugins
-      * to initialize its registry calling exit(-1) when any fault is caught.
-@@ -323,8 +325,24 @@ NTSTATUS wg_init_gstreamer(void *arg)
+@@ -323,8 +323,22 @@ NTSTATUS wg_init_gstreamer(void *arg)
      if (!gst_element_register_winegstreamerstepper(NULL))
          GST_ERROR("Failed to register the stepper element");
  
++    /* Not on macOS. The display itself is harmless (with GST_GL_WINDOW=x11
++     * unavailable it is an inert dummy), but a non-NULL display flips
++     * wg_parser_create()'s "use_opengl && gl_display" gate, and the glupload
++     * chain then creates a Cocoa GL CONTEXT -- whose gst_gl_invoke_on_main()
++     * block faults on the Cocoa main thread, where Wine's init_handler has no
++     * TEB and poisons the thread. The whole process's main thread freezes and
++     * every winemac.drv OnMainThread() caller deadlocks: a 32-bit DirectShow
++     * RenderFile that never returns (tests/gstreamer/dshow-render-test.sh).
++     * The trade: 32-bit wm_reader loses its GL I420->RGBA converter and falls
++     * back to videoconvert on the CPU. See docs/proton-migration.md, 0035. */
 +#ifdef __APPLE__
-+    /* No GL display on macOS. gst_gl_display_new()'s Cocoa backend hands its
-+     * initialisation to the process's Cocoa main thread via
-+     * gst_gl_invoke_on_main(); that block faults, and Wine's segv_handler
-+     * then runs on a thread that has no Wine TEB -- ntdll_get_thread_data()'s
-+     * pthread_getspecific() returns garbage and the handler never returns.
-+     * The main thread is frozen from then on: the dispatch queue stops
-+     * draining, CFRunLoopWakeUp is a no-op, and every OnMainThread() caller
-+     * in winemac.drv deadlocks -- observed as a 32-bit DirectShow RenderFile
-+     * that never returns (tests/gstreamer/dshow-render-test.sh). The display
-+     * exists to share GL contexts with autoplugged GL elements, a path that
-+     * is Linux-only here (GST_GL_WINDOW=x11 above), so skipping it loses
-+     * nothing on macOS. */
-+    gl_display = NULL;
++    GST_INFO("Not creating a GL display; the GL element chain deadlocks on macOS.");
 +#else
      if (!(gl_display = gst_gl_display_new()))
          GST_ERROR("Failed to create OpenGL display");

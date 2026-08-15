@@ -23,7 +23,7 @@ tree that plain WineHQ 11.13 lacks.
   (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
   redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
-  in main: `patches/proton-wine/` (**31-patch series**, base `c3007e6f` on Valve's
+  in main: `patches/proton-wine/` (**34-patch series**, base `c3007e6f` on Valve's
   `bleeding-edge`) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
   `scripts/build-dxmt.sh` defaults `DXMT_WINE_BUILD` to `vendor/proton-wine/build`.
@@ -55,7 +55,7 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 31-patch series
+## patches/proton-wine/ — 34-patch series
 Base: **`c3007e6f`** on Valve's `bleeding-edge` — the only branch Valve still pushes to
 (see the header comment in `scripts/build-proton-x86.sh`, which is the source of truth).
 
@@ -316,7 +316,7 @@ Both are **PE** dlls built for BOTH arches (`dlls/{combase,ntdll}/{i386,x86_64}-
   double-calls), drop `fls_section` around the callback, re-acquire and `goto restart`.
   This is a genuine upstream Wine bug, not Proton- or msync-specific.
 
-### 0016–0032 — one line each
+### 0016–0035 — one line each
 Not written up individually: each patch file carries its own reasoning in its header,
 and that header is the source of truth. Listed here only so the enumeration above is
 not mistaken for the whole series.
@@ -334,6 +334,29 @@ not mistaken for the whole series.
   user32's input entry points inline; under Rosetta that write traps into Rosetta's own
   exception server and is retried forever, hanging the game with no fault ever reaching
   Wine. Resolved ahead of the registry like `0017`; `WINEDLLOVERRIDES` still wins.
+
+**Permanent — behaviour fixes, keep:**
+
+- `0031` ntdll: lsteamclient off by default; `PROTON_DISABLE_LSTEAMCLIENT=0` restores it.
+- `0032` winebus: SDL's MFI joystick backend off by default, set as an SDL hint at
+  `SDL_HINT_DEFAULT` priority so `SDL_JOYSTICK_MFI=1` still wins.
+- `0033` winegstreamer: two faults in `autoplug_select_cb`. `stream_decodebin_create`
+  connected it with `stream` where the callback reads its user_data as a
+  `struct wg_parser *`, so `parser->error` came from the wrong offset and every
+  decoder was silently SKIPped — present in upstream WineHQ too. And the mediaconv
+  audio converters had no `!use_mediaconv` guard, so they outranked the real decoder
+  and then failed in `change_state`. Symptom of either: "Missing decoder" on a Wine
+  whose libav is registered and whose caps match.
+- `0034` winegstreamer: the avdec_h264 capsfilter workaround is now gated on a parser
+  actually having been found. Without one, `parsed_caps` is a second reference to
+  `transform->input_caps` — `gst_caps_set_simple()` refuses to touch shared caps and
+  only logs a GLib CRITICAL — and the filter would be the first element, forced to
+  byte-stream against an avc caps event. It is h264parse's bug, so with no h264parse
+  there is nothing to work around.
+- `0035` winegstreamer: no GL display on macOS — a non-NULL display let the glupload
+  chain create a Cocoa GL context whose main-thread block faults with no Wine TEB,
+  freezing the process's Cocoa main thread. Guarded by `tests/gstreamer/dshow-render-test.sh`
+  (which SKIPs without mingw/timeout/a bottle WMV — run it where those exist).
 
 **Temporary — diagnostics, drop together when the investigations close:**
 
@@ -354,30 +377,6 @@ not mistaken for the whole series.
   break `IMAGE_SCN_MEM_SHARED|MEM_WRITE` sections, which are mapped MAP_SHARED
   across the prefix, so one process's relocations become another's wrong
   pointers. Plus the cap banner ordering and the environment branch's trace token.
-- `0031` ntdll: lsteamclient off by default; `PROTON_DISABLE_LSTEAMCLIENT=0` restores it.
-- `0032` winebus: SDL's MFI joystick backend off by default, set as an SDL hint at
-  `SDL_HINT_DEFAULT` priority so `SDL_JOYSTICK_MFI=1` still wins.
-- `0033` winegstreamer: two faults in `autoplug_select_cb`. `stream_decodebin_create`
-  connected it with `stream` where the callback reads its user_data as a
-  `struct wg_parser *`, so `parser->error` came from the wrong offset and every
-  decoder was silently SKIPped — present in upstream WineHQ too. And the mediaconv
-  audio converters had no `!use_mediaconv` guard, so they outranked the real decoder
-  and then failed in `change_state`. Symptom of either: "Missing decoder" on a Wine
-  whose libav is registered and whose caps match.
-- `0034` winegstreamer: the avdec_h264 capsfilter workaround is now gated on a parser
-  actually having been found. Without one, `parsed_caps` is a second reference to
-  `transform->input_caps` — `gst_caps_set_simple()` refuses to touch shared caps and
-  only logs a GLib CRITICAL — and the filter would be the first element, forced to
-  byte-stream against an avc caps event. It is h264parse's bug, so with no h264parse
-  there is nothing to work around.
-- `0035` winegstreamer: no GL display on macOS. `wg_init_gstreamer` unconditionally
-  called `gst_gl_display_new()`; the Cocoa backend hands its initialisation to the
-  process's Cocoa main thread via `gst_gl_invoke_on_main()`, the block faults, and
-  Wine's segv_handler then runs on a thread with no Wine TEB — frozen forever in
-  `pthread_getspecific`. From then on the main dispatch queue never drains and every
-  `OnMainThread()` in winemac.drv deadlocks. Observed as 32-bit DirectShow
-  `RenderFile` never returning (SSFIV frozen on its first movie);
-  `tests/gstreamer/dshow-render-test.sh` guards it in both bitnesses.
 
 
 ## Steam on Proton — launch investigation
