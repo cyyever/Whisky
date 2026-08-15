@@ -370,15 +370,6 @@ not mistaken for the whole series.
   only logs a GLib CRITICAL — and the filter would be the first element, forced to
   byte-stream against an avc caps event. It is h264parse's bug, so with no h264parse
   there is nothing to work around.
-- `0035` winemac: two main-thread round-trips removed from per-thread Cocoa setup.
-  `macdrv_init_thread_data()` asked the Cocoa main thread for the keyboard input
-  source on every thread that first touches Cocoa, though the layout is a property
-  of the process — now fetched once in `macdrv_init` and copied, kept current by
-  `macdrv_keyboard_changed`. And `macdrv_create_win_data()` created the Cocoa window
-  while holding `win_data_mutex`; the window is now created before the data is
-  published in `win_datas`, where no lock is needed because nothing else can find it.
-  **Neither fixes the 32-bit DirectShow hang** (tests/gstreamer/dshow-render-test.sh
-  still fails) — they were written while chasing it and stand on their own.
 
 
 ## Steam on Proton — launch investigation

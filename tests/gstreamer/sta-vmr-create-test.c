@@ -70,9 +70,17 @@ int main( int argc, char **argv )
      * "printed nothing" then reads as "hung on the first call". */
     setvbuf( stdout, NULL, _IONBF, 0 );
 
+    /* Rejected rather than defaulted to 0: a bad argument would print
+     * "timed out after 0 s", which is exactly what the hang looks like. */
     DWORD secs = (argc > 1) ? (DWORD)atol( argv[1] ) : 20;
     HANDLE thread;
     DWORD ret;
+
+    if (argc > 1 && atol( argv[1] ) <= 0)
+    {
+        printf( "usage: %s [seconds > 0]\n", argv[0] );
+        return 2;
+    }
 
     if (FAILED( CoInitializeEx( NULL, COINIT_APARTMENTTHREADED ) ))
     {

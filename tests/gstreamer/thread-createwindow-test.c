@@ -55,8 +55,20 @@ int main( int argc, char **argv )
      * "printed nothing" then reads as "hung on the first call". */
     setvbuf( stdout, NULL, _IONBF, 0 );
 
-    DWORD secs = (argc > 1) ? (DWORD)atol( argv[1] ) : 20;
-    BOOL nopump = (argc > 2 && !strcmp( argv[2], "nopump" ));
+    /* "nopump" accepted in either position, and a bad seconds value rejected:
+     * `... nopump` alone used to give secs = atol("nopump") = 0 AND the pumping
+     * mode -- an instant "timed out after 0 s" for the mode not even asked for,
+     * indistinguishable from the hang this looks for. */
+    BOOL nopump = FALSE;
+    DWORD secs = 20;
+    int i;
+
+    for (i = 1; i < argc; i++)
+    {
+        if (!strcmp( argv[i], "nopump" )) nopump = TRUE;
+        else if (atol( argv[i] ) > 0) secs = (DWORD)atol( argv[i] );
+        else { printf( "usage: %s [seconds > 0] [nopump]\n", argv[0] ); return 2; }
+    }
     HANDLE thread;
     DWORD ret;
 
@@ -71,7 +83,10 @@ int main( int argc, char **argv )
         return 2;
     }
 
-    /* MsgWaitForMultipleObjects, not WaitForSingleObject: this thread owns the
+    /* Pumping mode below; nopump takes the plain wait just above, which is the
+     * point of that mode.
+     *
+     * MsgWaitForMultipleObjects, not WaitForSingleObject: this thread owns the
      * process's first message queue, and a driver that dispatches window
      * creation to it deadlocks against a thread that only ever blocks. Pumping
      * here is what a real app does, so a hang under it is a real hang.

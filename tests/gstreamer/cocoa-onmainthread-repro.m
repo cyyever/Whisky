@@ -137,6 +137,13 @@ int main(int argc, char **argv)
 
     setvbuf(stdout, NULL, _IONBF, 0);
     if (argc > 1) iterations = atoi(argv[1]);
+    /* A non-numeric or <= 0 argument would loop zero times and print
+     * "pass 0 window creations" -- success having tested nothing. */
+    if (iterations <= 0)
+    {
+        fprintf(stderr, "usage: %s [iterations > 0]\n", argv[0]);
+        return 2;
+    }
 
     @autoreleasepool
     {
