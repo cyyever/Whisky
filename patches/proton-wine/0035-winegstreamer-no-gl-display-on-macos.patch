@@ -1,0 +1,39 @@
+diff --git a/dlls/winegstreamer/unixlib.c b/dlls/winegstreamer/unixlib.c
+index b259388026b..b6451290e35 100644
+--- a/dlls/winegstreamer/unixlib.c
++++ b/dlls/winegstreamer/unixlib.c
+@@ -276,7 +276,9 @@ NTSTATUS wg_init_gstreamer(void *arg)
+     if (params->err_on)
+         setenv("GST_DEBUG", "1", FALSE);
+     setenv("GST_DEBUG_NO_COLOR", "1", FALSE);
++#ifndef __APPLE__
+     setenv("GST_GL_WINDOW", "x11", 1);
++#endif
+ 
+     /* GStreamer installs a temporary SEGV handler when it loads plugins
+      * to initialize its registry calling exit(-1) when any fault is caught.
+@@ -323,8 +325,24 @@ NTSTATUS wg_init_gstreamer(void *arg)
+     if (!gst_element_register_winegstreamerstepper(NULL))
+         GST_ERROR("Failed to register the stepper element");
+ 
++#ifdef __APPLE__
++    /* No GL display on macOS. gst_gl_display_new()'s Cocoa backend hands its
++     * initialisation to the process's Cocoa main thread via
++     * gst_gl_invoke_on_main(); that block faults, and Wine's segv_handler
++     * then runs on a thread that has no Wine TEB -- ntdll_get_thread_data()'s
++     * pthread_getspecific() returns garbage and the handler never returns.
++     * The main thread is frozen from then on: the dispatch queue stops
++     * draining, CFRunLoopWakeUp is a no-op, and every OnMainThread() caller
++     * in winemac.drv deadlocks -- observed as a 32-bit DirectShow RenderFile
++     * that never returns (tests/gstreamer/dshow-render-test.sh). The display
++     * exists to share GL contexts with autoplugged GL elements, a path that
++     * is Linux-only here (GST_GL_WINDOW=x11 above), so skipping it loses
++     * nothing on macOS. */
++    gl_display = NULL;
++#else
+     if (!(gl_display = gst_gl_display_new()))
+         GST_ERROR("Failed to create OpenGL display");
++#endif
+ 
+     if (!media_converter_init())
+     {

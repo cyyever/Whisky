@@ -370,6 +370,14 @@ not mistaken for the whole series.
   only logs a GLib CRITICAL — and the filter would be the first element, forced to
   byte-stream against an avc caps event. It is h264parse's bug, so with no h264parse
   there is nothing to work around.
+- `0035` winegstreamer: no GL display on macOS. `wg_init_gstreamer` unconditionally
+  called `gst_gl_display_new()`; the Cocoa backend hands its initialisation to the
+  process's Cocoa main thread via `gst_gl_invoke_on_main()`, the block faults, and
+  Wine's segv_handler then runs on a thread with no Wine TEB — frozen forever in
+  `pthread_getspecific`. From then on the main dispatch queue never drains and every
+  `OnMainThread()` in winemac.drv deadlocks. Observed as 32-bit DirectShow
+  `RenderFile` never returning (SSFIV frozen on its first movie);
+  `tests/gstreamer/dshow-render-test.sh` guards it in both bitnesses.
 
 
 ## Steam on Proton — launch investigation
