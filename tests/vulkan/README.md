@@ -16,6 +16,44 @@ now.
 Kept as a fast KK graphics smoke test: if this ever regresses to black after a
 `vendor/mesa` bump, a real KosmicKrisp graphics regression landed.
 
+## strip-cull-test.sh — primitive assembly / cull / vertex-fetch matrix
+
+`tests/vulkan/strip-cull-test.sh` draws one fullscreen quad under a matrix of
+topology × cull × winding × fetch shape and reads back two diagonal probe
+pixels: one inside each of the quad's two triangles. The two disagreeing on a
+single draw is the signature of the SSFIV artifact (a fullscreen quad losing
+exactly one triangle — the diagonal half-screen split during video and loading
+screens).
+
+Covers what the game's draw path actually does: strip winding compensation
+before the cull test, uint16 index buffers at offsets ≡2 mod 4, D3D9-style
+28-byte-stride vertex fetch at odd bind offsets, firstVertex/vertexOffset, and
+triangle fans in both windings (DXVK passes `D3DPT_TRIANGLEFAN` through as
+`VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN`; KK emulates fans on a helper queue).
+A stress phase replays the presentation blit's shape — a 6-vertex triangle
+list whose vertex data the CPU rewrites immediately before every draw — with
+two frames in flight for 400 frames.
+
+**Result (2026-08-15): all 19 configs + stress correct, 0 failures.** The
+draw path is exonerated; run this after every KosmicKrisp bump.
+
+## present-probe-test.sh — the real presentation path
+
+`tests/vulkan/present-probe-test.sh [seconds]` builds and runs
+`vk-present-probe.m`: a real NSWindow + CAMetalLayer + `VK_EXT_metal_surface`
+FIFO swapchain whose render loop only clears each frame to an alternating
+solid colour (even = red, odd = blue) and presents — no app-side geometry.
+Every present runs `kk_CmdBlitImage2` → `vk_meta_blit`, a 6-vertex
+triangle-list blit into the drawable; the window must always be one solid
+colour, and a diagonal split between the two colours is that quad losing a
+triangle. The probe self-checks by capturing its own window ~once a second;
+exit code 1 means a split was seen. Note: the window takes focus and flashes
+for the duration — keep the run short when working interactively.
+
+**Result (2026-08-15): 500+ frames, 0 splits.** The clean present path holds
+under no load; the artifact needed GPU backlog (see `patches/mesa/0001`, the
+acquire-time present-blit lifetime fix).
+
 ## Build & run
 
 ```bash

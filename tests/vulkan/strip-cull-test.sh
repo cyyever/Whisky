@@ -31,13 +31,26 @@ EXE="$PROJECT_DIR/tests/vulkan/vk-strip-cull-test"
 [ -f "$ICD" ] || { echo "SKIP: no KosmicKrisp ICD (scripts/build-kosmickrisp-x86.sh)"; exit 0; }
 command -v glslangValidator >/dev/null || { echo "SKIP: glslangValidator not found (brew install glslang)"; exit 0; }
 
-for st in vert frag; do
-    if [ "$PROJECT_DIR/tests/vulkan/quad.$st" -nt "$PROJECT_DIR/tests/vulkan/quad_${st}.h" ]; then
-        glslangValidator -V --vn "quad_${st}_spv" -o "$PROJECT_DIR/tests/vulkan/quad_${st}.h" \
-            "$PROJECT_DIR/tests/vulkan/quad.$st" >/dev/null || exit 1
+# Regenerate every shader header (quad.vert -> quad_vert.h, quad_attr.vert ->
+# quad_attr_vert.h, ...). Iterating the glob rather than a hardcoded quad.*
+# list: a shader outside the list silently compiles against its stale header.
+for shader in "$PROJECT_DIR"/tests/vulkan/*.vert "$PROJECT_DIR"/tests/vulkan/*.frag; do
+    [ -e "$shader" ] || continue
+    name="$(basename "$shader")"
+    stem="${name%.*}"; ext="${name##*.}"
+    hdr="$PROJECT_DIR/tests/vulkan/${stem}_${ext}.h"
+    if [ "$shader" -nt "$hdr" ]; then
+        glslangValidator -V --vn "${stem}_${ext}_spv" -o "$hdr" \
+            "$shader" >/dev/null || exit 1
     fi
 done
-if [ ! -x "$EXE" ] || [ "$SRC" -nt "$EXE" ]; then
+needs_build=0
+[ ! -x "$EXE" ] && needs_build=1
+[ "$SRC" -nt "$EXE" ] && needs_build=1
+for hdr in "$PROJECT_DIR"/tests/vulkan/quad*.h; do
+    [ -e "$hdr" ] && [ "$hdr" -nt "$EXE" ] && needs_build=1
+done
+if [ "$needs_build" = 1 ]; then
     clang -arch x86_64 -O1 -I"$VKH" -I"$PROJECT_DIR/tests/vulkan" -o "$EXE" "$SRC" \
         -L"$VKL" -lvulkan -Wl,-rpath,"$VKL" || exit 1
 fi

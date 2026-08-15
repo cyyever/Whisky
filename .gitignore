@@ -115,3 +115,7 @@ vendor/proxychains-ng/
 tests/**/*.exe
 tests/window-visibility-native
 scratchpad/
+
+# Vulkan probe binaries (tests/vulkan/*.sh rebuild them when stale)
+tests/vulkan/vk-strip-cull-test
+tests/vulkan/vk-present-probe
