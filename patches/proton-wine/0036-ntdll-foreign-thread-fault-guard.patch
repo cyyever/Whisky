@@ -1,0 +1,115 @@
+Subject: ntdll: hand faults on foreign threads to the default action on macOS
+
+A fault on a thread Wine never created -- the Cocoa main thread, a GCD
+worker, CoreAudio -- must not run Wine's handler machinery. init_handler's
+__APPLE__ branch derives the TEB from pthread TLS and writes the result into
+the thread's TSD base; on a foreign thread pthread_getspecific() returns
+NULL, so it dereferences a near-zero pointer and poisons the thread's TSD
+before any handler logic runs. The thread freezes inside the handler, where
+further signals are never delivered. When that thread is the Cocoa main
+thread the whole process follows: the main dispatch queue stops draining,
+CFRunLoopWakeUp is a no-op, and every winemac.drv OnMainThread() caller
+deadlocks -- a hang with no crash report anywhere. That is how winegstreamer's
+GL context creation froze 32-bit DirectShow (patch 0035 removes that trigger;
+this removes the mechanism).
+
+There is nothing Wine can do with such a fault -- no TEB means no Windows
+exception to dispatch -- so restore the default action and re-raise: the
+process dies with a crash report naming the real culprit instead of freezing.
+
+Upstream's check_invalid_gsbase (MR !7064) cannot catch this: it runs in
+segv_handler, after init_handler has already done the damage.
+
+Measured with the 0035 trigger temporarily re-opened: the 32-bit RenderFile
+case fails in ~20s with an error instead of hanging forever; with 0035 in
+place the full suite is unchanged (dshow both bitnesses, gstreamer-test 3/3).
+
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 72e57494e8f..516c58d24ae 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2684,6 +2684,42 @@ static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
+ }
+ 
+ 
++#ifdef __APPLE__
++/***********************************************************************
++ *           handle_foreign_thread_fault
++ *
++ * A fault on a thread Wine never created -- the Cocoa main thread, a GCD
++ * worker, CoreAudio -- must not run Wine's handler machinery. init_handler's
++ * __APPLE__ branch derives the TEB from pthread TLS and writes the result
++ * into the thread's TSD base; on a foreign thread pthread_getspecific()
++ * returns NULL, so it dereferences a near-zero pointer and poisons the
++ * thread's TSD before any handler logic runs. The thread then freezes inside
++ * the handler where further signals are never delivered. When that thread is
++ * the Cocoa main thread, the process's main dispatch queue stops draining and
++ * every winemac.drv OnMainThread() caller deadlocks -- a whole-process hang
++ * with no crash report (seen via winegstreamer's GL context creation, patch
++ * 0035). There is nothing Wine can do with such a fault: no TEB means no
++ * Windows exception to dispatch. Restore the default action and let the
++ * fault terminate the process with a crash report naming the real culprit.
++ *
++ * Upstream's check_invalid_gsbase (segv_handler) cannot catch this: it runs
++ * after init_handler has already done the damage.
++ */
++static BOOL handle_foreign_thread_fault( int signal )
++{
++    struct sigaction sa;
++
++    if (pthread_getspecific( teb_key )) return FALSE;
++
++    sa.sa_handler = SIG_DFL;
++    sa.sa_flags = 0;
++    sigemptyset( &sa.sa_mask );
++    sigaction( signal, &sa, NULL );
++    raise( signal );
++    return TRUE;
++}
++#endif
++
+ /**********************************************************************
+  *		segv_handler
+  *
+@@ -2749,7 +2785,12 @@ static void segv_trace( const void *addr, ULONG_PTR rip, ULONG_PTR rsp, unsigned
+ 
+ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    ucontext_t *ucontext = init_handler( sigcontext );
++    ucontext_t *ucontext;
++
++#ifdef __APPLE__
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
++    ucontext = init_handler( sigcontext );
+     EXCEPTION_RECORD rec = { 0 };
+     struct xcontext context;
+     void *steamclient_addr = NULL;
+@@ -2852,7 +2893,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    ucontext_t *ucontext = init_handler( sigcontext );
++    ucontext_t *ucontext;
++
++#ifdef __APPLE__
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
++    ucontext = init_handler( sigcontext );
+     EXCEPTION_RECORD rec = { 0 };
+     struct xcontext context;
+ 
+@@ -2886,7 +2932,12 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    ucontext_t *ucontext = init_handler( sigcontext );
++    ucontext_t *ucontext;
++
++#ifdef __APPLE__
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
++    ucontext = init_handler( sigcontext );
+     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)RIP_sig(ucontext) };
+     struct xcontext context;
+ 

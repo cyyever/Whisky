@@ -23,7 +23,7 @@ tree that plain WineHQ 11.13 lacks.
   (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
   redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
-  in main: `patches/proton-wine/` (**34-patch series**, base `c3007e6f` on Valve's
+  in main: `patches/proton-wine/` (**35-patch series**, base `c3007e6f` on Valve's
   `bleeding-edge`) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
   `scripts/build-dxmt.sh` defaults `DXMT_WINE_BUILD` to `vendor/proton-wine/build`.
@@ -55,7 +55,7 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 34-patch series
+## patches/proton-wine/ — 35-patch series
 Base: **`c3007e6f`** on Valve's `bleeding-edge` — the only branch Valve still pushes to
 (see the header comment in `scripts/build-proton-x86.sh`, which is the source of truth).
 
@@ -316,7 +316,7 @@ Both are **PE** dlls built for BOTH arches (`dlls/{combase,ntdll}/{i386,x86_64}-
   double-calls), drop `fls_section` around the callback, re-acquire and `goto restart`.
   This is a genuine upstream Wine bug, not Proton- or msync-specific.
 
-### 0016–0035 — one line each
+### 0016–0036 — one line each
 Not written up individually: each patch file carries its own reasoning in its header,
 and that header is the source of truth. Listed here only so the enumeration above is
 not mistaken for the whole series.
@@ -357,6 +357,13 @@ not mistaken for the whole series.
   chain create a Cocoa GL context whose main-thread block faults with no Wine TEB,
   freezing the process's Cocoa main thread. Guarded by `tests/gstreamer/dshow-render-test.sh`
   (which SKIPs without mingw/timeout/a bottle WMV — run it where those exist).
+- `0036` ntdll: faults on foreign threads (no Wine TEB) go to the default action on
+  macOS instead of Wine's handlers — `init_handler` otherwise poisons the thread's TSD
+  and the thread freezes where signals are never delivered; on the Cocoa main thread
+  that hangs the whole process with no report. Removes the *mechanism* behind the 0035
+  freeze (0035 removes the trigger). Measured: with the trigger re-opened, the hang
+  becomes a ~20 s clean failure. Upstream's `check_invalid_gsbase` runs too late to
+  catch this. Candidate for a WineHQ report.
 
 **Temporary — diagnostics, drop together when the investigations close:**
 
