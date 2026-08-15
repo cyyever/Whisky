@@ -23,9 +23,9 @@ ARM_BREW_PREFIX="$(brew --prefix)"
 # off PATH). llvm is keg-only; phase 1 (mesa_clc) needs its llvm-config.
 export PATH="$ARM_BREW_PREFIX/opt/llvm/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# Apply out-of-tree Mesa patches, if any. patches/mesa/ is currently empty/absent
-# (MR 42811, the present-queue residencySet fix, is merged upstream), so this is
-# a no-op today; the hook stays for future out-of-tree Mesa fixes.
+# Apply out-of-tree Mesa patches (patches/mesa/0001-*.patch: the WSI present-blit
+# command-buffer lifetime fix -- acquire frees a blit cmdbuf the GPU may still be
+# executing; the freed quad tears into a diagonal under GPU backlog).
 apply_patches "$MESA_SRC" "$PROJECT_DIR/patches/mesa" Mesa
 
 TOOLS_BUILD="$MESA_SRC/build-arm64-tools"

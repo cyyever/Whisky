@@ -1,0 +1,93 @@
+From 8f2a17d12c3ff94a0b382ecfaac5d4c061088bd9 Mon Sep 17 00:00:00 2001
+From: Yuanyuan Chen <cyyever@outlook.com>
+Date: Sat, 15 Aug 2026 19:06:25 +0800
+Subject: [PATCH] wsi/metal: wait for the last present blit before re-recording
+ it
+
+wsi_metal_swapchain_acquire_next_image hands out a drawable, then
+re-records the per-image blit command buffer, because the MTLTexture
+backing the presentable image changes on every acquisition.  The
+re-record begins by freeing the command buffer recorded for the
+previous present of that image -- but nothing has waited on that
+submission yet: the per-image fence it signals is only waited (and
+reset) at the NEXT present of the image, which happens after this
+acquire.  Under GPU backlog the free can therefore recycle a command
+buffer the GPU is still executing, along with the vk_meta blit state
+it references, and the present blit tears -- observed on KosmicKrisp
+as a fullscreen quad losing exactly one of its two triangles during
+video playback and loading screens.
+
+Wait for the image's fence before the re-record, bounded by the
+caller's remaining acquire timeout; on expiry release the drawable
+and return VK_TIMEOUT instead of blocking past the budget.  The
+trailing no-drawable timeout also becomes spec-correct: VK_TIMEOUT
+for a non-zero timeout, VK_NOT_READY only for timeout == 0.
+---
+ src/vulkan/wsi/wsi_common_metal.c | 37 ++++++++++++++++++++++++++++++-
+ 1 file changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+index d8be6491..e89ae9ef 100644
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -571,6 +571,21 @@ wsi_cmd_blit_image_to_image(const struct wsi_swapchain *chain,
+    return result;
+ }
+ 
++/* Nanoseconds from now until `end`, clamped to [0, UINT64_MAX] so a caller
++ * timeout of UINT64_MAX cannot overflow the subtraction. */
++static uint64_t
++wsi_metal_ns_until(const struct timespec *end)
++{
++   struct timespec now;
++   clock_gettime(CLOCK_MONOTONIC, &now);
++   if (timespec_after(&now, end))
++      return 0;
++   const int64_t sec = end->tv_sec - now.tv_sec;
++   if (sec >= INT64_MAX / 1000000000)
++      return UINT64_MAX;
++   return (uint64_t)sec * 1000000000 + (end->tv_nsec - now.tv_nsec);
++}
++
+ static VkResult
+ wsi_metal_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+                                        const VkAcquireNextImageInfoKHR *info,
+@@ -592,6 +607,26 @@ wsi_metal_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+       if (drawable) {
+          uint32_t i = (chain->current_image_index++) % chain->base.image_count;
+          struct wsi_metal_image *image = &chain->images[i];
++         if (!wsi_chain->wsi->sw && chain->base.fences[i] != VK_NULL_HANDLE) {
++            /* The re-record below frees the blit command buffer submitted the
++             * last time this image was presented.  Nothing has waited for that
++             * submission yet -- the per-image throttle fence it signalled is
++             * only waited at the *next* present of this image, which happens
++             * after us.  Freeing a command buffer the GPU is still executing
++             * recycles its encoding and vk_meta vertex memory mid-draw; under
++             * GPU backlog this tears the present blit (half the fullscreen
++             * quad lands).  Wait for that submission here, bounded by the
++             * caller's remaining timeout budget. */
++            VkResult result = chain->base.wsi->WaitForFences(
++               chain->base.device, 1, &chain->base.fences[i], true,
++               wsi_metal_ns_until(&end_time));
++            if (result == VK_TIMEOUT) {
++               wsi_metal_release_drawable(drawable);
++               return info->timeout ? VK_TIMEOUT : VK_NOT_READY;
++            }
++            if (result != VK_SUCCESS)
++               return result;
++         }
+          *image_index = i;
+          image->drawable = drawable;
+          if (!wsi_chain->wsi->sw) {
+@@ -608,7 +643,7 @@ wsi_metal_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+       struct timespec current_time;
+       clock_gettime(CLOCK_MONOTONIC, &current_time);
+       if (timespec_after(&current_time, &end_time))
+-         return VK_NOT_READY;
++         return info->timeout ? VK_TIMEOUT : VK_NOT_READY;
+    }
+ }
+ 
+-- 
+2.55.0
+
