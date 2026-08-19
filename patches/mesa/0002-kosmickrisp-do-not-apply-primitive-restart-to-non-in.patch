@@ -1,0 +1,66 @@
+From aeacf4ef49194948b50b8e1490d7af163eadaefa Mon Sep 17 00:00:00 2001
+From: Yuanyuan Chen <cyyever@outlook.com>
+Date: Wed, 19 Aug 2026 08:45:14 +0800
+Subject: [PATCH] kosmickrisp: do not apply primitive restart to non-indexed
+ draws
+
+Primitive restart is scoped to indexed draws -- Vulkan 1.4, "Primitive
+Restart": "This enable only applies to indexed draws".  kk_unroll_geometry
+passes the restart index through whenever primitiveRestartEnable is set,
+without checking that the draw is indexed.
+
+For a non-indexed draw that is not a harmless no-op.  The unroll kernel
+reads its input through poly_load_index(), which returns the vertex ID
+itself when there is no index buffer (in_index_size_B == 0), and
+poly_unroll_geometry() compares exactly that value against the restart
+index.  The runtime's ia.primitive_restart_index stays 0 until an index
+buffer is first bound (it is derived from the index type by
+vk_cmd_set_index_buffer_type), so on such a draw vertex 0 reads as a
+restart marker.  A 4-vertex triangle fan then emits one triangle instead
+of two: the scan restarts at vertex 0, drops the hub, and decomposes only
+vertices 1..3.  A fullscreen quad loses half of itself along its diagonal.
+
+Triangle fans are the topology that reaches this, because they unroll
+unconditionally (Metal has no fan primitive) and so never pass through
+requires_unroll_restart(), which does scope restart to indexed draws.
+Observed with DXVK, which enables primitiveRestartEnable for every
+strip/fan topology, on Super Street Fighter IV's 2D screens.
+
+Unroll non-indexed draws as if restart were disabled, matching
+requires_unroll_restart().
+---
+ src/kosmickrisp/vulkan/kk_cmd_draw.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index 2659321c..6d323b84 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1482,8 +1482,22 @@ kk_unroll_geometry(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+       .in_draw = data->indirect_command.addr,
+       .out_draw = out_draws.gpu,
+       .in_draw_stride_el = data->indirect_command.stride / sizeof(uint32_t),
+-      /* Handle primitive restart disable by forcing index to UINT32_MAX */
+-      .restart_index = !data->restart ? UINT32_MAX : data->restart_index,
++      /* Handle primitive restart disable by forcing index to UINT32_MAX.
++       *
++       * Primitive restart applies to indexed draws only ("This enable only
++       * applies to indexed draws"), so a non-indexed draw must be unrolled as
++       * if restart were disabled however the flag is set. It cannot merely be
++       * ignored downstream: with no index buffer the unroll kernel's
++       * poly_load_index() returns the vertex ID itself, so a restart index of
++       * 0 -- what the runtime reports until an index buffer is first bound --
++       * makes vertex 0 restart the primitive. A 4-vertex triangle fan then
++       * emits one triangle instead of two, cutting a fullscreen quad in half
++       * along its diagonal. requires_unroll_restart() already scopes restart
++       * to indexed draws; fans reach here without passing through it, since
++       * they unroll unconditionally (Metal has no fan primitive).
++       */
++      .restart_index =
++         (!data->restart || !data->indexed) ? UINT32_MAX : data->restart_index,
+       .index_buffer_size_el =
+          data->indexed ? data->index_buffer.range / data->index_buffer_el_size_B
+                        : 0u,
+-- 
+2.55.0
+

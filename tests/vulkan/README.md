@@ -32,10 +32,30 @@ triangle fans in both windings (DXVK passes `D3DPT_TRIANGLEFAN` through as
 `VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN`; KK emulates fans on a helper queue).
 A stress phase replays the presentation blit's shape — a 6-vertex triangle
 list whose vertex data the CPU rewrites immediately before every draw — with
-two frames in flight for 400 frames.
+two frames in flight for 400 frames. A second stress covers the unroll path:
+indexed uint16 TRIANGLE_FANs and STRIPs (what `kk_unroll_geometry` handles,
+decomposing them through the device-global heap) with 2000 unrolled draws per
+frame and two frames in flight — the cadence plus backlog under which the
+game's loading screens run. It calibrates first: every vertex variant is
+drawn single-shot at queue-idle and its two strict-interior probe pixels
+(the generic ones sit exactly ON the quad diagonal, where one triangle's
+edge fill lights both) are checked against expectations, with a pixel dump
+on mismatch — a broken config would otherwise masquerade as aliasing.
 
-**Result (2026-08-15): all 19 configs + stress correct, 0 failures.** The
-draw path is exonerated; run this after every KosmicKrisp bump.
+A final block sets `primitiveRestartEnable` on **non-indexed** draws, which
+the spec requires to be inert ("this enable only applies to indexed draws"),
+and compares each against the identical draw with the flag off. That pair is
+what caught the artifact: **`FANP perim restart=ON` rendered `BLACK/red` where
+`restart=OFF` rendered `red/red`** — half a quad, cut along its diagonal.
+KosmicKrisp was feeding vertex IDs through its restart comparison, so vertex 0
+(the fan's hub) read as a restart marker and the 4-vertex fan emitted one
+triangle instead of two. Fixed in `patches/mesa/0002`; see that patch for the
+mechanism. Strips are unaffected because only fans unroll unconditionally.
+
+**Result (2026-08-19): all 22 configs + both stress phases correct, 0
+failures** (before the fix, the restart pair failed). The draw path, the
+fan/strip unroll, and the unroll heap under in-flight frames are exonerated;
+run this after every KosmicKrisp bump.
 
 ## present-probe-test.sh — the real presentation path
 

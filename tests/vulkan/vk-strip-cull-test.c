@@ -79,6 +79,16 @@ static void probe_pixels(const unsigned char *px, int *ul, int *lr) {
     *lr = px[((3 * H / 4) * W + (3 * W / 4)) * 4] > 128;
 }
 
+/* Fan probes, strictly INSIDE one triangle of the quad each and clear of both
+ * diagonals: (12,36) is inside only the fan's first triangle (v0,v1,v2),
+ * (52,36) only the second (v0,v2,v3). The generic probes sit exactly ON the
+ * quad's main diagonal, where a single triangle's edge fill can light BOTH --
+ * useless for telling "one triangle missing" from "both drawn". */
+static void fan_probe(const unsigned char *px, int *t1, int *t2) {
+    *t1 = px[(36 * W + 12) * 4] > 128;
+    *t2 = px[(36 * W + 52) * 4] > 128;
+}
+
 /* Shared recording around every probe draw: UNDEFINED -> COLOR_ATTACHMENT
  * barrier + a clearing beginRendering; the caller binds state and draws;
  * end_color_pass closes the pass and copies the image out for readback. */
@@ -127,6 +137,8 @@ struct config {
     int attr;                       /* 1 = fetch positions from a vertex buffer */
     int vb_off;                     /* vertex buffer bind offset (bytes) */
     int first;                      /* firstVertex (draw) / vertexOffset (indexed) */
+    int restart;                    /* primitiveRestartEnable (ignored on non-indexed draws) */
+    int fanprobe;                   /* read the strict-interior probes, not the diagonal pair */
 };
 
 int main(void) {
@@ -153,8 +165,10 @@ int main(void) {
     qci.queueFamilyIndex = qfam; qci.queueCount = 1; qci.pQueuePriorities = &prio;
     VkPhysicalDeviceVulkan13Features f13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
     f13.dynamicRendering = VK_TRUE;
+    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT };
+    eds2.extendedDynamicState2 = VK_TRUE; eds2.pNext = &f13;
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT };
-    eds.extendedDynamicState = VK_TRUE; eds.pNext = &f13;
+    eds.extendedDynamicState = VK_TRUE; eds.pNext = &eds2;
     VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     dci.pNext = &eds; dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &qci;
     VK(vkCreateDevice(phys, &dci, NULL, &dev));
@@ -205,6 +219,18 @@ int main(void) {
     { void *ip; VK(vkMapMemory(dev, imem2, 0, VK_WHOLE_SIZE, 0, &ip));
       memcpy(ip, idx_data, sizeof(idx_data)); vkUnmapMemory(dev, imem2); }
 
+    /* Fan-stress index buffer: [0,1,2,3] selects the full-quad fan at
+     * FANV_OFF slots 0-3, [4,5,6,7] the lower-right-only fan at slots 4-7.
+     * uint16 indices with restart disabled is exactly the shape that sends a
+     * TRIANGLE_FAN through KosmicKrisp's kk_unroll_geometry. */
+    static const uint16_t fan_idx[20] = { 0,1,2,3, 4,5,6,7, 8,9,10,11, 12,13,14,15, 16,17,18,19 };
+    VkDeviceMemory fanmem;
+    VkBuffer fanibuf = make_buffer(sizeof(fan_idx), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                   &fanmem);
+    { void *ip; VK(vkMapMemory(dev, fanmem, 0, VK_WHOLE_SIZE, 0, &ip));
+      memcpy(ip, fan_idx, sizeof(fan_idx)); vkUnmapMemory(dev, fanmem); }
+
     /* Vertex buffer, 28-byte stride (a D3D9 XYZRHW|DIFFUSE|TEX1 layout).
      * Three copies of the strip-order quad:
      *   slots 0-3   (byte 0)      -- baseline
@@ -215,7 +241,10 @@ int main(void) {
      * Everything else is 0x77 filler: a fetch from the wrong slot lands far
      * off-screen instead of accidentally forming the same quad. */
     #define STRIDE 28
-    unsigned char vtx_data[STRIDE * 12 + 4 + 2048];
+    /* Fan-stress vertices sit past the blit-shape phase's rotating region
+     * (STRIDE*12+4 + 2*1024 bytes) so nothing per-frame rewrites them. */
+    #define FANV_OFF (STRIDE * 12 + 4 + 2048 + 256)
+    unsigned char vtx_data[FANV_OFF + 20 * STRIDE];
     memset(vtx_data, 0x77, sizeof(vtx_data));
     {
         static const float quad_pos[4][2] = { {-1,-1}, {-1,1}, {1,-1}, {1,1} };
@@ -223,6 +252,25 @@ int main(void) {
             memcpy(vtx_data + v * STRIDE,           quad_pos[v], 8);
             memcpy(vtx_data + (4 + v) * STRIDE,     quad_pos[v], 8);
             memcpy(vtx_data + 8 * STRIDE + 4 + v * STRIDE, quad_pos[v], 8);
+        }
+        /* Fan-unroll variants, four vertices each: the bowtie quad (strip
+         * order as a fan -- two triangles of opposite winding), a real
+         * perimeter-order quad, first triangle collapsed (T2 only), second
+         * collapsed (T1 only), and all vertices off-screen (nothing draws).
+         * The stress below alternates perimeter-full vs T2-only so the two
+         * in-flight command buffers unroll DIFFERENT index content. */
+        static const float fan_perim[4][2] = { {-1,-1}, {1,-1}, {1,1}, {-1,1} };
+        static const float fan_lr[4][2] = { {-1,-1}, {-1,-1}, {1,-1}, {1,1} };
+        static const float fan_ul[4][2] = { {-1,-1}, {-1,1}, {1,-1}, {1,-1} };
+        /* Genuinely off-screen: every coordinate >= 5, so no triangle crosses
+         * the viewport (unlike +-90, which spans NDC and COVERS it). */
+        static const float fan_off[4][2] = { {5,5}, {6,5}, {5,6}, {6,6} };
+        for (int v = 0; v < 4; v++) {
+            memcpy(vtx_data + FANV_OFF + v * STRIDE,          quad_pos[v], 8);
+            memcpy(vtx_data + FANV_OFF + (4 + v) * STRIDE,    fan_lr[v], 8);
+            memcpy(vtx_data + FANV_OFF + (8 + v) * STRIDE,    fan_ul[v], 8);
+            memcpy(vtx_data + FANV_OFF + (12 + v) * STRIDE,   fan_off[v], 8);
+            memcpy(vtx_data + FANV_OFF + (16 + v) * STRIDE,   fan_perim[v], 8);
         }
     }
     VkDeviceMemory vmem;
@@ -260,9 +308,10 @@ int main(void) {
     VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
     cb.attachmentCount = 1; cb.pAttachments = &cba;
     VkDynamicState dyn[] = { VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE,
-                             VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+                             VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                             VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE };
     VkPipelineDynamicStateCreateInfo ds = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-    ds.dynamicStateCount = 5; ds.pDynamicStates = dyn;
+    ds.dynamicStateCount = sizeof(dyn) / sizeof(dyn[0]); ds.pDynamicStates = dyn;
     VkFormat colfmt = VK_FORMAT_R8G8B8A8_UNORM;
     VkPipelineRenderingCreateInfo prc = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
     prc.colorAttachmentCount = 1; prc.pColorAttachmentFormats = &colfmt;
@@ -321,6 +370,21 @@ int main(void) {
         { "FANP   perim  cull=NONE   ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
         { "FANP   perim  cull=BACK CCW", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, 10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
         { "FANP   perim  cull=BACK CW ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, 10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, -1 },
+        /* primitiveRestartEnable on a NON-indexed draw. The Vulkan spec confines
+         * primitive restart to indexed draws ("This enable only applies to
+         * indexed draws"), so all four of these must render the full quad --
+         * the flag is required to be inert here. SSFIV reaches this state on
+         * 1623 of its fullscreen 2D quads: DXVK leaves restart enabled, and with
+         * no index buffer bound the runtime's restart index is still 0, so a
+         * driver that feeds vertex IDs through its restart comparison sees
+         * vertex 0 -- the fan's hub -- as a restart marker and emits one
+         * triangle instead of two. Probed strictly inside each triangle
+         * (fanprobe), since the generic pair sits on the diagonal the artifact
+         * cuts along and cannot tell "one triangle" from "two". */
+        { "FANP   perim  restart=ON  ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 0, 0, 0, 1, 1 },
+        { "FANP   perim  restart=OFF ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 0, 0, 0, 0, 1 },
+        { "FANP   restart=ON cull=BACK", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, 10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE,         -1, 0, 0, 0, 1, 1 },
+        { "strip4 restart=ON         ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 0, 0, 0, 1, 0 },
     };
     enum { NCFG = sizeof(cfgs) / sizeof(cfgs[0]) };
     int results[NCFG][2];  /* [cfg][probe]: 1=red 0=black */
@@ -337,6 +401,7 @@ int main(void) {
         vkCmdSetPrimitiveTopology(cmd, cfgs[i].topo);
         vkCmdSetCullMode(cmd, cfgs[i].cull);
         vkCmdSetFrontFace(cmd, cfgs[i].front);
+        vkCmdSetPrimitiveRestartEnable(cmd, cfgs[i].restart ? VK_TRUE : VK_FALSE);
         if (cfgs[i].attr) {
             VkDeviceSize off = cfgs[i].vb_off;
             vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &off);
@@ -359,7 +424,10 @@ int main(void) {
 
         unsigned char *px;
         VK(vkMapMemory(dev, bmem, 0, VK_WHOLE_SIZE, 0, (void **)&px));
-        probe_pixels(px, &results[i][0], &results[i][1]);
+        if (cfgs[i].fanprobe)
+            fan_probe(px, &results[i][0], &results[i][1]);
+        else
+            probe_pixels(px, &results[i][0], &results[i][1]);
         vkUnmapMemory(dev, bmem);
         printf("  %s UL=%s LR=%s\n", cfgs[i].name,
                results[i][0] ? "red  " : "BLACK", results[i][1] ? "red  " : "BLACK");
@@ -384,10 +452,15 @@ int main(void) {
     if (results[4][0] == results[5][0]) {
         printf("FAIL  frontFace has no effect on list+cull\n"); failures++;
     }
+    /* The four primitiveRestartEnable configs are the last block; the three
+     * perimeter-fan cull configs sit just above them. */
+    enum { RST_ON = NCFG - 4, RST_OFF = NCFG - 3, RST_CULL = NCFG - 2, RST_STRIP = NCFG - 1,
+           FAN_NONE = NCFG - 7, FAN_CCW = NCFG - 6, FAN_CW = NCFG - 5 };
+
     /* Perimeter-order fan: uniform winding, so cull must keep or drop BOTH.
      * A split here is the game artifact on the exact topology DXVK emits. */
     {
-        int a = NCFG - 3, b = NCFG - 2, c = NCFG - 1;
+        int a = FAN_NONE, b = FAN_CCW, c = FAN_CW;
         if (results[a][0] != results[a][1] || results[b][0] != results[b][1] || results[c][0] != results[c][1]) {
             printf("FAIL  uniform-winding FAN splits under cull -- fan emulation winding bug\n");
             failures++;
@@ -397,7 +470,36 @@ int main(void) {
             failures++;
         }
     }
-    for (int i = 6; i < NCFG - 3; i++) {
+
+    /* primitiveRestartEnable must not change a NON-indexed draw at all: the
+     * spec scopes primitive restart to indexed draws. Any of these losing a
+     * triangle is the SSFIV artifact, reproduced without Wine or D3D. */
+    {
+        /* Each restart=ON config paired with the identical config drawn with
+         * restart=OFF. Equal results is the whole requirement -- comparing
+         * against a twin rather than against "must be lit" keeps the pairs
+         * whose correct answer is an empty image (back-face culled) honest. */
+        struct { int on, off; } pairs[] = {
+            { RST_ON,    FAN_NONE },   /* perim fan, cull NONE  */
+            { RST_CULL,  FAN_CW },     /* perim fan, cull BACK/CW */
+            { RST_STRIP, 1 },          /* strip4 cull=NONE      */
+        };
+        for (unsigned k = 0; k < sizeof(pairs) / sizeof(pairs[0]); k++) {
+            int on = pairs[k].on, off = pairs[k].off;
+            if (results[on][0] != results[off][0] || results[on][1] != results[off][1]) {
+                printf("FAIL  %s differs from the same draw with restart OFF\n"
+                       "      (%s%s vs %s%s) -- primitive restart is being applied to a\n"
+                       "      non-indexed draw, so vertex ID 0 reads as the restart index\n",
+                       cfgs[on].name,
+                       results[on][0] ? "red " : "BLACK", results[on][1] ? "/red " : "/BLACK",
+                       results[off][0] ? "red " : "BLACK", results[off][1] ? "/red " : "/BLACK");
+                failures++;
+            }
+        }
+    }
+    /* Sweep the middle configs; the perimeter-fan and restart blocks above own
+     * their own verdicts (theirs include cases whose correct result is empty). */
+    for (int i = 6; i < FAN_NONE; i++) {
         if (results[i][0] != results[i][1]) {
             printf("FAIL  %s drops one triangle (the game artifact)\n", cfgs[i].name);
             failures++;
@@ -493,6 +595,180 @@ int main(void) {
             failures++;
         } else {
             printf("  blit-shape stress: %d frames, %d in flight -- all intact\n", FRAMES, INFLIGHT);
+        }
+    }
+
+    /* Fan-unroll stress: same in-flight cadence as above, but the draws are
+     * indexed uint16 TRIANGLE_FANs -- the game's 2D quads. KosmicKrisp has no
+     * Metal fan primitive and restart-promotes these through
+     * kk_unroll_geometry, which writes the decomposed index stream into a
+     * DEVICE-GLOBAL 128MB heap and zeroes that heap's allocation pointer at
+     * the START of every command buffer using it (kk_heap). Two command
+     * buffers in flight therefore allocate the SAME region and the later
+     * unroll overwrites the earlier frame's indices before its draws consume
+     * them -- Metal orders command buffers' submission, not their completion.
+     * The two frames unroll DIFFERENT index content (full quad vs
+     * lower-right-only) so aliasing shows up as a parity violation, and
+     * unlike the phase above every buffer here is STATIC -- nothing is
+     * rewritten per frame, so no other mechanism can produce a wrong frame.
+     * ~120 unrolled fan draws per frame approximates the game's unroll churn
+     * (loading screens log thousands) and leaves the tail draws -- the ones a
+     * following command buffer's reset can reach -- as the last thing
+     * rendered, where the readback probes them. */
+    {
+        /* 2000 unroll kernel launches per frame is real GPU work (~ms), the
+         * backlog under which a following command buffer could begin while
+         * this one still executes. */
+        enum { FRAMES = 400, INFLIGHT = 2, DRAWS = 2000 };
+        static const struct { const char *name; VkPrimitiveTopology topo; } topologies[] = {
+            { "fan  ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN },
+            { "strip", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP },
+        };
+        for (int t = 0; t < 2; t++) {
+        VkCommandBuffer cmds[INFLIGHT];
+        VkFence fences[INFLIGHT];
+        VkBuffer rb[INFLIGHT];
+        VkDeviceMemory rbmem[INFLIGHT];
+        unsigned char *rbmap[INFLIGHT];
+        VkCommandBufferAllocateInfo ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        ai.commandPool = pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = INFLIGHT;
+        VK(vkAllocateCommandBuffers(dev, &ai, cmds));
+        for (int f = 0; f < INFLIGHT; f++) {
+            VkFenceCreateInfo fci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT };
+            VK(vkCreateFence(dev, &fci, NULL, &fences[f]));
+            rb[f] = make_buffer(W * H * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                &rbmem[f]);
+            VK(vkMapMemory(dev, rbmem[f], 0, VK_WHOLE_SIZE, 0, (void **)&rbmap[f]));
+        }
+        int bad = 0, first_bad = -1;
+        /* Calibration: the two stress parities plus diagnostics, single-shot
+         * at queue-idle. If a variant does not read its expected probes here,
+         * the stress verdict below measures a broken config, not cross-frame
+         * aliasing. Same data as both topologies: strip order (v0..v3) tiles
+         * the quad as T1={x+y<=64}/T2={x+y>=64}; fan perimeter order tiles it
+         * as T1/T2 by the other diagonal; fan_lr kills T1 under FAN and the
+         * first strip triangle under STRIP, leaving exactly T2 either way. */
+        static const struct { const char *name; int off, eul, elr; } variants[] = {
+            { "quad    ", 16, 1, 1 },   /* perim order: full quad as a fan */
+            { "T2-only ", 4,  0, 1 },
+            { "T1-only ", 8,  1, 0 },
+            { "offscrn ", 12, 0, 0 },
+            { "bowtie  ", 0,  1, 1 },   /* quad_pos: full quad as a strip */
+        };
+        /* Which vertex order tiles the quad depends on the topology: fans
+         * want perimeter order, strips want the strip order (quad_pos). */
+        int quad_off = t == 0 ? 16 : 0;
+        int vari_ok = 1;
+        for (int v = 0; v < 5; v++) {
+            /* The bowtie vertex order only forms a quad as a fan; under strip
+             * it is the same tiling as the strip order. The off-screen points
+             * draw nothing under either. Expected values hold for both. */
+            VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            VK(vkBeginCommandBuffer(cmd, &bi));
+            begin_color_pass(cmd, img, view, ivci.subresourceRange, sc);
+            {
+                VkDeviceSize voff = FANV_OFF;
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeA);
+                vkCmdSetViewport(cmd, 0, 1, &vp);
+                vkCmdSetScissor(cmd, 0, 1, &sc);
+                vkCmdSetPrimitiveTopology(cmd, topologies[t].topo);
+                vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+                vkCmdSetFrontFace(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+                vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &voff);
+                vkCmdBindIndexBuffer(cmd, fanibuf,
+                                     (variants[v].off == 16 ? quad_off : variants[v].off)
+                                        * sizeof(uint16_t), VK_INDEX_TYPE_UINT16);
+                for (int d = 0; d < DRAWS; d++)
+                    vkCmdDrawIndexed(cmd, 4, 1, 0, 0, 0);
+            }
+            end_color_pass(cmd, img, ivci.subresourceRange, buf);
+            VK(vkEndCommandBuffer(cmd));
+            VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+            si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
+            VK(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE));
+            VK(vkQueueWaitIdle(queue));
+            unsigned char *px;
+            VK(vkMapMemory(dev, bmem, 0, VK_WHOLE_SIZE, 0, (void **)&px));
+            int ul, lr;
+            fan_probe(px, &ul, &lr);
+            printf("  %s calib %s: T1=%s T2=%s\n", topologies[t].name, variants[v].name,
+                   ul ? "red  " : "BLACK", lr ? "red  " : "BLACK");
+            if (ul != variants[v].eul || lr != variants[v].elr) {
+                vari_ok = 0;
+                /* What actually rendered: one char per 2x2 px block. */
+                for (int y = 0; y < H; y += 2) {
+                    printf("       ");
+                    for (int x = 0; x < W; x += 2)
+                        putchar(px[(y * W + x) * 4] > 128 ? '#' : '.');
+                    putchar('\n');
+                }
+            }
+            vkUnmapMemory(dev, bmem);
+            VK(vkResetCommandBuffer(cmd, 0));
+        }
+        if (!vari_ok) {
+            printf("FAIL  %s calib: a variant mismatched its expected probes -- fix the config before trusting the stress\n",
+                   topologies[t].name);
+            failures++;
+        }
+        for (int frame = 0; frame < FRAMES; frame++) {
+            int f = frame % INFLIGHT;
+            VK(vkWaitForFences(dev, 1, &fences[f], VK_TRUE, UINT64_MAX));
+            /* Completed slot ran frame `frame - INFLIGHT` (same parity,
+             * INFLIGHT == 2): even = full quad (both probes red), odd = the
+             * T2 triangle only. The other parity's unrolled indices in the
+             * shared heap produce exactly the opposite. */
+            if (frame >= INFLIGHT) {
+                int ul, lr;
+                fan_probe(rbmap[f], &ul, &lr);
+                int cf = frame - INFLIGHT;
+                int full = !(cf & 1);
+                if (full ? (ul != lr || !ul) : (ul || !lr)) {
+                    bad++; if (first_bad < 0) first_bad = cf;
+                    if (bad <= 5)
+                        printf("       frame %d (%s): T1=%s T2=%s\n", cf,
+                               full ? "quad" : "T2-only",
+                               ul ? "red" : "BLACK", lr ? "red" : "BLACK");
+                }
+            }
+            VK(vkResetFences(dev, 1, &fences[f]));
+            VK(vkResetCommandBuffer(cmds[f], 0));
+            VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            VK(vkBeginCommandBuffer(cmds[f], &bi));
+            begin_color_pass(cmds[f], img, view, ivci.subresourceRange, sc);
+            {
+                VkDeviceSize voff = FANV_OFF;
+                vkCmdBindPipeline(cmds[f], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeA);
+                vkCmdSetViewport(cmds[f], 0, 1, &vp);
+                vkCmdSetScissor(cmds[f], 0, 1, &sc);
+                vkCmdSetPrimitiveTopology(cmds[f], topologies[t].topo);
+                vkCmdSetCullMode(cmds[f], VK_CULL_MODE_NONE);
+                vkCmdSetFrontFace(cmds[f], VK_FRONT_FACE_COUNTER_CLOCKWISE);
+                vkCmdBindVertexBuffers(cmds[f], 0, 1, &vbuf, &voff);
+                vkCmdBindIndexBuffer(cmds[f], fanibuf,
+                                     (frame & 1 ? 4 : quad_off) * sizeof(uint16_t), VK_INDEX_TYPE_UINT16);
+                for (int d = 0; d < DRAWS; d++)
+                    vkCmdDrawIndexed(cmds[f], 4, 1, 0, 0, 0);
+            }
+            end_color_pass(cmds[f], img, ivci.subresourceRange, rb[f]);
+            VK(vkEndCommandBuffer(cmds[f]));
+            VkSubmitInfo s2 = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+            s2.commandBufferCount = 1; s2.pCommandBuffers = &cmds[f];
+            VK(vkQueueSubmit(queue, 1, &s2, fences[f]));
+        }
+        VK(vkQueueWaitIdle(queue));
+        if (bad) {
+            printf("FAIL  %s unroll stress: %d/%d in-flight frames drew the OTHER frame's geometry (first at frame %d)\n",
+                   topologies[t].name, bad, FRAMES - INFLIGHT, first_bad);
+            printf("      the shared unroll heap is not safe across command buffers in flight\n");
+            failures++;
+        } else {
+            printf("  %s unroll stress: %d frames x %d unrolled draws, %d in flight -- all intact\n",
+                   topologies[t].name, FRAMES, DRAWS, INFLIGHT);
+        }
         }
     }
 
