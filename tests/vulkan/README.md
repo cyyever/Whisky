@@ -121,11 +121,12 @@ Metal recycling drawables: acquire blocks for the one-second `nextDrawable`
 timeout, gets nil, retries and is served. The 1019 ms *visible* figure is worth
 keeping too — this pool sits at its limit even on a healthy frame.
 
-What the game does that this does not: the user's terminal is **fullscreen**,
-which on macOS is a separate Space, so the game's window is not merely covered
-but absent from the composited Space. That is not reproducible from inside one
-process. It also does not explain the freeze surviving a switch back, which the
-game's did.
+So covering is not the trigger, and neither is a Space switch: the game and the
+terminal that hides it are both ordinary windows on one Space. Nor does the
+freeze behave like a compositing stall at all — bringing the game's window back
+to the front does not release it. Whatever stops the pool refilling is not
+undone by making the window visible again, which points at a drawable that is
+gone rather than one that is merely waiting.
 
 ## Build & run
 
