@@ -56,6 +56,30 @@ line — which is before any audio call, so the hang is in DLL load or
 the same moment. That hang is the more interesting finding and is where this
 picks up.
 
+## audio-name-growth-test.sh — the registry entry that never stops growing
+
+`tests/gstreamer/audio-name-growth-test.sh [rounds] [bottle ...]`
+
+This bottle held an unplugged monitor's HDMI endpoint stored as
+`"Speakers (Speakers (Speakers ( … ×97 … (DELL S2817Q) … )))"`. mmdevapi
+re-creates devices that are in the registry but no longer present, and seeded
+each from its stored *device* friendly name — which `MMDevice_Create` treats
+as a driver id and decorates as `"Speakers (%s)"` before writing it back.
+
+**No device switching required, and that is the finding.** The growth is per
+*enumeration*, not per plug event, so any process that opens the audio stack
+advances it — which is how a machine nobody was stressing reached 97 layers.
+The test just enumerates a few times and weighs the registry.
+
+It checks the registry rather than the API because the corruption is what gets
+*persisted*; an in-process enumeration reports the freshly built string. Each
+round is a whole wineserver lifetime, since that is when the registry is
+written — without the kill between rounds the growth stays in memory and the
+file never changes, and the test would pass by never looking at the bug.
+
+**Result (2026-08-20): +22 bytes per enumeration, exactly linear** — one
+`"Speakers ("` and `")"` on each of two keys — before `patches/proton-wine/0037`.
+
 ## dshow-render-test.sh — 32-bit vs 64-bit rendering
 
 Runs `wmv-render-test` in both bitnesses over any WMV in the bottle. The
