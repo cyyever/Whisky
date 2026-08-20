@@ -27,11 +27,9 @@ enumeration.  Names already decorated stay as they are; nothing rewrites them
 until the device is seen again, at which point it is created from the real
 driver id and the name comes out correct.
 
-diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
-index 7fd518de0f6..0d70d997e0a 100644
 --- a/dlls/mmdevapi/devenum.c
 +++ b/dlls/mmdevapi/devenum.c
-@@ -664,6 +664,12 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+@@ -664,6 +664,12 @@
      {
          HKEY keyprop;
          RegSetValueExW(key, L"DeviceState", 0, REG_DWORD, (const BYTE*)&state, sizeof(DWORD));
@@ -44,7 +42,31 @@ index 7fd518de0f6..0d70d997e0a 100644
          if (!RegCreateKeyExW(key, L"Properties", 0, NULL, 0, KEY_WRITE|KEY_READ|KEY_WOW64_64KEY, NULL, &keyprop, NULL))
          {
              PROPVARIANT pv;
-@@ -791,13 +797,33 @@ HRESULT load_devices_from_reg(void)
+@@ -706,10 +712,20 @@
+ 
+             if (FAILED(set_driver_prop_value(id, flow, &PKEY_AudioEndpoint_FormFactor)))
+             {
+-                pv.vt = VT_UI4;
+-                pv.ulVal = (flow == eCapture) ? Microphone : Speakers;
++                PROPVARIANT pv2;
+ 
+-                MMDevice_SetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv);
++                PropVariantInit(&pv2);
++
++                /* make read-write by not overwriting if already set: a device
++                 * that is no longer present has no driver to ask, and the
++                 * generic value would replace whatever it was stored as */
++                if (FAILED(MMDevice_GetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv2)) || pv2.vt != VT_UI4)
++                {
++                    pv.vt = VT_UI4;
++                    pv.ulVal = (flow == eCapture) ? Microphone : Speakers;
++
++                    MMDevice_SetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv);
++                }
+             }
+ 
+             if (flow != eCapture)
+@@ -791,13 +807,36 @@
          }
          if (ret != ERROR_SUCCESS)
              continue;
@@ -56,8 +78,8 @@ index 7fd518de0f6..0d70d997e0a 100644
 -            MMDevice_Create(pv.pwszVal, &guid, curflow,
 -                    DEVICE_STATE_NOTPRESENT, FALSE);
 -            CoTaskMemFree(pv.pwszVal);
-+            WCHAR driver_id[256];
-+            DWORD size = sizeof(driver_id), type;
++            WCHAR *driver_id = NULL;
++            DWORD size = 0;
 +
 +            /* MMDevice_Create derives the friendly name from the driver id as
 +             * "Speakers (%s)". Seeding it from that name instead fed the
@@ -67,8 +89,10 @@ index 7fd518de0f6..0d70d997e0a 100644
 +             * fall back to the interface friendly name, which is the id
 +             * undecorated, for keys written before it existed. Doing so also
 +             * writes DriverId, so a bottle converges after one enumeration. */
-+            if (!RegGetValueW(cur, guidvalue, L"DriverId", RRF_RT_REG_SZ, &type,
-+                              driver_id, &size))
++            if (!RegGetValueW(cur, guidvalue, L"DriverId", RRF_RT_REG_SZ, NULL, NULL, &size)
++                && (driver_id = malloc(size))
++                && !RegGetValueW(cur, guidvalue, L"DriverId", RRF_RT_REG_SZ, NULL,
++                                 driver_id, &size))
 +            {
 +                MMDevice_Create(driver_id, &guid, curflow,
 +                        DEVICE_STATE_NOTPRESENT, FALSE);
@@ -81,6 +105,7 @@ index 7fd518de0f6..0d70d997e0a 100644
 +                        DEVICE_STATE_NOTPRESENT, FALSE);
 +                CoTaskMemFree(pv.pwszVal);
 +            }
++            free(driver_id);
          }
      } while (1);
  
