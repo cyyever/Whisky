@@ -65,14 +65,39 @@ static volatile enum {
     MODE_SPLIT,      /* the original probe: watch for a torn present blit */
     MODE_OCCLUSION,  /* cmd-tab away with the presented handler intact */
     MODE_DROPPED,    /* presented handler never registered (the recovery path) */
+    MODE_COVERED,    /* the window fully hidden under an opaque window of ours */
 } mode = MODE_SPLIT;
-#define present_wait_mode (mode != MODE_SPLIT)
+#define present_wait_mode (mode == MODE_OCCLUSION || mode == MODE_DROPPED)
+
+/* -covered exists because -occlusion does not reproduce SSFIV's freeze, and
+ * differs from it in the two ways that matter. It activates Finder, which
+ * leaves the probe window deactivated but perfectly visible unless Finder
+ * happens to have a window over it -- macOS stops compositing a window when it
+ * is COVERED, not when it is merely inactive. And it acquires with a 500 ms
+ * timeout, so an exhausted drawable pool reads as VK_NOT_READY and the loop
+ * moves on; dxvk passes UINT64_MAX and sits in wsi_metal_swapchain_acquire's
+ * while (1) forever, which is where the game's dxvk-submit thread was found in
+ * four separate captures:
+ *
+ *   nextDrawable -> CAMetalLayerPrivateNextDrawableLocked -> semaphore wait
+ *
+ * So this mode raises an opaque screen-sized window of its own over the probe
+ * -- deterministic, no other application involved -- and acquires the way dxvk
+ * does. It paints the whole display black for -away= seconds; that is the
+ * test, not a fault. */
 /* Outstanding wait, for the watchdog. The probe has to pass UINT64_MAX to
  * reach the recovery at all -- the driver deliberately leaves finite waits
  * alone, since a caller that named a deadline is entitled to VK_TIMEOUT -- so
  * a broken driver hangs the probe. The watchdog is what turns that back into
  * a verdict instead of a test that prints nothing. */
 static volatile uint64_t wait_started_ms;   /* 0 = no wait in flight */
+static volatile uint64_t acquire_started_ms; /* same, for -covered's acquire */
+/* Wall-clock, not frame count: the stall being measured slows the frame
+ * counter, so a frame-based restore ends the occlusion before the wait can
+ * grow. */
+static int occl_secs = 8;
+static volatile int covered = 0;
+static double worst_acq_visible_ms = 0, worst_acq_covered_ms = 0;
 
 static uint64_t now_ms(void)
 {
@@ -86,6 +111,15 @@ static void *wait_watchdog(void *arg)
     (void)arg;
     for (;;) {
         usleep(250 * 1000);
+        uint64_t acq = acquire_started_ms;
+        if (acq && now_ms() - acq > (uint64_t)(occl_secs + 10) * 1000) {
+            fprintf(stderr,
+                    "FAIL  vkAcquireNextImageKHR has been blocked %.1f s -- the drawable\n"
+                    "      pool never refilled after the window was covered, and a caller\n"
+                    "      passing UINT64_MAX never gets out of the acquire retry loop\n",
+                    (now_ms() - acq) / 1000.0);
+            _exit(1);
+        }
         uint64_t started = wait_started_ms;
         if (!started)
             continue;
@@ -102,11 +136,7 @@ static void *wait_watchdog(void *arg)
     return NULL;
 }
 static volatile int occluded = 0;
-
-/* Wall-clock, not frame count: the stall being measured slows the frame
- * counter, so a frame-based restore ends the occlusion before the wait can
- * grow. */
-static int occl_secs = 8;
+static NSWindow *cover = nil;
 static time_t occl_start = 0;
 static double worst_active_ms = 0, worst_occluded_ms = 0;
 /* Generous: a FIFO present at 60 Hz completes in ~16 ms, so 2 s of no
@@ -276,7 +306,17 @@ static void *render_thread(void *arg)
     time_t start = time(NULL);
     while (time(NULL) - start < seconds) {
         uint32_t idx;
-        VkResult ar = vkAcquireNextImageKHR(dev, swap, 500ull * 1000 * 1000, acq, VK_NULL_HANDLE, &idx);
+        uint64_t acq_t0 = now_ms();
+        acquire_started_ms = acq_t0;
+        VkResult ar = vkAcquireNextImageKHR(dev, swap,
+            mode == MODE_COVERED ? UINT64_MAX : 500ull * 1000 * 1000,
+            acq, VK_NULL_HANDLE, &idx);
+        acquire_started_ms = 0;
+        {
+            double acq_ms = (double)(now_ms() - acq_t0);
+            if (covered) { if (acq_ms > worst_acq_covered_ms) worst_acq_covered_ms = acq_ms; }
+            else if (acq_ms > worst_acq_visible_ms) worst_acq_visible_ms = acq_ms;
+        }
         if (ar == VK_NOT_READY || ar == VK_TIMEOUT) {
             if (ar == VK_NOT_READY && !noted) {
                 noted = 1;
@@ -384,6 +424,35 @@ static void *render_thread(void *arg)
         /* Take the window off screen a second in, then bring it back. A
          * miniaturize is what a user switching away actually does, and it is
          * the state in which Metal stops vending drawables. */
+        if (mode == MODE_COVERED && frames == 60 && !occl_start) {
+            occl_start = time(NULL);
+            covered = 1;
+            fprintf(stderr, "-- covering the window (%d s) --\n", occl_secs);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSRect f = [[NSScreen mainScreen] frame];
+                cover = [[NSWindow alloc] initWithContentRect:f
+                                                    styleMask:NSWindowStyleMaskBorderless
+                                                      backing:NSBackingStoreBuffered
+                                                        defer:NO];
+                cover.releasedWhenClosed = NO;
+                cover.opaque = YES;
+                cover.backgroundColor = [NSColor blackColor];
+                /* Above every other level, so the probe window is covered no
+                 * matter what else is on screen. */
+                cover.level = NSScreenSaverWindowLevel;
+                [cover orderFrontRegardless];
+            });
+            /* Scheduled here, not after the render loop notices: if acquire
+             * blocks the render thread the uncover must still happen, or the
+             * screen stays black until the watchdog kills the run. */
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                         (int64_t)occl_secs * NSEC_PER_SEC),
+                           dispatch_get_main_queue(), ^{
+                fprintf(stderr, "-- uncovering --\n");
+                [cover orderOut:nil];
+                covered = 0;
+            });
+        }
         if (mode == MODE_OCCLUSION && frames == 60 && !occl_start) {
             occl_start = time(NULL);
             fprintf(stderr, "-- switching to another app --\n");
@@ -458,6 +527,24 @@ static void *render_thread(void *arg)
         vkQueueWaitIdle(queue);
         exit(0);
     }
+    if (mode == MODE_COVERED) {
+        printf("presented %d frames; worst vkAcquireNextImageKHR: %.0f ms visible, "
+               "%.0f ms while fully covered\n",
+               frames, worst_acq_visible_ms, worst_acq_covered_ms);
+        /* A drawable that is merely late comes back in a frame or two; two
+         * seconds means the pool stopped refilling altogether. */
+        if (worst_acq_covered_ms >= 2000) {
+            printf("FAIL  acquire stalled %.1f s under a covering window -- Metal stops\n"
+                   "      recycling drawables for a window it is not compositing, and\n"
+                   "      nothing in the WSI breaks the acquire retry loop\n",
+                   worst_acq_covered_ms / 1000.0);
+            vkQueueWaitIdle(queue);
+            exit(1);
+        }
+        printf("pass  acquire kept returning while the window was covered\n");
+        vkQueueWaitIdle(queue);
+        exit(0);
+    }
     if (mode == MODE_OCCLUSION) {
         printf("presented %d frames; worst vkWaitForPresentKHR: %.0f ms active, "
                "%.0f ms while switched away; %d timeouts\n",
@@ -482,6 +569,7 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-occlusion")) mode = MODE_OCCLUSION;
+        else if (!strcmp(argv[i], "-covered")) mode = MODE_COVERED;
         else if (!strcmp(argv[i], "-dropped")) {
             mode = MODE_DROPPED;
             setenv("MESA_VK_WSI_METAL_DROP_PRESENT_HANDLER", "1", 1);
@@ -514,7 +602,7 @@ int main(int argc, char **argv)
         [NSApp activateIgnoringOtherApps:YES];
 
         pthread_t t, wd;
-        if (mode == MODE_DROPPED)
+        if (mode == MODE_DROPPED || mode == MODE_COVERED)
             pthread_create(&wd, NULL, wait_watchdog, NULL);
         pthread_create(&t, NULL, render_thread, NULL);
         [NSApp run];

@@ -104,6 +104,29 @@ and activates another app partway through to reproduce a cmd-tab. **Result
 healthy on a plain Cocoa window, which is what pushed the search onto the
 window `winemac.drv` creates and, from there, onto the presented handler.
 
+### `-covered` — the drawable pool under a window that is really hidden
+
+`-occlusion` activates another app, which leaves the probe window inactive but
+still on screen unless that app happens to have a window over it, and it
+acquires with a 500 ms timeout, so an empty drawable pool reads as
+`VK_NOT_READY` and the loop carries on. SSFIV does neither: `dxvk` passes
+`UINT64_MAX`, and four separate captures of the frozen game found `dxvk-submit`
+in `[CAMetalLayer nextDrawable]`, inside `wsi_metal_swapchain_acquire`'s
+`while (1)`. So this mode raises an opaque screen-sized window of its own over
+the probe — no other application involved — and acquires the way dxvk does.
+
+**Result (2026-08-20): negative. 2223 frames, worst acquire 1016 ms while
+fully covered against 1019 ms while visible.** Covering a window does not stop
+Metal recycling drawables: acquire blocks for the one-second `nextDrawable`
+timeout, gets nil, retries and is served. The 1019 ms *visible* figure is worth
+keeping too — this pool sits at its limit even on a healthy frame.
+
+What the game does that this does not: the user's terminal is **fullscreen**,
+which on macOS is a separate Space, so the game's window is not merely covered
+but absent from the composited Space. That is not reproducible from inside one
+process. It also does not explain the freeze surviving a switch back, which the
+game's did.
+
 ## Build & run
 
 ```bash
