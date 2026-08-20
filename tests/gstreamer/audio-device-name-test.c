@@ -73,6 +73,41 @@ static int check_mmdevapi(void)
     hr = IMMDeviceEnumerator_EnumAudioEndpoints(devenum, eRender, DEVICE_STATE_ACTIVE, &coll);
     if (FAILED(hr)) { printf("   EnumAudioEndpoints = 0x%08lx\n", (unsigned long)hr); goto done; }
 
+    /* Which endpoint an app that just asks for "the default" actually gets.
+     * macOS has two defaults -- Default Output Device (where apps play) and
+     * Default System Output Device (where alerts play) -- and they can differ.
+     * If winecoreaudio maps the wrong one, every app that opens the default
+     * lands on a device the user is not listening to. */
+    static const struct { ERole role; const char *name; } roles[] = {
+        { eConsole, "eConsole" }, { eMultimedia, "eMultimedia" },
+        { eCommunications, "eCommunications" },
+    };
+    for (unsigned r = 0; r < 3; r++) {
+        IMMDevice *def = NULL;
+        if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(devenum, eRender,
+                                                               roles[r].role, &def)))
+            { printf("   default(%s): none\n", roles[r].name); continue; }
+        IPropertyStore *dp = NULL;
+        if (SUCCEEDED(IMMDevice_OpenPropertyStore(def, STGM_READ, &dp))) {
+            PROPVARIANT dv;
+            PropVariantInit(&dv);
+            if (SUCCEEDED(IPropertyStore_GetValue(dp, &PKEY_Device_FriendlyName, &dv))
+                && dv.vt == VT_LPWSTR && dv.pwszVal) {
+                printf("   default(%-15s): ", roles[r].name);
+                for (const WCHAR *w = dv.pwszVal; *w; w++)
+                    putchar(*w < 128 ? (char)*w : '?');
+                putchar('\n');
+            } else {
+                printf("   default(%-15s): NAME UNREADABLE\n", roles[r].name);
+            }
+            PropVariantClear(&dv);
+            IPropertyStore_Release(dp);
+        } else {
+            printf("   default(%-15s): property store unreadable\n", roles[r].name);
+        }
+        IMMDevice_Release(def);
+    }
+
     IMMDeviceCollection_GetCount(coll, &count);
     printf("   %u active render endpoint(s)\n", count);
 
@@ -99,7 +134,10 @@ static int check_mmdevapi(void)
             printf("   FAIL endpoint %u: GetValue(FriendlyName) = 0x%08lx\n", i, (unsigned long)hr);
             unnamed++;
         } else {
-            printf("   endpoint %u: \"%ls\"\n", i, v.pwszVal);
+            printf("   endpoint %u: \"", i);
+            for (const WCHAR *w = v.pwszVal; *w; w++)
+                putchar(*w < 128 ? (char)*w : '?');
+            printf("\"\n");
         }
         PropVariantClear(&v);
         IPropertyStore_Release(props);
