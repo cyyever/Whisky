@@ -1,0 +1,38 @@
+mmdevapi: do not re-wrap the friendly name of an absent device
+
+The registry loop that re-creates devices which are no longer present reads
+DEVPKEY_Device_FriendlyName and passes it to MMDevice_Create as the driver id.
+MMDevice_Create builds the device friendly name from that id as
+"Speakers (%s)" -- or "Microphone (%s)" -- and writes the result back, so each
+enumeration wraps the stored name in another layer.
+
+The growth is unbounded and persists in the registry. An unplugged monitor's
+HDMI endpoint in a long-lived bottle had accumulated 97 of them:
+
+  "Speakers (Speakers (Speakers ( ... (DELL S2817Q) ... )))"
+
+Read DEVPKEY_DeviceInterface_FriendlyName instead. That is where the same
+function stores the unwrapped driver id, so re-creating an absent device now
+reproduces the name it had rather than decorating it again.
+
+diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
+index 7fd518de0f6..321280e3970 100644
+--- a/dlls/mmdevapi/devenum.c
++++ b/dlls/mmdevapi/devenum.c
+@@ -792,9 +792,15 @@ HRESULT load_devices_from_reg(void)
+         if (ret != ERROR_SUCCESS)
+             continue;
+         if (SUCCEEDED(CLSIDFromString(guidvalue, &guid))
+-            && SUCCEEDED(MMDevice_GetPropValue(&guid, curflow, (const PROPERTYKEY*)&DEVPKEY_Device_FriendlyName, &pv))
++            && SUCCEEDED(MMDevice_GetPropValue(&guid, curflow, (const PROPERTYKEY*)&DEVPKEY_DeviceInterface_FriendlyName, &pv))
+             && pv.vt == VT_LPWSTR)
+         {
++            /* The interface friendly name, not the device one: MMDevice_Create
++             * takes a driver id and builds the device friendly name from it as
++             * "Speakers (%s)", then writes that back. Reading the device name
++             * here fed it its own output, so every enumeration of an absent
++             * device wrapped the stored name in another "Speakers (...)".
++             * Found 97 layers deep on an unplugged monitor's HDMI endpoint. */
+             MMDevice_Create(pv.pwszVal, &guid, curflow,
+                     DEVICE_STATE_NOTPRESENT, FALSE);
+             CoTaskMemFree(pv.pwszVal);
