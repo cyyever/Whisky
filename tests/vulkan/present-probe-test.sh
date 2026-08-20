@@ -40,4 +40,10 @@ if [ ! -x "$EXE" ] || [ "$SRC" -nt "$EXE" ]; then
         -L"$VKL" -lvulkan -Wl,-rpath,"$VKL" || exit 1
 fi
 
-VK_DRIVER_FILES="$ICD" arch -x86_64 "$EXE" "${1:-10}"
+# Flags through to the probe; a bare number is the duration.
+#   -dropped   presents with no presented handler registered -- the state a
+#              switched-away window leaves the swapchain in. Waits must still
+#              finish (~500 ms each, the WSI's synthesized completion) instead
+#              of hanging forever the way SSFIV did on cmd-tab.
+#   -occlusion cmd-tab equivalent, with the handler left in place.
+VK_DRIVER_FILES="$ICD" arch -x86_64 "$EXE" "${@:-10}"

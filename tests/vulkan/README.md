@@ -52,7 +52,7 @@ KosmicKrisp was feeding vertex IDs through its restart comparison, so vertex 0
 triangle instead of two. Fixed in `patches/mesa/0002`; see that patch for the
 mechanism. Strips are unaffected because only fans unroll unconditionally.
 
-**Result (2026-08-19): all 22 configs + both stress phases correct, 0
+**Result (2026-08-19): all 24 configs + both stress phases correct, 0
 failures** (before the fix, the restart pair failed). The draw path, the
 fan/strip unroll, and the unroll heap under in-flight frames are exonerated;
 run this after every KosmicKrisp bump.
@@ -73,6 +73,36 @@ for the duration — keep the run short when working interactively.
 **Result (2026-08-15): 500+ frames, 0 splits.** The clean present path holds
 under no load; the artifact needed GPU backlog (see `patches/mesa/0001`, the
 acquire-time present-blit lifetime fix).
+
+### `-dropped` — the present that is never displayed
+
+`present-probe-test.sh -dropped [seconds]` covers the window-switch freeze:
+SSFIV hung forever in `vkWaitForPresentKHR`, because KosmicKrisp advances
+`present_id` only from a `CAMetalDrawable` presented handler and that handler
+never runs for a drawable the window server does not put on screen. Metal has
+no discarded-presentation callback, so nothing ever completed those presents
+and DXVK's `UINT64_MAX` wait never returned. `patches/mesa/0003` synthesizes
+the completion Metal will not send.
+
+The condition cannot be produced from the Vulkan side — occluded, hidden,
+miniaturized and unattached layers were all measured and all still get their
+handlers called in 4–9 ms — so the driver takes
+`KK_WSI_TEST_DROP_PRESENT_HANDLER` to skip the registration, and this mode
+sets it. The verdict is not "the waits finished": it also requires them to
+have taken the grace period, because finishing fast would mean the hook did
+not take and the run proved nothing.
+
+**Result (2026-08-20): waits complete in ~506 ms, 0 timeouts.** Without the
+patch this run hangs on the first wait.
+
+### `-occlusion` — cmd-tab with the handler intact
+
+Presents with `VK_KHR_present_id`, waits with a finite `vkWaitForPresentKHR`,
+and activates another app partway through to reproduce a cmd-tab. **Result
+(2026-08-19): 3156 frames over a 60 s switch-away, presents completing in
+9 ms, no stall** — a negative that mattered: KosmicKrisp's present path is
+healthy on a plain Cocoa window, which is what pushed the search onto the
+window `winemac.drv` creates and, from there, onto the presented handler.
 
 ## Build & run
 

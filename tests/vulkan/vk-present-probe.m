@@ -29,6 +29,7 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_metal.h>
 #include <pthread.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -37,8 +38,77 @@
 #define VK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { \
     fprintf(stderr, "FAIL  %s = %d\n", #x, r_); exit(1); } } while (0)
 
+#include <time.h>
+
 static CAMetalLayer *layer;
 static volatile int seconds = 20;
+/* -occlusion: does vkWaitForPresentKHR still return once the window is no
+ * longer on screen? SSFIV freezes on a window switch, blocked in exactly that
+ * call (thunk32_vkWaitForPresentKHR -> KK's wsi_metal_swapchain_wait_for_present
+ * -> a condition-variable wait). Metal stops handing out drawables for an
+ * off-screen layer, so a present that never completes strands any waiter that
+ * passed UINT64_MAX -- which is what dxvk_presenter.cpp does. */
+static volatile int occlusion_mode = 0;
+/* -dropped: make the driver skip registering the presented handler, so no
+ * present ever completes on its own. That is the state a switched-away window
+ * leaves the swapchain in, and it cannot be produced from the Vulkan side --
+ * occluded, hidden, miniaturized and even unattached layers were all measured
+ * and all still get their handlers called (4-9 ms), so a test built on those
+ * passes without touching the path it claims to cover.
+ *
+ * Metal has no "discarded" callback -- unlike Wayland's presentation-time
+ * protocol, whose discarded event Mesa's Wayland WSI keys off -- so nothing
+ * completes these presents but the WSI itself. A caller passing UINT64_MAX
+ * (DXVK does) waits forever unless the WSI synthesizes the completion Metal
+ * owes it. This mode asserts it does; before the fix it hangs on wait one. */
+static volatile int detached_mode = 0;
+/* Outstanding wait, for the watchdog. The probe has to pass UINT64_MAX to
+ * reach the recovery at all -- the driver deliberately leaves finite waits
+ * alone, since a caller that named a deadline is entitled to VK_TIMEOUT -- so
+ * a broken driver hangs the probe. The watchdog is what turns that back into
+ * a verdict instead of a test that prints nothing. */
+static volatile uint64_t wait_started_ms;
+static volatile int wait_outstanding;
+
+static uint64_t now_ms(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static void *wait_watchdog(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        usleep(250 * 1000);
+        if (!wait_outstanding)
+            continue;
+        uint64_t held = now_ms() - wait_started_ms;
+        if (held > 5000) {
+            fprintf(stderr,
+                    "FAIL  vkWaitForPresentKHR has been blocked %.1f s on a present\n"
+                    "      that will never be displayed -- the WSI is not synthesizing\n"
+                    "      the completion Metal does not send (patches/mesa/0003)\n",
+                    held / 1000.0);
+            _exit(1);   /* the render thread is inside the wait; nothing else can */
+        }
+    }
+    return NULL;
+}
+static volatile int occluded = 0;
+
+/* Wall-clock, not frame count: the stall being measured slows the frame
+ * counter, so a frame-based restore ends the occlusion before the wait can
+ * grow. */
+static int occl_secs = 8;
+static time_t occl_start = 0;
+static int occl_done = 0;
+static double worst_active_ms = 0, worst_occluded_ms = 0;
+/* Generous: a FIFO present at 60 Hz completes in ~16 ms, so 2 s of no
+ * completion is a hang, not slow compositing. */
+#define WAIT_BUDGET_NS (2ull * 1000 * 1000 * 1000)
+static int stuck = 0;
 
 /* Sample the probe window's two diagonal corners and report whether they
  * hold DIFFERENT solid colours. Every frame clears the whole window to one
@@ -136,10 +206,22 @@ static void *render_thread(void *arg)
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
     qci.queueFamilyIndex = qfam; qci.queueCount = 1; qci.pQueuePriorities = &prio;
-    const char *dexts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    const char *dexts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                            VK_KHR_PRESENT_ID_EXTENSION_NAME,
+                            VK_KHR_PRESENT_WAIT_EXTENSION_NAME };
+    VkPhysicalDevicePresentIdFeaturesKHR pidf = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR };
+    pidf.presentId = VK_TRUE;
+    VkPhysicalDevicePresentWaitFeaturesKHR pwf = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR };
+    pwf.presentWait = VK_TRUE; pwf.pNext = &pidf;
     VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = 1; dci.ppEnabledExtensionNames = dexts;
+    /* present_wait only in the occlusion run: it is the subject there, and the
+     * split probe should not depend on an extension it does not exercise. */
+    dci.enabledExtensionCount = occlusion_mode ? 3 : 1;
+    dci.ppEnabledExtensionNames = dexts;
+    if (occlusion_mode) dci.pNext = &pwf;
     VkDevice dev; VK(vkCreateDevice(phys, &dci, NULL, &dev));
     VkQueue queue; vkGetDeviceQueue(dev, qfam, 0, &queue);
 
@@ -232,17 +314,102 @@ static void *render_thread(void *arg)
         si.signalSemaphoreCount = 1; si.pSignalSemaphores = &rel;
         VK(vkQueueSubmit(queue, 1, &si, fence));
 
+        uint64_t pid = (uint64_t)frames + 1;
+        VkPresentIdKHR pidinfo = { VK_STRUCTURE_TYPE_PRESENT_ID_KHR };
+        pidinfo.swapchainCount = 1; pidinfo.pPresentIds = &pid;
         VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &rel;
         pi.swapchainCount = 1; pi.pSwapchains = &swap; pi.pImageIndices = &idx;
+        if (occlusion_mode) pi.pNext = &pidinfo;
         VkResult pr = vkQueuePresentKHR(queue, &pi);
         if (pr != VK_SUCCESS && pr != VK_SUBOPTIMAL_KHR)
             fprintf(stderr, "present=%d\n", pr);
+
+        if (occlusion_mode && (pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR)) {
+            /* Only wait on a present that was actually queued. A rejected
+             * present (VK_ERROR_OUT_OF_DATE_KHR is normal when the window
+             * leaves the screen) has no id to wait for, and waiting anyway
+             * would time out every frame and report a stall that never
+             * happened.
+             *
+             * The game passes UINT64_MAX here and never comes back. A finite
+             * timeout turns that hang into a measurement: how long the wait
+             * actually took, and whether it ever returned at all. */
+            static PFN_vkWaitForPresentKHR waitPresent;
+            if (!waitPresent) {
+                waitPresent = (PFN_vkWaitForPresentKHR)
+                    vkGetDeviceProcAddr(dev, "vkWaitForPresentKHR");
+                if (!waitPresent) {
+                    /* Silently making no wait calls and then reporting "no
+                     * stall" would be a pass from a run that never invoked the
+                     * function under test. */
+                    fprintf(stderr, "FAIL  no vkWaitForPresentKHR entry point\n");
+                    exit(1);
+                }
+            }
+            {
+                struct timespec t0, t1;
+                clock_gettime(CLOCK_MONOTONIC, &t0);
+                wait_started_ms = now_ms();
+                wait_outstanding = 1;
+                VkResult wr = waitPresent(dev, swap, pid,
+                                          detached_mode ? UINT64_MAX
+                                                        : WAIT_BUDGET_NS);
+                wait_outstanding = 0;
+                clock_gettime(CLOCK_MONOTONIC, &t1);
+                double ms = (t1.tv_sec - t0.tv_sec) * 1e3 +
+                            (t1.tv_nsec - t0.tv_nsec) / 1e6;
+                if (occluded) { if (ms > worst_occluded_ms) worst_occluded_ms = ms; }
+                else          { if (ms > worst_active_ms)   worst_active_ms   = ms; }
+                if (wr == VK_TIMEOUT) {
+                    if (!stuck)
+                        fprintf(stderr, "FAIL  vkWaitForPresentKHR timed out after "
+                                "%.0f ms at frame %d (%s)\n", ms, frames,
+                                occluded ? "window OFF screen" : "window on screen");
+                    stuck++;
+                } else if (wr != VK_SUCCESS) {
+                    fprintf(stderr, "note: vkWaitForPresentKHR = %d\n", wr);
+                }
+            }
+        }
 
         VK(vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX));
         VK(vkResetFences(dev, 1, &fence));
         VK(vkResetCommandBuffer(cmd, 0));
         frames++;
+
+        /* Take the window off screen a second in, then bring it back. A
+         * miniaturize is what a user switching away actually does, and it is
+         * the state in which Metal stops vending drawables. */
+        if (occlusion_mode && !detached_mode && frames == 60 && !occl_start) {
+            occl_start = time(NULL);
+            fprintf(stderr, "-- switching to another app --\n");
+            occluded = 1;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                /* What cmd-tab does: another app becomes active and its
+                 * windows come forward. The window is neither hidden nor
+                 * miniaturized -- it is deactivated and, once covered, marked
+                 * non-visible by the window server. Miniaturize, orderOut and
+                 * -[NSApp hide:] were all tried and all behaved identically to
+                 * staying on screen, so only the faithful one is kept. */
+                for (NSRunningApplication *a in
+                     [[NSWorkspace sharedWorkspace] runningApplications]) {
+                    if ([a.bundleIdentifier isEqualToString:@"com.apple.finder"]) {
+                        [a activateWithOptions:NSApplicationActivateAllWindows];
+                        break;
+                    }
+                }
+            });
+        }
+        if (occlusion_mode && occl_start && !occl_done &&
+            time(NULL) - occl_start >= occl_secs) {
+            occl_done = 1;
+            fprintf(stderr, "-- restoring the window --\n");
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [NSApp activateIgnoringOtherApps:YES];
+            });
+            occluded = 0;
+        }
 
         /* Self-check ~once a second: screencapture spawns a process, so doing
          * it every frame would dominate the loop. The verdict (whole window
@@ -257,6 +424,52 @@ static void *render_thread(void *arg)
             }
         }
     }
+    if (occlusion_mode && !detached_mode && !occl_start) {
+        printf("FAIL  the run ended before frame 60, so the window was never "
+               "taken off screen --\n      nothing was measured (give it more seconds)\n");
+        vkQueueWaitIdle(queue);
+        exit(1);
+    }
+    if (detached_mode) {
+        printf("presented %d frames with no presented handler registered; "
+               "worst vkWaitForPresentKHR %.0f ms, %d timeouts\n",
+               frames, worst_active_ms, stuck);
+        if (stuck || frames < 3) {
+            printf("FAIL  presents with no presented handler never complete --\n"
+                   "      the WSI is not synthesizing the completion Metal will not send\n");
+            vkQueueWaitIdle(queue);
+            exit(1);
+        }
+        /* Completion alone is not the claim: a real presented handler finishes
+         * a wait in 4-16 ms, so fast waits here mean the drop hook did not take
+         * and the run proved nothing. Only a wait that sat out the grace period
+         * can have been ended by the synthesized signal. */
+        if (worst_active_ms < 300) {
+            printf("FAIL  every wait returned in %.0f ms, far too fast to be the\n"
+                   "      synthesized completion -- the presented handler was still\n"
+                   "      registered, so this run did not exercise the recovery path\n",
+                   worst_active_ms);
+            vkQueueWaitIdle(queue);
+            exit(1);
+        }
+        printf("pass  undisplayed presents still complete, and did so via the\n"
+               "      synthesized signal (%.0f ms, the grace period)\n", worst_active_ms);
+        vkQueueWaitIdle(queue);
+        exit(0);
+    }
+    if (occlusion_mode) {
+        printf("presented %d frames; worst vkWaitForPresentKHR: %.0f ms active, "
+               "%.0f ms while switched away; %d timeouts\n",
+               frames, worst_active_ms, worst_occluded_ms, stuck);
+        if (stuck)
+            printf("FAIL  present-wait stalls while the window is off screen --\n"
+                   "      a caller passing UINT64_MAX (dxvk_presenter) hangs here\n");
+        else
+            printf("pass  present-wait always returned within %llu ms\n",
+                   WAIT_BUDGET_NS / 1000000ull);
+        vkQueueWaitIdle(queue);
+        exit(stuck ? 1 : 0);
+    }
     printf("presented %d frames, %d window self-checks, %d splits\n",
            frames, checks, splits);
     vkQueueWaitIdle(queue);
@@ -266,7 +479,21 @@ static void *render_thread(void *arg)
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
-    if (argc > 1) seconds = atoi(argv[1]);
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-occlusion")) occlusion_mode = 1;
+        else if (!strcmp(argv[i], "-dropped")) {
+            detached_mode = 1; occlusion_mode = 1;
+            setenv("KK_WSI_TEST_DROP_PRESENT_HANDLER", "1", 1);
+        }
+        else if (!strncmp(argv[i], "-away=", 6)) occl_secs = atoi(argv[i] + 6);
+        else if (argv[i][0] == '-') {
+            /* Otherwise a typo becomes the duration: -droppd would set
+             * seconds=0 and the run would exit 0 having tested nothing. */
+            fprintf(stderr, "FAIL  unknown option %s\n", argv[i]);
+            return 1;
+        }
+        else seconds = atoi(argv[i]);
+    }
 
     @autoreleasepool {
         [NSApplication sharedApplication];
@@ -285,7 +512,9 @@ int main(int argc, char **argv)
         [win makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
 
-        pthread_t t;
+        pthread_t t, wd;
+        if (detached_mode)
+            pthread_create(&wd, NULL, wait_watchdog, NULL);
         pthread_create(&t, NULL, render_thread, NULL);
         [NSApp run];
     }

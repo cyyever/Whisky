@@ -1,0 +1,204 @@
+From 8ba66e68f189e2ae2f2c2eb33063de7bcc06d312 Mon Sep 17 00:00:00 2001
+From: Yuanyuan Chen <cyyever@outlook.com>
+Date: Thu, 20 Aug 2026 09:59:00 +0800
+Subject: [PATCH] wsi/metal: complete presents Metal will never display
+
+vkWaitForPresentKHR can wait forever.  wsi_metal_swapchain_queue_present
+registers a CAMetalDrawable presented handler and only advances present_id
+when it fires -- but that handler runs only when the window server actually
+puts the drawable on screen.  Switch the window away and it never runs, while
+presents keep being queued, so present_id stops advancing permanently and a
+caller that passed UINT64_MAX never returns.  Observed as a hard freeze in
+Super Street Fighter IV under DXVK (which does pass UINT64_MAX) on cmd-tab:
+a trace of the frozen game ended with three queued presents and a wait whose
+handler never came.
+
+Metal has no discarded-presentation callback to key off.  Mesa's Wayland WSI
+handles the same situation with the presentation-time protocol's discarded
+event -- and still needs an extra commit to shake it loose when the surface is
+occluded, per the comment in wsi_wl_swapchain_queue_present -- but there is no
+equivalent signal here at all.  A drawable that is never displayed simply
+produces nothing, so the completion has to be synthesized.
+
+Wake such a wait at the end of a grace period as well, and if it expires with
+the id still outstanding, report the queued presents complete, through the
+same helper a real presented handler goes through: "a present completed" gets
+one definition whether Metal said so or we did.  Everything queued is stranded
+on the same undisplayed window, so clear up to queued_id rather than one id
+per grace period.  500 ms is far above any on-screen frame -- a 60 Hz present
+lands in ~16 ms -- so a visible swapchain never reaches this and still ends
+its waits on the real presented handler.
+
+Only for callers that asked to wait forever.  A caller that named a deadline
+is prepared to handle VK_TIMEOUT and is entitled to it; telling it a present
+completed after 500 ms when it allowed 5 s would be a lie dressed as a fix.
+The infinite wait is the one with no way out, and the only one this touches.
+
+The recovery cannot be exercised from the Vulkan side: occluded, hidden,
+miniaturized and unattached layers were all measured and all still get their
+handlers called within 4-9 ms.  KK_WSI_TEST_DROP_PRESENT_HANDLER skips the
+registration so the path stays under test; see tests/vulkan/present-probe-test.sh
+-dropped, which also asserts the waits took the grace period, since completing
+quickly would mean the option did not take and the run proved nothing.
+---
+ src/vulkan/wsi/wsi_common_metal.c | 98 ++++++++++++++++++++++++++++---
+ 1 file changed, 89 insertions(+), 9 deletions(-)
+
+diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
+index e89ae9ef..e2ffe2ff 100644
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -9,6 +9,7 @@
+ #include "vk_util.h"
+ 
+ #include "util/cnd_monotonic.h"
++#include "util/u_debug.h"
+ #include "util/timespec.h"
+ #include "util/u_vector.h"
+ 
+@@ -18,6 +19,7 @@
+ 
+ #include "vulkan/vulkan_core.h"
+ 
++
+ #include <assert.h>
+ 
+ struct wsi_metal {
+@@ -332,6 +334,9 @@ struct wsi_metal_present_info {
+ 
+    struct u_cnd_monotonic present_id_cond;
+    uint64_t present_id;
++   /* Highest id handed to queue_present. present_id trails it and normally
++    * catches up as each drawable's presented handler fires. */
++   uint64_t queued_id;
+ };
+ 
+ struct wsi_metal_swapchain {
+@@ -689,16 +694,26 @@ wsi_metal_swapchain_set_present_mode(struct wsi_swapchain *wsi_chain,
+    wsi_metal_layer_set_immediate(chain->surface->pLayer, immediate_mode);
+ }
+ 
++/* The single definition of "presents up to this id are done". Metal delivers
++ * this for drawables it displays; wsi_metal_swapchain_wait_for_present
++ * synthesizes it for drawables it never will. Caller holds the mutex. */
++static void
++wsi_metal_present_id_reached_locked(struct wsi_metal_present_info *info,
++                                    uint64_t present_id)
++{
++   if (present_id > info->present_id) {
++      info->present_id = present_id;
++      u_cnd_monotonic_broadcast(&info->present_id_cond);
++   }
++}
++
+ static void
+ wsi_metal_present_complete(void *present_info_ptr, uint64_t present_id)
+ {
+    struct wsi_metal_present_info *present_info = present_info_ptr;
+ 
+    mtx_lock(&present_info->mutex);
+-   if (present_id > present_info->present_id) {
+-      present_info->present_id = present_id;
+-      u_cnd_monotonic_broadcast(&present_info->present_id_cond);
+-   }
++   wsi_metal_present_id_reached_locked(present_info, present_id);
+    mtx_unlock(&present_info->mutex);
+ 
+    wsi_metal_release_present_info(present_info);
+@@ -718,10 +733,26 @@ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+    struct wsi_metal_image *image = &chain->images[image_index];
+ 
+    if (present_id && wsi_chain->present_wait_enabled) {
+-      wsi_metal_retain_present_info(chain->present_info);
+-      wsi_metal_layer_add_presented_handler(
+-         image->drawable, wsi_metal_present_complete, chain->present_info,
+-         present_id);
++         mtx_lock(&chain->present_info->mutex);
++      if (present_id > chain->present_info->queued_id)
++         chain->present_info->queued_id = present_id;
++      mtx_unlock(&chain->present_info->mutex);
++      /* Test hook. The condition this swapchain has to survive -- a drawable
++       * Metal never displays, so its presented handler never runs -- cannot be
++       * produced from the Vulkan side: an occluded, hidden, miniaturized or
++       * even unattached layer all still get their handlers called. Dropping
++       * the registration reproduces it exactly, which is the only way to keep
++       * the recovery path below under test. */
++      static int drop_handler = -1;
++      if (unlikely(drop_handler < 0))
++         drop_handler = debug_get_bool_option("KK_WSI_TEST_DROP_PRESENT_HANDLER",
++                                              false);
++      if (!drop_handler) {
++         wsi_metal_retain_present_info(chain->present_info);
++         wsi_metal_layer_add_presented_handler(
++            image->drawable, wsi_metal_present_complete, chain->present_info,
++            present_id);
++      }
+    }
+ 
+    if (wsi_chain->wsi->sw) {
+@@ -764,12 +795,61 @@ wsi_metal_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
+ 
+    timespec_from_nsec(&abs_timespec, abs_timeout);
+ 
++   /* Grace period after which a present that was queued but never displayed is
++    * taken as complete.
++    *
++    * addPresentedHandler only fires when the window server actually puts the
++    * drawable on screen. Switch the window away and it never fires, while
++    * presents keep being queued -- so present_id stops advancing for good, and
++    * a caller waiting on it with an infinite timeout (DXVK does) deadlocks.
++    * Observed as a hard freeze in SSFIV on cmd-tab: the trace ended with three
++    * queued presents and a wait whose handler never came.
++    *
++    * There is no Metal callback for "scheduled but dropped" to key off --
++    * addScheduledHandler is a command-buffer method, not a drawable one -- so
++    * the signal is the wait itself running long. 500 ms is far above any
++    * on-screen frame (a 60 Hz present lands in ~16 ms), so the normal path
++    * never reaches this and still ends on the real presented handler; and it
++    * turns a window switch from a permanent hang into a blink. */
++   const uint64_t drop_grace_ns = 500ull * 1000 * 1000;
++
++   /* Only for callers that asked to wait forever. A caller that named a
++    * deadline is prepared to handle VK_TIMEOUT and is entitled to it: telling
++    * it a present completed after 500 ms, when it allowed 5 s, would be a lie
++    * dressed as a fix. The hang this recovers from is specific to the
++    * infinite wait -- that is the one with no way out. */
++   const bool synthesize = timeout == UINT64_MAX;
++
+    mtx_lock(&present_info->mutex);
+    while (present_info->present_id < waitValue) {
++      /* Wake at the caller's deadline or at the end of the grace period,
++       * whichever comes first, so an infinite timeout still gets to notice a
++       * dropped present. */
++      struct timespec wake_timespec;
++      timespec_from_nsec(&wake_timespec,
++                         os_time_get_absolute_timeout(drop_grace_ns));
++
+       int ret = u_cnd_monotonic_timedwait(&present_info->present_id_cond,
+                                           &present_info->mutex,
+-                                          &abs_timespec);
++                                          synthesize ? &wake_timespec
++                                                     : &abs_timespec);
+       if (ret == thrd_timedout) {
++         if (synthesize) {
++            /* Metal will not tell us this present is over, so say it here:
++             * emit the completion it owes us, through the same path a real
++             * presented handler takes. Everything queued is equally stranded
++             * -- they are all waiting on the same window that is not being
++             * displayed -- so clear up to queued_id rather than only the id
++             * this caller asked about, which would otherwise cost another
++             * grace period per frame for as long as the window is away.
++             *
++             * As far as the application is concerned these presents happened:
++             * nobody saw them, which is not the same as them not occurring. */
++            wsi_metal_present_id_reached_locked(present_info,
++                                                MAX2(waitValue,
++                                                     present_info->queued_id));
++            break;
++         }
+          result = VK_TIMEOUT;
+          break;
+       }
+-- 
+2.55.0
+
