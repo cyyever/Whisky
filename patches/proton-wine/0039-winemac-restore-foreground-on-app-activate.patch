@@ -1,0 +1,50 @@
+Subject: winemac: take the foreground back when the application is activated
+
+macdrv_app_deactivated() hands the foreground window to the desktop when the
+application is deactivated.  Nothing hands it back.  The return trip relied on
+-windowDidBecomeKey, but Cocoa does not send it again on reactivation: a window
+that was key when its application was deactivated is still key, so no
+WINDOW_GOT_FOCUS is posted and macdrv_window_got_focus never runs.
+
+The application is then left with the desktop as its foreground window for as
+long as it runs.  win32u sends WM_ACTIVATEAPP only when the foreground thread
+changes, so an application that was told it lost focus is never told it got it
+back.  Measured on Super Street Fighter IV, sampling GetForegroundWindow() from
+a second process so that reading it did not disturb it:
+
+  foreground -> 001E01D2 SSFIVAE       (playing)
+  foreground -> 00010020 #32769        (switched away -- the desktop)
+  <nothing, on switching back>
+
+Its DirectInput pad is acquired with DISCL_FOREGROUND, so it goes unacquired on
+the way out and, with no WM_ACTIVATEAPP to prompt a re-Acquire, stays that way:
+the controller is dead for the rest of the session.
+
+Offer the focus again on activation, so the two halves are symmetric.
+---
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -2172,7 +2172,23 @@
+         if (beenActive)
+             [self unminimizeWindowIfNoneVisible];
+         beenActive = TRUE;
++
++        /* Cocoa does not send -windowDidBecomeKey again when the application
++         * is reactivated: the window that was key when it was deactivated is
++         * still key.  So nothing offers Wine the focus back, and the foreground
++         * macdrv_app_deactivated handed to the desktop is never taken again --
++         * leaving the app with no foreground window and no WM_ACTIVATEAPP.
++         * Deactivation gives it up explicitly; activation has to ask for it
++         * back just as explicitly. */
++        {
++            WineWindow* key = (WineWindow*)[NSApp keyWindow];
+ 
++            if (![key isKindOfClass:[WineWindow class]])
++                key = [keyWindows firstObject];
++            if ([key isKindOfClass:[WineWindow class]] && ![key isMiniaturized])
++                [self windowGotFocus:key];
++        }
++
+         // If a Wine process terminates abruptly while it has the display captured
+         // and switched to a different resolution, Mac OS X will uncapture the
+         // displays and switch their resolutions back.  However, the other Wine
