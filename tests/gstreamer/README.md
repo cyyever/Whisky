@@ -31,6 +31,31 @@ at 60.1 s of 192.8 s` for a clip playing perfectly at 1.00x.
 black screen was elsewhere — it turned out to be Wine, and a bleeding-edge
 bump fixed it.
 
+## The audio probes
+
+SSFIV's opening movie plays with sound and the main menu that follows is
+silent. Those are two different paths — the movie is a DirectShow graph ending
+in the DirectSound renderer, while the game imports `DSOUND.dll` and
+enumerates devices itself — so "does Wine have audio" is the wrong question.
+These two split it further.
+
+Neither needs ears. `dsound-after-video-test` reads the **play cursor**:
+`IDirectSoundBuffer::GetCurrentPosition` advances only while a buffer is
+really being consumed, so a buffer that "plays" with a frozen cursor is
+silence, and that is checkable without a person in the room.
+
+| probe | question | result |
+|---|---|---|
+| `dsound-after-video-test.c` | does DirectSound still play once a DirectShow graph has had the device? | **negative (2026-08-20)**: 44216 bytes per 500 ms before *and* after the movie, against ~44100 expected — exactly real time both times |
+| `audio-device-name-test.c` | can an app read the devices' names? | tracing the game showed `send_device GetValue(FriendlyName) failed: 80004005` on every run |
+
+The first probe's negative retires the whole "the video left the device
+occupied" theory. The second is unfinished: it hangs before printing its first
+line — which is before any audio call, so the hang is in DLL load or
+`CoInitialize` — while `wine cmd /c echo` runs normally in the same bottle at
+the same moment. That hang is the more interesting finding and is where this
+picks up.
+
 ## dshow-render-test.sh — 32-bit vs 64-bit rendering
 
 Runs `wmv-render-test` in both bitnesses over any WMV in the bottle. The
