@@ -137,6 +137,23 @@ static void free_rt(struct rt r) {
     vkFreeMemory(dev, r.mem, NULL);
 }
 
+/* Every dynamic state this file's pipelines declare, set together. Recording a
+ * command buffer that leaves one undefined is not a crash but a silent lie:
+ * with restart coming out VK_TRUE, requires_unroll_index_promotion() returns
+ * false and the uint16 strips take the native Metal path, so the unroll stress
+ * reports "all intact" having exercised no unroll at all. One call site means
+ * the next phase added here cannot reintroduce that. */
+static void bind_probe_state(VkCommandBuffer cmd, VkViewport vp, VkRect2D sc,
+                             VkPrimitiveTopology topo, VkCullModeFlags cull,
+                             VkFrontFace front, VkBool32 restart) {
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdSetPrimitiveTopology(cmd, topo);
+    vkCmdSetCullMode(cmd, cull);
+    vkCmdSetFrontFace(cmd, front);
+    vkCmdSetPrimitiveRestartEnable(cmd, restart);
+}
+
 /* Shared recording around every probe draw: UNDEFINED -> COLOR_ATTACHMENT
  * barrier + a clearing beginRendering; the caller binds state and draws;
  * end_color_pass closes the pass and copies the image out for readback. */
@@ -394,10 +411,10 @@ int main(void) {
         CFG_ATTR_IDX18_VO4_CULL,
         CFG_FAN4_BOWTIE, FAN_NONE, FAN_CCW, FAN_CW,
         RST_ON, RST_OFF, RST_CULL_ON, RST_CULL_OFF, RST_STRIP_ON, RST_STRIP_OFF,
-        NCFG_ID
+        NCFG
     };
 
-    struct config cfgs[NCFG_ID] = {
+    struct config cfgs[NCFG] = {
         [CFG_LIST6_NONE] = { "list6  cull=NONE          ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  4, 6, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
         [CFG_STRIP4_NONE] = { "strip4 cull=NONE          ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
         [CFG_STRIP4_BACK_CCW] = { "strip4 cull=BACK front=CCW", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
@@ -440,7 +457,6 @@ int main(void) {
         [RST_STRIP_ON] = { "strip4 restart=ON         ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, .restart = 1 },
         [RST_STRIP_OFF] = { "strip4 restart=OFF        ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
     };
-    enum { NCFG = NCFG_ID };
     int results[NCFG][2];  /* [cfg][probe]: 1=red 0=black */
     int failures = 0;
 
@@ -450,12 +466,8 @@ int main(void) {
         VK(vkBeginCommandBuffer(cmd, &cbbi));
         begin_color_pass(cmd, img, view, COLOR_RANGE, sc);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cfgs[i].attr ? pipeA : pipe);
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        vkCmdSetScissor(cmd, 0, 1, &sc);
-        vkCmdSetPrimitiveTopology(cmd, cfgs[i].topo);
-        vkCmdSetCullMode(cmd, cfgs[i].cull);
-        vkCmdSetFrontFace(cmd, cfgs[i].front);
-        vkCmdSetPrimitiveRestartEnable(cmd, cfgs[i].restart ? VK_TRUE : VK_FALSE);
+        bind_probe_state(cmd, vp, sc, cfgs[i].topo, cfgs[i].cull, cfgs[i].front,
+                         cfgs[i].restart ? VK_TRUE : VK_FALSE);
         if (cfgs[i].attr) {
             VkDeviceSize off = cfgs[i].vb_off;
             vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &off);
@@ -649,12 +661,10 @@ int main(void) {
                 for (int v = 0; v < 6; v++)
                     memcpy(dst + v * STRIDE, src[v], 8);
                 vkCmdBindPipeline(cmds[f], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeA);
-                vkCmdSetViewport(cmds[f], 0, 1, &vp);
-                vkCmdSetScissor(cmds[f], 0, 1, &sc);
-                vkCmdSetPrimitiveTopology(cmds[f], VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-                vkCmdSetCullMode(cmds[f], VK_CULL_MODE_NONE);
-                vkCmdSetFrontFace(cmds[f], VK_FRONT_FACE_COUNTER_CLOCKWISE);
-                vkCmdSetPrimitiveRestartEnable(cmds[f], VK_FALSE);
+                bind_probe_state(cmds[f], vp, sc,
+                                 VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                                 VK_CULL_MODE_NONE,
+                                 VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_FALSE);
                 vkCmdBindVertexBuffers(cmds[f], 0, 1, &vbuf, &off);
                 vkCmdDraw(cmds[f], 6, 1, 0, 0);
             }
@@ -758,18 +768,9 @@ int main(void) {
             {
                 VkDeviceSize voff = FANV_OFF;
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeA);
-                vkCmdSetViewport(cmd, 0, 1, &vp);
-                vkCmdSetScissor(cmd, 0, 1, &sc);
-                vkCmdSetPrimitiveTopology(cmd, topologies[t].topo);
-                vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
-                vkCmdSetFrontFace(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
-                /* Restart is dynamic on this pipeline, so it must be set in
-                 * every command buffer. Leaving it undefined here would let it
-                 * come out VK_TRUE, and requires_unroll_index_promotion()
-                 * returns false when restart is on -- the uint16 strips below
-                 * would then take the native Metal path and this phase would
-                 * report "all intact" while exercising no unroll at all. */
-                vkCmdSetPrimitiveRestartEnable(cmd, VK_FALSE);
+                bind_probe_state(cmd, vp, sc, topologies[t].topo,
+                                 VK_CULL_MODE_NONE,
+                                 VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_FALSE);
                 vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &voff);
                 vkCmdBindIndexBuffer(cmd, fanibuf,
                                      (variants[v].off == 16 ? quad_off : variants[v].off)
@@ -836,12 +837,9 @@ int main(void) {
             {
                 VkDeviceSize voff = FANV_OFF;
                 vkCmdBindPipeline(cmds[f], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeA);
-                vkCmdSetViewport(cmds[f], 0, 1, &vp);
-                vkCmdSetScissor(cmds[f], 0, 1, &sc);
-                vkCmdSetPrimitiveTopology(cmds[f], topologies[t].topo);
-                vkCmdSetCullMode(cmds[f], VK_CULL_MODE_NONE);
-                vkCmdSetFrontFace(cmds[f], VK_FRONT_FACE_COUNTER_CLOCKWISE);
-                vkCmdSetPrimitiveRestartEnable(cmds[f], VK_FALSE);
+                bind_probe_state(cmds[f], vp, sc, topologies[t].topo,
+                                 VK_CULL_MODE_NONE,
+                                 VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_FALSE);
                 vkCmdBindVertexBuffers(cmds[f], 0, 1, &vbuf, &voff);
                 vkCmdBindIndexBuffer(cmds[f], fanibuf,
                                      (frame & 1 ? 4 : quad_off) * sizeof(uint16_t), VK_INDEX_TYPE_UINT16);

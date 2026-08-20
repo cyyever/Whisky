@@ -140,18 +140,20 @@ int main(int argc, char **argv)
     DWORD start = GetTickCount();
     LONGLONG last_pos = -1;
     DWORD last_change = start;
-    /* Without a readable position there is no clock to call stalled: graphs
-     * ending in a null renderer can answer E_NOTIMPL, and treating "unknown"
-     * as "frozen" would fail every healthy run of exactly the configuration
-     * this test uses by default. */
-    int have_pos = 0;
+    /* last_pos stays -1 until a position is actually read. Without one there is
+     * no clock to call stalled: a graph ending in the null renderer can answer
+     * E_NOTIMPL, and treating "unknown" as "frozen" would fail every healthy
+     * run of the configuration this test uses by default. */
     for (;;) {
         long code = 0;
         LONG_PTR p1, p2;
         HRESULT hr = IMediaEvent_WaitForCompletion(ev, 500, &code);
+        /* WaitForCompletion consumes whatever terminal event it saw, so an
+         * abort has to be recognised here too -- falling through to the drain
+         * loop would leave it looking for an event already taken, and the run
+         * would end reported as the stall this test hunts. */
         if (hr == S_OK && (code == EC_ERRORABORT || code == EC_USERABORT)) {
-            printf("FAIL  graph aborted (event 0x%lx) -- not a stall\n",
-                   (unsigned long)code);
+            printf("FAIL  graph aborted, event 0x%lx\n", (unsigned long)code);
             return 1;
         }
         if (hr == S_OK && code == EC_COMPLETE) {
@@ -170,7 +172,6 @@ int main(int argc, char **argv)
 
         LONGLONG pos = 0;
         if (seek && SUCCEEDED(IMediaSeeking_GetCurrentPosition(seek, &pos))) {
-            have_pos = 1;
             if (pos != last_pos) { last_pos = pos; last_change = GetTickCount(); }
         }
 
@@ -178,7 +179,7 @@ int main(int argc, char **argv)
         double played = (double)last_pos / 1e7;
 
         /* Enough of the stream decoded at a sane rate answers the question. */
-        if (enough_s > 0 && have_pos && played >= enough_s) {
+        if (enough_s > 0 && last_pos >= 0 && played >= enough_s) {
             printf("PASS  played %.1f s of %.1f s in %.1f s wall (%.2fx realtime)\n",
                    played, dur_s, wall, wall > 0 ? played / wall : 0.0);
             return 0;
@@ -186,7 +187,7 @@ int main(int argc, char **argv)
 
         /* 15 s with the clock frozen is a stall, not slow decoding. This --
          * not the wall-clock budget -- is what identifies the hang. */
-        if (have_pos && GetTickCount() - last_change >= 15000) {
+        if (last_pos >= 0 && GetTickCount() - last_change >= 15000) {
             printf("FAIL  STALLED at position %.1f s of %.1f s (no progress for 15 s)\n",
                    played, dur_s);
             printf("      the graph is running but its clock stopped -- the game's hang\n");
