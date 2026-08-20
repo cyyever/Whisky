@@ -50,16 +50,18 @@ static HWND g_win;
 
 /* Plays a tone and reports whether the play cursor actually moved.
  * moved_out is the cursor delta in bytes. */
-static HRESULT play_tone(const char *label, DWORD *moved_out)
+/* Returns the play-cursor delta in bytes; 0 means nothing came out, whether
+ * because setup failed or because the buffer was not being consumed. The
+ * per-failure printfs above each return carry which. */
+static DWORD play_tone(const char *label)
 {
     IDirectSound8 *ds = NULL;
     IDirectSoundBuffer *buf = NULL;
+    DWORD moved = 0;
     HRESULT hr;
 
-    *moved_out = 0;
-
     hr = DirectSoundCreate8(NULL, &ds, NULL);
-    if (FAILED(hr)) { printf("   %s: DirectSoundCreate8 = 0x%08lx\n", label, (unsigned long)hr); return hr; }
+    if (FAILED(hr)) { printf("   %s: DirectSoundCreate8 = 0x%08lx\n", label, (unsigned long)hr); return 0; }
 
     hr = IDirectSound8_SetCooperativeLevel(ds, g_win, DSSCL_PRIORITY);
     if (FAILED(hr)) { printf("   %s: SetCooperativeLevel = 0x%08lx\n", label, (unsigned long)hr); goto done; }
@@ -100,18 +102,17 @@ static HRESULT play_tone(const char *label, DWORD *moved_out)
     IDirectSoundBuffer_GetCurrentPosition(buf, &first, NULL);
     Sleep(500);
     IDirectSoundBuffer_GetCurrentPosition(buf, &last, NULL);
-    *moved_out = last >= first ? last - first : bytes - first + last;
+    moved = last >= first ? last - first : bytes - first + last;
 
     printf("   %s: cursor %lu -> %lu (%lu bytes in 500 ms, expected ~%lu)\n",
            label, (unsigned long)first, (unsigned long)last,
-           (unsigned long)*moved_out, (unsigned long)(wf.nAvgBytesPerSec / 2));
+           (unsigned long)moved, (unsigned long)(wf.nAvgBytesPerSec / 2));
     IDirectSoundBuffer_Stop(buf);
-    hr = S_OK;
 
 done:
     if (buf) IDirectSoundBuffer_Release(buf);
     if (ds) IDirectSound8_Release(ds);
-    return hr;
+    return moved;
 }
 
 /* Plays the movie for a few seconds through a full DirectShow graph, then
@@ -132,7 +133,13 @@ static HRESULT play_video(const WCHAR *path, int seconds)
     hr = IGraphBuilder_QueryInterface(graph, &IID_IMediaControl, (void **)&ctrl);
     if (FAILED(hr)) goto done;
 
-    IMediaControl_Run(ctrl);
+    hr = IMediaControl_Run(ctrl);
+    if (FAILED(hr)) {
+        /* Without this the graph never runs, phase 3 still "passes", and the
+         * premise -- that a graph held the device -- was never established. */
+        printf("   Run = 0x%08lx\n", (unsigned long)hr);
+        goto done;
+    }
     Sleep(seconds * 1000);
     IMediaControl_Stop(ctrl);
 
@@ -162,7 +169,7 @@ int main(int argc, char **argv)
     DWORD before = 0, after = 0;
 
     printf("phase 1: DirectSound before any video\n");
-    if (FAILED(play_tone("before", &before))) { printf("FAIL  setup\n"); return 1; }
+    before = play_tone("before");
     if (!before) {
         printf("SKIP  the play cursor does not move even before a video plays --\n"
                "      DirectSound output is broken on its own, so this test cannot\n"
@@ -181,7 +188,7 @@ int main(int argc, char **argv)
     }
 
     printf("phase 3: DirectSound after the graph was released\n");
-    play_tone("after", &after);
+    after = play_tone("after");
 
     printf("\n");
     if (!after) {

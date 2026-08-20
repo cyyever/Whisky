@@ -1,62 +1,86 @@
-mmdevapi: stop decorating absent devices' names on every enumeration
+Subject: mmdevapi: keep the driver id, do not recover it from a derived name
 
-The loop that re-creates devices present in the registry but no longer on the
-system seeded each from its stored DEVPKEY_Device_FriendlyName and passed it to
-MMDevice_Create as a driver id.  MMDevice_Create builds the device friendly
-name from that id as "Speakers (%s)" -- "Microphone (%s)" for capture -- and
-writes it back, so the stored name was fed to its own generator once per
-enumeration and gained a layer each time.
-
-The growth is unbounded, persists in the registry, and is driven by
-enumeration rather than by hardware changing: any process that opens the audio
-stack advances it.  A bottle that nobody had deliberately stressed held an
-unplugged monitor's HDMI endpoint 97 layers deep:
+MMDevice_Create derives a device's friendly name from the driver id it is
+handed, as "Speakers (%s)" -- "Microphone (%s)" for capture -- and stores it.
+load_devices_from_reg() re-creates devices that are in the registry but no
+longer present, and seeded each from that stored name, so the derivation was
+fed its own output and wrapped the name in another layer every time.  The
+growth is unbounded, persists in the registry, and is driven by enumeration
+rather than by hardware changing: anything that opens the audio stack advances
+it.  A bottle whose owner had not tried to provoke it held an unplugged
+monitor's HDMI endpoint 97 layers deep:
 
   "Speakers (Speakers (Speakers ( ... (DELL S2817Q) ... )))"
 
-Two changes.  The restore loop now reads DEVPKEY_DeviceInterface_FriendlyName,
-which is where MMDevice_Create stores the undecorated id it was given, rather
-than the decorated name it derives from it.  And MMDevice_Create no longer
-writes the property block at all for DEVICE_STATE_NOTPRESENT: a device restored
-from the registry has no driver to describe it and already carries every
-property that block would write, so re-deriving them is the only way they can
-drift.  Its state is still updated, which is all the restore path wants.
+The id has no storage of its own, which is why the restore path had to
+reverse-engineer it from a display string in the first place.  Give it one:
+write it under the device key next to DeviceState, and read it back there.
+The input is then never the generator's own output, and the property block
+stays unconditional and idempotent -- an absent device still gets any property
+later added to it, and a key with an incomplete Properties subkey can still be
+repaired by enumeration.
 
-Identity here is the GUID the caller already has; the friendly name is a
-display string and was never a safe thing to round-trip through the code that
-generates it.
+Keys written before DriverId existed fall back to
+DEVPKEY_DeviceInterface_FriendlyName, which is the id undecorated.  That path
+writes DriverId in turn, so an existing registry stops growing after one
+enumeration.  Names already decorated stay as they are; nothing rewrites them
+until the device is seen again, at which point it is created from the real
+driver id and the name comes out correct.
 
 diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
-index 7fd518de0f6..d718a5183c7 100644
+index 7fd518de0f6..0d70d997e0a 100644
 --- a/dlls/mmdevapi/devenum.c
 +++ b/dlls/mmdevapi/devenum.c
-@@ -664,7 +664,14 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+@@ -664,6 +664,12 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
      {
          HKEY keyprop;
          RegSetValueExW(key, L"DeviceState", 0, REG_DWORD, (const BYTE*)&state, sizeof(DWORD));
--        if (!RegCreateKeyExW(key, L"Properties", 0, NULL, 0, KEY_WRITE|KEY_READ|KEY_WOW64_64KEY, NULL, &keyprop, NULL))
-+        /* A device restored from the registry has no driver to describe it and
-+         * already carries every property this block would write. Rebuilding
-+         * them from whatever string was passed in is how they drift: the names
-+         * are derived from the driver id, and the id of an absent device can
-+         * only come from a name that was itself derived. Update its state and
-+         * leave its description alone. */
-+        if (state != DEVICE_STATE_NOTPRESENT
-+            && !RegCreateKeyExW(key, L"Properties", 0, NULL, 0, KEY_WRITE|KEY_READ|KEY_WOW64_64KEY, NULL, &keyprop, NULL))
++        /* The driver id, kept as itself. Every friendly name in the block below
++         * is derived from it, so it is the one value that must survive a
++         * round-trip through the registry undecorated -- see
++         * load_devices_from_reg. */
++        RegSetValueExW(key, L"DriverId", 0, REG_SZ, (const BYTE*)cur->drv_id,
++                       (wcslen(cur->drv_id) + 1) * sizeof(WCHAR));
+         if (!RegCreateKeyExW(key, L"Properties", 0, NULL, 0, KEY_WRITE|KEY_READ|KEY_WOW64_64KEY, NULL, &keyprop, NULL))
          {
              PROPVARIANT pv;
-             WCHAR *type;
-@@ -792,9 +799,12 @@ HRESULT load_devices_from_reg(void)
+@@ -791,13 +797,33 @@ HRESULT load_devices_from_reg(void)
+         }
          if (ret != ERROR_SUCCESS)
              continue;
-         if (SUCCEEDED(CLSIDFromString(guidvalue, &guid))
+-        if (SUCCEEDED(CLSIDFromString(guidvalue, &guid))
 -            && SUCCEEDED(MMDevice_GetPropValue(&guid, curflow, (const PROPERTYKEY*)&DEVPKEY_Device_FriendlyName, &pv))
-+            && SUCCEEDED(MMDevice_GetPropValue(&guid, curflow, (const PROPERTYKEY*)&DEVPKEY_DeviceInterface_FriendlyName, &pv))
-             && pv.vt == VT_LPWSTR)
+-            && pv.vt == VT_LPWSTR)
++        if (SUCCEEDED(CLSIDFromString(guidvalue, &guid)))
          {
-+            /* The interface friendly name is the driver id this function was
-+             * given; the device friendly name is that id decorated. Feeding the
-+             * decorated one back in made every enumeration decorate it again. */
-             MMDevice_Create(pv.pwszVal, &guid, curflow,
-                     DEVICE_STATE_NOTPRESENT, FALSE);
-             CoTaskMemFree(pv.pwszVal);
+-            MMDevice_Create(pv.pwszVal, &guid, curflow,
+-                    DEVICE_STATE_NOTPRESENT, FALSE);
+-            CoTaskMemFree(pv.pwszVal);
++            WCHAR driver_id[256];
++            DWORD size = sizeof(driver_id), type;
++
++            /* MMDevice_Create derives the friendly name from the driver id as
++             * "Speakers (%s)". Seeding it from that name instead fed the
++             * derivation its own output, so every enumeration of a device that
++             * is no longer present wrapped the stored name in another layer --
++             * unboundedly, and persisted. Prefer the id kept for this purpose;
++             * fall back to the interface friendly name, which is the id
++             * undecorated, for keys written before it existed. Doing so also
++             * writes DriverId, so a bottle converges after one enumeration. */
++            if (!RegGetValueW(cur, guidvalue, L"DriverId", RRF_RT_REG_SZ, &type,
++                              driver_id, &size))
++            {
++                MMDevice_Create(driver_id, &guid, curflow,
++                        DEVICE_STATE_NOTPRESENT, FALSE);
++            }
++            else if (SUCCEEDED(MMDevice_GetPropValue(&guid, curflow,
++                        (const PROPERTYKEY*)&DEVPKEY_DeviceInterface_FriendlyName, &pv))
++                     && pv.vt == VT_LPWSTR)
++            {
++                MMDevice_Create(pv.pwszVal, &guid, curflow,
++                        DEVICE_STATE_NOTPRESENT, FALSE);
++                CoTaskMemFree(pv.pwszVal);
++            }
+         }
+     } while (1);
+ 

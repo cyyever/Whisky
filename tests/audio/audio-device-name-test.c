@@ -39,6 +39,15 @@
 #include <propvarutil.h>
 #include <stdio.h>
 
+/* Names can be non-ASCII -- this machine has a Chinese-named Multi-Output
+ * Device -- and %ls emits nothing for those and swallows the rest of the line.
+ * An early version of this probe hid the one device worth looking at that way. */
+static void print_ascii(const WCHAR *w)
+{
+    for (; *w; w++)
+        putchar(*w < 128 ? (char)*w : '?');
+}
+
 static int g_dsound_devices;
 static int g_dsound_unnamed;
 
@@ -63,7 +72,8 @@ static int check_mmdevapi(void)
 {
     IMMDeviceEnumerator *devenum = NULL;
     IMMDeviceCollection *coll = NULL;
-    UINT count = 0, unnamed = 0;
+    UINT count = 0;
+    int unnamed = 0;
     HRESULT hr;
 
     hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER,
@@ -85,8 +95,13 @@ static int check_mmdevapi(void)
     for (unsigned r = 0; r < 3; r++) {
         IMMDevice *def = NULL;
         if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(devenum, eRender,
-                                                               roles[r].role, &def)))
-            { printf("   default(%s): none\n", roles[r].name); continue; }
+                                                               roles[r].role, &def))) {
+            /* Counted, not just printed: an app that opens the default and gets
+             * nothing is the failure mode this probe is looking for. */
+            printf("   FAIL default(%s): none\n", roles[r].name);
+            unnamed++;
+            continue;
+        }
         IPropertyStore *dp = NULL;
         if (SUCCEEDED(IMMDevice_OpenPropertyStore(def, STGM_READ, &dp))) {
             PROPVARIANT dv;
@@ -94,16 +109,17 @@ static int check_mmdevapi(void)
             if (SUCCEEDED(IPropertyStore_GetValue(dp, &PKEY_Device_FriendlyName, &dv))
                 && dv.vt == VT_LPWSTR && dv.pwszVal) {
                 printf("   default(%-15s): ", roles[r].name);
-                for (const WCHAR *w = dv.pwszVal; *w; w++)
-                    putchar(*w < 128 ? (char)*w : '?');
+                print_ascii(dv.pwszVal);
                 putchar('\n');
             } else {
-                printf("   default(%-15s): NAME UNREADABLE\n", roles[r].name);
+                printf("   FAIL default(%s): name unreadable\n", roles[r].name);
+                unnamed++;
             }
             PropVariantClear(&dv);
             IPropertyStore_Release(dp);
         } else {
-            printf("   default(%-15s): property store unreadable\n", roles[r].name);
+            printf("   FAIL default(%s): property store unreadable\n", roles[r].name);
+            unnamed++;
         }
         IMMDevice_Release(def);
     }
@@ -116,8 +132,11 @@ static int check_mmdevapi(void)
         IPropertyStore *props = NULL;
         PROPVARIANT v;
 
-        if (FAILED(IMMDeviceCollection_Item(coll, i, &dev)))
+        if (FAILED(IMMDeviceCollection_Item(coll, i, &dev))) {
+            printf("   FAIL endpoint %u: cannot be materialised\n", i);
+            unnamed++;
             continue;
+        }
 
         /* This is the call the game's trace shows failing. */
         hr = IMMDevice_OpenPropertyStore(dev, STGM_READ, &props);
@@ -135,8 +154,7 @@ static int check_mmdevapi(void)
             unnamed++;
         } else {
             printf("   endpoint %u: \"", i);
-            for (const WCHAR *w = v.pwszVal; *w; w++)
-                putchar(*w < 128 ? (char)*w : '?');
+            print_ascii(v.pwszVal);
             printf("\"\n");
         }
         PropVariantClear(&v);
@@ -147,7 +165,7 @@ static int check_mmdevapi(void)
 done:
     if (coll) IMMDeviceCollection_Release(coll);
     if (devenum) IMMDeviceEnumerator_Release(devenum);
-    return (int)unnamed;
+    return unnamed;
 }
 
 int main(void)
