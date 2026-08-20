@@ -1,19 +1,24 @@
 /* Probe SSFIV's missing-triangle artifact with no Wine, no D3D, no game:
  * a native x86_64 (Rosetta) process -> Vulkan loader -> KosmicKrisp -> Metal.
  *
- * OUTCOME so far: every config below renders CORRECTLY on KosmicKrisp
- * (Mesa 82203941) -- strip winding is compensated before the cull test, and
- * non-4-aligned uint16 index offsets fetch the right indices. The negatives
- * exonerate the core draw path and leave DXVK<->KK state translation (vertex
- * fetch offsets, pretransformed-vertex shaders) as the artifact's home. Kept
- * as a regression guard for KosmicKrisp bumps.
+ * OUTCOME: the artifact was primitive restart applied to a NON-indexed draw.
+ * With no index buffer the unroll kernel reads vertex IDs, and the runtime's
+ * restart index is 0 until an index buffer is first bound, so vertex 0 -- a
+ * fan's hub -- read as a restart marker and a 4-vertex fan emitted one
+ * triangle instead of two. Fixed in patches/mesa/0002; the restart pairs at
+ * the end of the matrix are what caught it and now guard it.
  *
- * The in-game artifact: 2D fullscreen draws (loading screens, video) render
- * only the lower-right diagonal half -- one of a quad's two triangles is
- * missing -- and the in-match 3D scene goes fully black. That shape suggests
- * primitive assembly or face culling: a quad drawn as a 4-vertex strip has
- * alternating triangle winding which the rasterizer must compensate before
- * the cull test, and losing that compensation culls exactly one of the two.
+ * Everything else here came out negative and is kept as a regression guard:
+ * strip winding is compensated before the cull test, non-4-aligned uint16
+ * index offsets fetch the right indices, and the fan/strip unroll holds under
+ * in-flight load. Run it after every KosmicKrisp bump.
+ *
+ * The in-game artifact: 2D fullscreen draws (loading screens, video) rendered
+ * only the lower-right diagonal half -- one of a quad's two triangles
+ * missing. The shape first suggested primitive assembly or face culling,
+ * which is what the topology x cull x winding matrix below was built to test;
+ * those all passed, and the answer turned out to be one rung further in, in
+ * how the fan is decomposed.
  *
  * So: one fullscreen quad, drawn under a matrix of topology x cull x winding,
  * probing one pixel in the upper-left half and one in the lower-right half.
@@ -87,6 +92,49 @@ static void probe_pixels(const unsigned char *px, int *ul, int *lr) {
 static void fan_probe(const unsigned char *px, int *t1, int *t2) {
     *t1 = px[(36 * W + 12) * 4] > 128;
     *t2 = px[(36 * W + 52) * 4] > 128;
+}
+
+/* One offscreen render target: image + backing memory + view. The stress
+ * phases need one PER FRAME IN FLIGHT. Sharing a single image across them
+ * would be a write-after-read hazard -- begin_color_pass's acquire barrier
+ * uses TOP_OF_PIPE/no src access, so it orders against nothing, and the next
+ * frame's clear could land while the previous frame's copy-out is still
+ * reading. A frame reading its neighbour's geometry would then be blamed on
+ * the shared unroll heap, which is the one thing these phases exist to
+ * measure. Separate targets remove the hazard without a barrier, which would
+ * serialize the frames and destroy the overlap the phases depend on. */
+struct rt { VkImage img; VkDeviceMemory mem; VkImageView view; };
+
+/* Every image here is a single-level, single-layer colour target. */
+static const VkImageSubresourceRange COLOR_RANGE = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+#define TRY(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) return r_; } while (0)
+static VkResult make_rt(struct rt *r) {
+    VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    ici.imageType = VK_IMAGE_TYPE_2D; ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent = (VkExtent3D){ W, H, 1 }; ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    TRY(vkCreateImage(dev, &ici, NULL, &r->img));
+    VkMemoryRequirements mr; vkGetImageMemoryRequirements(dev, r->img, &mr);
+    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    mai.allocationSize = mr.size;
+    mai.memoryTypeIndex = find_mem(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    TRY(vkAllocateMemory(dev, &mai, NULL, &r->mem));
+    TRY(vkBindImageMemory(dev, r->img, r->mem, 0));
+    VkImageViewCreateInfo vci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    vci.image = r->img; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = ici.format;
+    vci.subresourceRange = COLOR_RANGE;
+    TRY(vkCreateImageView(dev, &vci, NULL, &r->view));
+    return VK_SUCCESS;
+}
+#undef TRY
+
+static void free_rt(struct rt r) {
+    vkDestroyImageView(dev, r.view, NULL);
+    vkDestroyImage(dev, r.img, NULL);
+    vkFreeMemory(dev, r.mem, NULL);
 }
 
 /* Shared recording around every probe draw: UNDEFINED -> COLOR_ATTACHMENT
@@ -174,22 +222,10 @@ int main(void) {
     VK(vkCreateDevice(phys, &dci, NULL, &dev));
     vkGetDeviceQueue(dev, qfam, 0, &queue);
 
-    VkImageCreateInfo imci = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-    imci.imageType = VK_IMAGE_TYPE_2D; imci.format = VK_FORMAT_R8G8B8A8_UNORM;
-    imci.extent = (VkExtent3D){ W, H, 1 }; imci.mipLevels = 1; imci.arrayLayers = 1;
-    imci.samples = VK_SAMPLE_COUNT_1_BIT; imci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    imci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkImage img; VK(vkCreateImage(dev, &imci, NULL, &img));
-    VkMemoryRequirements mr; vkGetImageMemoryRequirements(dev, img, &mr);
-    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    mai.allocationSize = mr.size; mai.memoryTypeIndex = find_mem(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VkDeviceMemory imem; VK(vkAllocateMemory(dev, &mai, NULL, &imem));
-    VK(vkBindImageMemory(dev, img, imem, 0));
-    VkImageViewCreateInfo ivci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-    ivci.image = img; ivci.viewType = VK_IMAGE_VIEW_TYPE_2D; ivci.format = imci.format;
-    ivci.subresourceRange = (VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    VkImageView view; VK(vkCreateImageView(dev, &ivci, NULL, &view));
+    /* The single-shot target. Per-frame ones come from the same helper. */
+    struct rt main_rt; VK(make_rt(&main_rt));
+    VkImage img = main_rt.img;
+    VkImageView view = main_rt.view;
 
     VkDeviceMemory bmem;
     VkBuffer buf = make_buffer(W * H * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -345,31 +381,47 @@ int main(void) {
     cbai.commandPool = pool; cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cbai.commandBufferCount = 1;
     VkCommandBuffer cmd; VK(vkAllocateCommandBuffers(dev, &cbai, &cmd));
 
-    struct config cfgs[] = {
-        { "list6  cull=NONE          ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  4, 6, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
-        { "strip4 cull=NONE          ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
-        { "strip4 cull=BACK front=CCW", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
-        { "strip4 cull=BACK front=CW ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, -1 },
-        { "list6  cull=BACK front=CCW", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  4, 6, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
-        { "list6  cull=BACK front=CW ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  4, 6, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, -1 },
-        { "idx16  offset=2  cull=NONE", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, 2 },
-        { "idx16  offset=18 cull=NONE", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, 18 },
-        { "idx16  offset=2  cull=BACK", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, 2 },
-        { "attr   strip4 vb=0 fv=0   ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 1, 0, 0 },
-        { "attr   strip4 vb=0 fv=4   ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 1, 0, 4 },
-        { "attr   strip4 vb=228 fv=0 ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 1, 8 * STRIDE + 4, 0 },
-        { "attr   idx16@2 vo=4       ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE,  2, 1, 0, 4 },
-        { "attr   idx16@18 vo=4 cull ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, 18, 1, 0, 4 },
+    /* Config ids. Used as designated-initializer indices below, so a row and
+     * its name cannot drift apart: inserting or reordering rows is inert, and
+     * a verdict naming a config always reads that config. The earlier scheme
+     * addressed rows by distance from the end of the table, which silently
+     * retargeted every verdict whenever the table grew. */
+    enum {
+        CFG_LIST6_NONE, CFG_STRIP4_NONE, CFG_STRIP4_BACK_CCW, CFG_STRIP4_BACK_CW,
+        CFG_LIST6_BACK_CCW, CFG_LIST6_BACK_CW,
+        CFG_IDX16_2_NONE, CFG_IDX16_18_NONE, CFG_IDX16_2_BACK,
+        CFG_ATTR_VB0_FV0, CFG_ATTR_VB0_FV4, CFG_ATTR_VB228, CFG_ATTR_IDX2_VO4,
+        CFG_ATTR_IDX18_VO4_CULL,
+        CFG_FAN4_BOWTIE, FAN_NONE, FAN_CCW, FAN_CW,
+        RST_ON, RST_OFF, RST_CULL_ON, RST_CULL_OFF, RST_STRIP_ON, RST_STRIP_OFF,
+        NCFG_ID
+    };
+
+    struct config cfgs[NCFG_ID] = {
+        [CFG_LIST6_NONE] = { "list6  cull=NONE          ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  4, 6, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
+        [CFG_STRIP4_NONE] = { "strip4 cull=NONE          ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
+        [CFG_STRIP4_BACK_CCW] = { "strip4 cull=BACK front=CCW", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
+        [CFG_STRIP4_BACK_CW] = { "strip4 cull=BACK front=CW ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, -1 },
+        [CFG_LIST6_BACK_CCW] = { "list6  cull=BACK front=CCW", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  4, 6, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
+        [CFG_LIST6_BACK_CW] = { "list6  cull=BACK front=CW ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  4, 6, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, -1 },
+        [CFG_IDX16_2_NONE] = { "idx16  offset=2  cull=NONE", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, 2 },
+        [CFG_IDX16_18_NONE] = { "idx16  offset=18 cull=NONE", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, 18 },
+        [CFG_IDX16_2_BACK] = { "idx16  offset=2  cull=BACK", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, 2 },
+        [CFG_ATTR_VB0_FV0] = { "attr   strip4 vb=0 fv=0   ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 1, 0, 0 },
+        [CFG_ATTR_VB0_FV4] = { "attr   strip4 vb=0 fv=4   ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 1, 0, 4 },
+        [CFG_ATTR_VB228] = { "attr   strip4 vb=228 fv=0 ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 1, 8 * STRIDE + 4, 0 },
+        [CFG_ATTR_IDX2_VO4] = { "attr   idx16@2 vo=4       ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE,  2, 1, 0, 4 },
+        [CFG_ATTR_IDX18_VO4_CULL] = { "attr   idx16@18 vo=4 cull ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  0, 6, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, 18, 1, 0, 4 },
         /* TRIANGLE_FAN: not in core Vulkan, but our DXVK passes D3DPT_TRIANGLEFAN
          * through as this topology verbatim (d3d9_util.cpp), and KosmicKrisp
          * emulates fans on a helper command queue (LunarG XDC 2025) -- the one
          * path the matrix above cannot reach and the D3D9 way to draw the very
          * 2D quads (video, loading screens) that show the artifact in-game.
          * Vertex order TL,BL,TR,BR as a fan = T1 upper-left, T2 lower-right. */
-        { "FAN4   bowtie cull=NONE   ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,   0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
-        { "FANP   perim  cull=NONE   ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
-        { "FANP   perim  cull=BACK CCW", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, 10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
-        { "FANP   perim  cull=BACK CW ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, 10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, -1 },
+        [CFG_FAN4_BOWTIE] = { "FAN4   bowtie cull=NONE   ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,   0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
+        [FAN_NONE] = { "FANP   perim  cull=NONE   ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
+        [FAN_CCW] = { "FANP   perim  cull=BACK CCW", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, 10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
+        [FAN_CW] = { "FANP   perim  cull=BACK CW ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, 10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE, -1 },
         /* primitiveRestartEnable on a NON-indexed draw. The Vulkan spec confines
          * primitive restart to indexed draws ("This enable only applies to
          * indexed draws"), so all four of these must render the full quad --
@@ -381,12 +433,14 @@ int main(void) {
          * triangle instead of two. Probed strictly inside each triangle
          * (fanprobe), since the generic pair sits on the diagonal the artifact
          * cuts along and cannot tell "one triangle" from "two". */
-        { "FANP   perim  restart=ON  ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 0, 0, 0, 1, 1 },
-        { "FANP   perim  restart=OFF ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 0, 0, 0, 0, 1 },
-        { "FANP   restart=ON cull=BACK", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, 10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE,         -1, 0, 0, 0, 1, 1 },
-        { "strip4 restart=ON         ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, 0, 0, 0, 1, 0 },
+        [RST_ON] = { "FANP   perim  restart=ON  ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, .restart = 1, .fanprobe = 1 },
+        [RST_OFF] = { "FANP   perim  restart=OFF ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, .fanprobe = 1 },
+        [RST_CULL_ON] = { "FANP   cullCW restart=ON  ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE,         -1, .restart = 1, .fanprobe = 1 },
+        [RST_CULL_OFF] = { "FANP   cullCW restart=OFF ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN,  10, 4, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE,         -1, .fanprobe = 1 },
+        [RST_STRIP_ON] = { "strip4 restart=ON         ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1, .restart = 1 },
+        [RST_STRIP_OFF] = { "strip4 restart=OFF        ", VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, 0, 4, VK_CULL_MODE_NONE,     VK_FRONT_FACE_COUNTER_CLOCKWISE, -1 },
     };
-    enum { NCFG = sizeof(cfgs) / sizeof(cfgs[0]) };
+    enum { NCFG = NCFG_ID };
     int results[NCFG][2];  /* [cfg][probe]: 1=red 0=black */
     int failures = 0;
 
@@ -394,7 +448,7 @@ int main(void) {
         VkCommandBufferBeginInfo cbbi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VK(vkBeginCommandBuffer(cmd, &cbbi));
-        begin_color_pass(cmd, img, view, ivci.subresourceRange, sc);
+        begin_color_pass(cmd, img, view, COLOR_RANGE, sc);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cfgs[i].attr ? pipeA : pipe);
         vkCmdSetViewport(cmd, 0, 1, &vp);
         vkCmdSetScissor(cmd, 0, 1, &sc);
@@ -414,7 +468,7 @@ int main(void) {
         }
         else
             vkCmdDraw(cmd, cfgs[i].count, 1, cfgs[i].first, 0);
-        end_color_pass(cmd, img, ivci.subresourceRange, buf);
+        end_color_pass(cmd, img, COLOR_RANGE, buf);
         VK(vkEndCommandBuffer(cmd));
 
         VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
@@ -435,27 +489,26 @@ int main(void) {
     }
 
     /* Verdicts. */
-    if (!(results[0][0] && results[0][1])) { printf("FAIL  baseline list draw is broken\n"); failures++; }
-    if (results[1][0] != results[1][1])    { printf("FAIL  strip w/o cull drops a triangle -- assembly bug\n"); failures++; }
-    else if (!results[1][0])               { printf("FAIL  strip w/o cull drew nothing\n"); failures++; }
-    if (results[2][0] != results[2][1] || results[3][0] != results[3][1]) {
+    if (!(results[CFG_LIST6_NONE][0] && results[CFG_LIST6_NONE][1])) { printf("FAIL  baseline list draw is broken\n"); failures++; }
+    if (results[CFG_STRIP4_NONE][0] != results[CFG_STRIP4_NONE][1])    { printf("FAIL  strip w/o cull drops a triangle -- assembly bug\n"); failures++; }
+    else if (!results[CFG_STRIP4_NONE][0])               { printf("FAIL  strip w/o cull drew nothing\n"); failures++; }
+    if (results[CFG_STRIP4_BACK_CCW][0] != results[CFG_STRIP4_BACK_CCW][1] ||
+        results[CFG_STRIP4_BACK_CW][0] != results[CFG_STRIP4_BACK_CW][1]) {
         printf("FAIL  strip+cull culls only ONE of the two triangles -- the game artifact:\n");
         printf("      strip winding is not being compensated before the cull test\n");
         failures++;
     }
-    if (results[2][0] == results[3][0] && results[2][1] == results[3][1]) {
+    if (results[CFG_STRIP4_BACK_CCW][0] == results[CFG_STRIP4_BACK_CW][0] &&
+        results[CFG_STRIP4_BACK_CCW][1] == results[CFG_STRIP4_BACK_CW][1]) {
         printf("FAIL  frontFace has no effect on strip+cull\n"); failures++;
     }
-    if (results[4][0] != results[4][1] || results[5][0] != results[5][1]) {
+    if (results[CFG_LIST6_BACK_CCW][0] != results[CFG_LIST6_BACK_CCW][1] ||
+        results[CFG_LIST6_BACK_CW][0] != results[CFG_LIST6_BACK_CW][1]) {
         printf("FAIL  list+cull splits a uniform-winding quad\n"); failures++;
     }
-    if (results[4][0] == results[5][0]) {
+    if (results[CFG_LIST6_BACK_CCW][0] == results[CFG_LIST6_BACK_CW][0]) {
         printf("FAIL  frontFace has no effect on list+cull\n"); failures++;
     }
-    /* The four primitiveRestartEnable configs are the last block; the three
-     * perimeter-fan cull configs sit just above them. */
-    enum { RST_ON = NCFG - 4, RST_OFF = NCFG - 3, RST_CULL = NCFG - 2, RST_STRIP = NCFG - 1,
-           FAN_NONE = NCFG - 7, FAN_CCW = NCFG - 6, FAN_CW = NCFG - 5 };
 
     /* Perimeter-order fan: uniform winding, so cull must keep or drop BOTH.
      * A split here is the game artifact on the exact topology DXVK emits. */
@@ -475,14 +528,18 @@ int main(void) {
      * spec scopes primitive restart to indexed draws. Any of these losing a
      * triangle is the SSFIV artifact, reproduced without Wine or D3D. */
     {
-        /* Each restart=ON config paired with the identical config drawn with
-         * restart=OFF. Equal results is the whole requirement -- comparing
-         * against a twin rather than against "must be lit" keeps the pairs
-         * whose correct answer is an empty image (back-face culled) honest. */
+        /* Each restart=ON config paired with its twin: the same draw, same
+         * probe pixels, differing only in the flag. Equal results is the whole
+         * requirement. Comparing against a twin rather than against "must be
+         * lit" keeps the pair whose correct answer is an empty image
+         * (back-face culled) honest, and pairing only same-probe configs keeps
+         * an unrelated fan regression from being reported as a restart bug --
+         * the diagonal probes and the strict-interior probes disagree about a
+         * half-quad by construction. */
         struct { int on, off; } pairs[] = {
-            { RST_ON,    FAN_NONE },   /* perim fan, cull NONE  */
-            { RST_CULL,  FAN_CW },     /* perim fan, cull BACK/CW */
-            { RST_STRIP, 1 },          /* strip4 cull=NONE      */
+            { RST_ON,       RST_OFF },       /* perim fan, cull NONE    */
+            { RST_CULL_ON,  RST_CULL_OFF },  /* perim fan, cull BACK/CW */
+            { RST_STRIP_ON, RST_STRIP_OFF }, /* strip4,    cull NONE    */
         };
         for (unsigned k = 0; k < sizeof(pairs) / sizeof(pairs[0]); k++) {
             int on = pairs[k].on, off = pairs[k].off;
@@ -496,10 +553,25 @@ int main(void) {
                 failures++;
             }
         }
+        /* The twins are only a reference if the reference itself is right:
+         * (RST_CULL_OFF is excluded -- its correct result is an empty image.)
+         * assert the restart-off perimeter fan covers BOTH triangles, read
+         * with the strict-interior probes (the matrix's diagonal pair cannot
+         * see a missing half). Without this, a fan that lost a triangle
+         * however the flag is set would pass every pair above. */
+        int refs[] = { RST_OFF, RST_STRIP_OFF };
+        for (unsigned k = 0; k < sizeof(refs) / sizeof(refs[0]); k++) {
+            if (!results[refs[k]][0] || !results[refs[k]][1]) {
+                printf("FAIL  %s does not cover both triangles -- the pair above is\n"
+                       "      comparing two dead configs, not measuring restart\n",
+                       cfgs[refs[k]].name);
+                failures++;
+            }
+        }
     }
     /* Sweep the middle configs; the perimeter-fan and restart blocks above own
      * their own verdicts (theirs include cases whose correct result is empty). */
-    for (int i = 6; i < FAN_NONE; i++) {
+    for (int i = CFG_IDX16_2_NONE; i <= CFG_FAN4_BOWTIE; i++) {
         if (results[i][0] != results[i][1]) {
             printf("FAIL  %s drops one triangle (the game artifact)\n", cfgs[i].name);
             failures++;
@@ -528,12 +600,14 @@ int main(void) {
         VkBuffer rb[INFLIGHT];
         VkDeviceMemory rbmem[INFLIGHT];
         unsigned char *rbmap[INFLIGHT];
+        struct rt rts[INFLIGHT];   /* one target per frame: see make_rt */
         VkCommandBufferAllocateInfo ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         ai.commandPool = pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = INFLIGHT;
         VK(vkAllocateCommandBuffers(dev, &ai, cmds));
         for (int f = 0; f < INFLIGHT; f++) {
             VkFenceCreateInfo fci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT };
             VK(vkCreateFence(dev, &fci, NULL, &fences[f]));
+            VK(make_rt(&rts[f]));
             rb[f] = make_buffer(W * H * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 &rbmem[f]);
@@ -562,7 +636,7 @@ int main(void) {
             VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
             bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             VK(vkBeginCommandBuffer(cmds[f], &bi));
-            begin_color_pass(cmds[f], img, view, ivci.subresourceRange, sc);
+            begin_color_pass(cmds[f], rts[f].img, rts[f].view, COLOR_RANGE, sc);
             {
                 int slot = frame & 1;
                 VkDeviceSize off = STRIDE * 12 + 4 + slot * 1024;
@@ -578,10 +652,13 @@ int main(void) {
                 vkCmdSetViewport(cmds[f], 0, 1, &vp);
                 vkCmdSetScissor(cmds[f], 0, 1, &sc);
                 vkCmdSetPrimitiveTopology(cmds[f], VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                vkCmdSetCullMode(cmds[f], VK_CULL_MODE_NONE);
+                vkCmdSetFrontFace(cmds[f], VK_FRONT_FACE_COUNTER_CLOCKWISE);
+                vkCmdSetPrimitiveRestartEnable(cmds[f], VK_FALSE);
                 vkCmdBindVertexBuffers(cmds[f], 0, 1, &vbuf, &off);
                 vkCmdDraw(cmds[f], 6, 1, 0, 0);
             }
-            end_color_pass(cmds[f], img, ivci.subresourceRange, rb[f]);
+            end_color_pass(cmds[f], rts[f].img, COLOR_RANGE, rb[f]);
             VK(vkEndCommandBuffer(cmds[f]));
             VkSubmitInfo s2 = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
             s2.commandBufferCount = 1; s2.pCommandBuffers = &cmds[f];
@@ -596,6 +673,14 @@ int main(void) {
         } else {
             printf("  blit-shape stress: %d frames, %d in flight -- all intact\n", FRAMES, INFLIGHT);
         }
+        for (int f = 0; f < INFLIGHT; f++) {
+            vkUnmapMemory(dev, rbmem[f]);
+            vkDestroyBuffer(dev, rb[f], NULL);
+            vkFreeMemory(dev, rbmem[f], NULL);
+            vkDestroyFence(dev, fences[f], NULL);
+            free_rt(rts[f]);
+        }
+        vkFreeCommandBuffers(dev, pool, INFLIGHT, cmds);
     }
 
     /* Fan-unroll stress: same in-flight cadence as above, but the draws are
@@ -611,7 +696,7 @@ int main(void) {
      * lower-right-only) so aliasing shows up as a parity violation, and
      * unlike the phase above every buffer here is STATIC -- nothing is
      * rewritten per frame, so no other mechanism can produce a wrong frame.
-     * ~120 unrolled fan draws per frame approximates the game's unroll churn
+     * DRAWS unrolled fan draws per frame approximates the game's unroll churn
      * (loading screens log thousands) and leaves the tail draws -- the ones a
      * following command buffer's reset can reach -- as the last thing
      * rendered, where the readback probes them. */
@@ -630,12 +715,14 @@ int main(void) {
         VkBuffer rb[INFLIGHT];
         VkDeviceMemory rbmem[INFLIGHT];
         unsigned char *rbmap[INFLIGHT];
+        struct rt rts[INFLIGHT];   /* one target per frame: see make_rt */
         VkCommandBufferAllocateInfo ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         ai.commandPool = pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = INFLIGHT;
         VK(vkAllocateCommandBuffers(dev, &ai, cmds));
         for (int f = 0; f < INFLIGHT; f++) {
             VkFenceCreateInfo fci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT };
             VK(vkCreateFence(dev, &fci, NULL, &fences[f]));
+            VK(make_rt(&rts[f]));
             rb[f] = make_buffer(W * H * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 &rbmem[f]);
@@ -667,7 +754,7 @@ int main(void) {
             VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
             bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             VK(vkBeginCommandBuffer(cmd, &bi));
-            begin_color_pass(cmd, img, view, ivci.subresourceRange, sc);
+            begin_color_pass(cmd, img, view, COLOR_RANGE, sc);
             {
                 VkDeviceSize voff = FANV_OFF;
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeA);
@@ -676,6 +763,13 @@ int main(void) {
                 vkCmdSetPrimitiveTopology(cmd, topologies[t].topo);
                 vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
                 vkCmdSetFrontFace(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+                /* Restart is dynamic on this pipeline, so it must be set in
+                 * every command buffer. Leaving it undefined here would let it
+                 * come out VK_TRUE, and requires_unroll_index_promotion()
+                 * returns false when restart is on -- the uint16 strips below
+                 * would then take the native Metal path and this phase would
+                 * report "all intact" while exercising no unroll at all. */
+                vkCmdSetPrimitiveRestartEnable(cmd, VK_FALSE);
                 vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &voff);
                 vkCmdBindIndexBuffer(cmd, fanibuf,
                                      (variants[v].off == 16 ? quad_off : variants[v].off)
@@ -683,7 +777,7 @@ int main(void) {
                 for (int d = 0; d < DRAWS; d++)
                     vkCmdDrawIndexed(cmd, 4, 1, 0, 0, 0);
             }
-            end_color_pass(cmd, img, ivci.subresourceRange, buf);
+            end_color_pass(cmd, img, COLOR_RANGE, buf);
             VK(vkEndCommandBuffer(cmd));
             VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
             si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
@@ -738,7 +832,7 @@ int main(void) {
             VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
             bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             VK(vkBeginCommandBuffer(cmds[f], &bi));
-            begin_color_pass(cmds[f], img, view, ivci.subresourceRange, sc);
+            begin_color_pass(cmds[f], rts[f].img, rts[f].view, COLOR_RANGE, sc);
             {
                 VkDeviceSize voff = FANV_OFF;
                 vkCmdBindPipeline(cmds[f], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeA);
@@ -747,13 +841,14 @@ int main(void) {
                 vkCmdSetPrimitiveTopology(cmds[f], topologies[t].topo);
                 vkCmdSetCullMode(cmds[f], VK_CULL_MODE_NONE);
                 vkCmdSetFrontFace(cmds[f], VK_FRONT_FACE_COUNTER_CLOCKWISE);
+                vkCmdSetPrimitiveRestartEnable(cmds[f], VK_FALSE);
                 vkCmdBindVertexBuffers(cmds[f], 0, 1, &vbuf, &voff);
                 vkCmdBindIndexBuffer(cmds[f], fanibuf,
                                      (frame & 1 ? 4 : quad_off) * sizeof(uint16_t), VK_INDEX_TYPE_UINT16);
                 for (int d = 0; d < DRAWS; d++)
                     vkCmdDrawIndexed(cmds[f], 4, 1, 0, 0, 0);
             }
-            end_color_pass(cmds[f], img, ivci.subresourceRange, rb[f]);
+            end_color_pass(cmds[f], rts[f].img, COLOR_RANGE, rb[f]);
             VK(vkEndCommandBuffer(cmds[f]));
             VkSubmitInfo s2 = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
             s2.commandBufferCount = 1; s2.pCommandBuffers = &cmds[f];
@@ -769,6 +864,14 @@ int main(void) {
             printf("  %s unroll stress: %d frames x %d unrolled draws, %d in flight -- all intact\n",
                    topologies[t].name, FRAMES, DRAWS, INFLIGHT);
         }
+        for (int f = 0; f < INFLIGHT; f++) {
+            vkUnmapMemory(dev, rbmem[f]);
+            vkDestroyBuffer(dev, rb[f], NULL);
+            vkFreeMemory(dev, rbmem[f], NULL);
+            vkDestroyFence(dev, fences[f], NULL);
+            free_rt(rts[f]);
+        }
+        vkFreeCommandBuffers(dev, pool, INFLIGHT, cmds);
         }
     }
 
