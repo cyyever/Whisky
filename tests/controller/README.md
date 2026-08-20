@@ -33,6 +33,15 @@ stay available. Revisit when a GA macOS fixes the framework.
 Run the Wine ones with `WINEPREFIX=<bottle> wine xinput_poll.exe`; restart
 `wineserver -k` after changing env vars, winebus only reads them at startup.
 
+## The pad that dies after a window switch
+
+A different fault with the same symptom, and not a controller bug at all:
+Wine on macOS never delivered `WM_ACTIVATEAPP`, so a game that re-Acquires its
+DirectInput device on focus change never did. `input-after-switch-test.c`
+polls XInput and DirectInput side by side to show which layer stopped;
+`tests/app-activation-test.sh` is the one that reproduces the cause, without a
+human at the keyboard. Fixed by `patches/proton-wine/0038`.
+
 ## Hardware notes
 
 - **Bluetooth (works, zero code needed beyond the env var)**: model 1708+

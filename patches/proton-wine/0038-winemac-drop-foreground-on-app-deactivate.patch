@@ -1,0 +1,47 @@
+Subject: winemac: drop the foreground when the app is deactivated
+
+macdrv_app_deactivated() gave up the foreground window only when
+
+    get_active_window() == NtUserGetForegroundWindow()
+
+held.  get_active_window() is GUITHREADINFO for GetCurrentThreadId() -- the
+active window of whichever thread pumped the event -- while the foreground
+window is global, and APP_DEACTIVATED is process-wide and names no window, so
+the two coincided only by luck.  When they did not, the foreground stayed put,
+win32u saw no change of foreground thread, and no WM_ACTIVATEAPP was ever
+delivered: the program was never told the user had switched away.
+
+winex11 has no such gap.  The X FocusOut event names the window that lost
+focus, so focus_out() compares that window rather than substituting a
+per-thread lookup.
+
+Check what actually matters instead: that the foreground window is ours.
+
+Found with Super Street Fighter IV, where the missing WM_ACTIVATEAPP left the
+game believing it still had focus -- its DirectInput pad stayed unacquired
+because it never re-Acquired, and it kept submitting frames to a window the
+compositor had stopped displaying until the Metal drawable pool ran out and
+dxvk-submit blocked in nextDrawable.
+
+Covered by tests/app-activation-test.sh.
+---
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1813,9 +1813,16 @@
+  */
+ void macdrv_app_deactivated(void)
+ {
++    HWND foreground = NtUserGetForegroundWindow();
++    DWORD procid = 0;
++
+     NtUserClipCursor(NULL);
+ 
+-    if (get_active_window() == NtUserGetForegroundWindow())
++    /* APP_DEACTIVATED is process-wide and names no window; get_active_window()
++     * is per-thread, so comparing it against the global foreground window
++     * matched only when this thread happened to own the foreground. */
++    if (foreground && NtUserGetWindowThread(foreground, &procid) &&
++        procid == GetCurrentProcessId())
+     {
+         TRACE("setting fg to desktop\n");
+         NtUserSetForegroundWindowInternal(NtUserGetDesktopWindow());
