@@ -1,8 +1,8 @@
-From 8f2a17d12c3ff94a0b382ecfaac5d4c061088bd9 Mon Sep 17 00:00:00 2001
+From f277064b4ccbce6a741e2a4b51dba89b5e1379cb Mon Sep 17 00:00:00 2001
 From: Yuanyuan Chen <cyyever@outlook.com>
-Date: Sat, 15 Aug 2026 19:06:25 +0800
+Date: Thu, 20 Aug 2026 14:06:42 +0800
 Subject: [PATCH] wsi/metal: wait for the last present blit before re-recording
- it
+  it
 
 wsi_metal_swapchain_acquire_next_image hands out a drawable, then
 re-records the per-image blit command buffer, because the MTLTexture
@@ -22,12 +22,15 @@ caller's remaining acquire timeout; on expiry release the drawable
 and return VK_TIMEOUT instead of blocking past the budget.  The
 trailing no-drawable timeout also becomes spec-correct: VK_TIMEOUT
 for a non-zero timeout, VK_NOT_READY only for timeout == 0.
+Release the drawable on every failing exit from that wait, not only on the
+timeout: the layer vends two or three, so one leaked per VK_ERROR_DEVICE_LOST
+leaves wsi_metal_layer_acquire_drawable blocked for good.
 ---
- src/vulkan/wsi/wsi_common_metal.c | 37 ++++++++++++++++++++++++++++++-
- 1 file changed, 36 insertions(+), 1 deletion(-)
+ src/vulkan/wsi/wsi_common_metal.c | 40 ++++++++++++++++++++++++++++++-
+ 1 file changed, 39 insertions(+), 1 deletion(-)
 
 diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
-index d8be6491..e89ae9ef 100644
+index f172a8e2..8ceaf3b9 100644
 --- a/src/vulkan/wsi/wsi_common_metal.c
 +++ b/src/vulkan/wsi/wsi_common_metal.c
 @@ -571,6 +571,21 @@ wsi_cmd_blit_image_to_image(const struct wsi_swapchain *chain,
@@ -52,7 +55,7 @@ index d8be6491..e89ae9ef 100644
  static VkResult
  wsi_metal_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
                                         const VkAcquireNextImageInfoKHR *info,
-@@ -592,6 +607,26 @@ wsi_metal_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+@@ -592,6 +607,29 @@ wsi_metal_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
        if (drawable) {
           uint32_t i = (chain->current_image_index++) % chain->base.image_count;
           struct wsi_metal_image *image = &chain->images[i];
@@ -69,17 +72,20 @@ index d8be6491..e89ae9ef 100644
 +            VkResult result = chain->base.wsi->WaitForFences(
 +               chain->base.device, 1, &chain->base.fences[i], true,
 +               wsi_metal_ns_until(&end_time));
-+            if (result == VK_TIMEOUT) {
++            if (result != VK_SUCCESS) {
++               /* Every failure path has to give the drawable back, not just
++                * the timeout: the layer vends two or three, so leaking one per
++                * VK_ERROR_DEVICE_LOST leaves acquire blocked for good. */
 +               wsi_metal_release_drawable(drawable);
-+               return info->timeout ? VK_TIMEOUT : VK_NOT_READY;
-+            }
-+            if (result != VK_SUCCESS)
++               if (result == VK_TIMEOUT)
++                  return info->timeout ? VK_TIMEOUT : VK_NOT_READY;
 +               return result;
++            }
 +         }
           *image_index = i;
           image->drawable = drawable;
           if (!wsi_chain->wsi->sw) {
-@@ -608,7 +643,7 @@ wsi_metal_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+@@ -608,7 +646,7 @@ wsi_metal_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
        struct timespec current_time;
        clock_gettime(CLOCK_MONOTONIC, &current_time);
        if (timespec_after(&current_time, &end_time))

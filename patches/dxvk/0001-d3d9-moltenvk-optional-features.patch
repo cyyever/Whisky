@@ -1,8 +1,32 @@
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 633e3b56..29211300 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -7094,7 +7094,18 @@ namespace dxvk {
+     state.setCullMode(DecodeCullMode(D3DCULL(rs[D3DRS_CULLMODE])));
+     state.setDepthClip(true);
+     state.setFrontFace(VK_FRONT_FACE_CLOCKWISE);
+-    state.setPolygonMode(DecodeFillMode(D3DFILLMODE(rs[D3DRS_FILLMODE])));
++    /* patches/dxvk/0001 relaxed fillModeNonSolid from required to optional so a
++     * driver without it can still create a device -- but relaxing the
++     * requirement does not remove the use. KosmicKrisp reports
++     * fillModeNonSolid = 0, so a title setting D3DRS_FILLMODE to WIREFRAME or
++     * POINT (debug views, some effect passes) would build a pipeline with a
++     * polygon mode the device cannot do: invalid usage, and device loss on
++     * some drivers. Fall back to solid fill. */
++    VkPolygonMode polygonMode = DecodeFillMode(D3DFILLMODE(rs[D3DRS_FILLMODE]));
++    if (polygonMode != VK_POLYGON_MODE_FILL &&
++        !m_dxvkDevice->features().core.features.fillModeNonSolid)
++      polygonMode = VK_POLYGON_MODE_FILL;
++    state.setPolygonMode(polygonMode);
+     state.setFlatShading(m_state.renderStates[D3DRS_SHADEMODE] == D3DSHADE_FLAT);
+     state.setSampleCount(m_state.renderStates[D3DRS_MULTISAMPLEANTIALIAS]
+       ? VkSampleCountFlags(0u)
 diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
-index 349ab3e5..971a4715 100644
+index ac24f843..8824c41f 100644
 --- a/src/dxvk/dxvk_device_info.cpp
 +++ b/src/dxvk/dxvk_device_info.cpp
-@@ -812,10 +812,10 @@ namespace dxvk {
+@@ -827,10 +827,10 @@ namespace dxvk {
        ENABLE_FEATURE(core.features, depthClamp, true),
        ENABLE_FEATURE(core.features, drawIndirectFirstInstance, false),
        ENABLE_FEATURE(core.features, dualSrcBlend, true),
@@ -15,7 +39,7 @@ index 349ab3e5..971a4715 100644
        ENABLE_FEATURE(core.features, imageCubeArray, true),
        ENABLE_FEATURE(core.features, independentBlend, true),
        ENABLE_FEATURE(core.features, largePoints, false),
-@@ -828,7 +828,7 @@ namespace dxvk {
+@@ -843,7 +843,7 @@ namespace dxvk {
        ENABLE_FEATURE(core.features, sampleRateShading, true),
        ENABLE_FEATURE(core.features, samplerAnisotropy, true),
        ENABLE_FEATURE(core.features, shaderClipDistance, true),
@@ -24,7 +48,7 @@ index 349ab3e5..971a4715 100644
        ENABLE_FEATURE(core.features, shaderFloat64, false),
        ENABLE_FEATURE(core.features, shaderImageGatherExtended, true),
        ENABLE_FEATURE(core.features, shaderInt16, true),
-@@ -913,7 +913,7 @@ namespace dxvk {
+@@ -928,7 +928,7 @@ namespace dxvk {
        ENABLE_EXT_FEATURE(extCustomBorderColor, customBorderColorWithoutFormat, false),
  
        /* Depth clip matches D3D semantics where depth clamp does not */
@@ -33,7 +57,7 @@ index 349ab3e5..971a4715 100644
  
        /* Controls depth bias behaviour with emulated depth formats */
        ENABLE_EXT_FEATURE(extDepthBiasControl, depthBiasControl, false),
-@@ -969,9 +969,9 @@ namespace dxvk {
+@@ -984,9 +984,9 @@ namespace dxvk {
        ENABLE_EXT_FEATURE(extPageableDeviceLocalMemory, pageableDeviceLocalMemory, false),
  
        /* Robustness, all features effectively required for correctness */

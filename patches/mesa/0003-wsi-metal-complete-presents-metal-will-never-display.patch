@@ -1,6 +1,6 @@
-From c49ddbfe8acfebe9358e32a0489570bb7129a293 Mon Sep 17 00:00:00 2001
+From 0f50c38c49b276712bfffc27cfcf9654c1021bd2 Mon Sep 17 00:00:00 2001
 From: Yuanyuan Chen <cyyever@outlook.com>
-Date: Thu, 20 Aug 2026 12:11:30 +0800
+Date: Thu, 20 Aug 2026 14:06:58 +0800
 Subject: [PATCH] wsi/metal: complete presents Metal will never display
 
 vkWaitForPresentKHR can wait forever.  wsi_metal_swapchain_queue_present
@@ -43,12 +43,20 @@ The recovery cannot be exercised from the Vulkan side: occluded, hidden,
 miniaturized and unattached layers were all measured and all still get their
 handlers called within 4-9 ms.  MESA_VK_WSI_METAL_DROP_PRESENT_HANDLER skips
 the registration so the path stays under test.
+
+The per-present reference this takes is dropped by the handler, so a present
+that is never displayed never drops it and present_info outlives its
+swapchain.  That is one struct with its mutex and condvar per swapchain that
+saw an undisplayed present, not per frame; balancing it would mean tracking
+which ids have been accounted for and moving the release inside the mutex, and
+a mistake there is a use-after-free.  Noted in the code rather than traded for
+that risk.
 ---
- src/vulkan/wsi/wsi_common_metal.c | 108 +++++++++++++++++++++++++-----
- 1 file changed, 93 insertions(+), 15 deletions(-)
+ src/vulkan/wsi/wsi_common_metal.c | 124 ++++++++++++++++++++++++++----
+ 1 file changed, 109 insertions(+), 15 deletions(-)
 
 diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
-index e89ae9ef..a5ca2c7b 100644
+index 8ceaf3b9..56eda2a0 100644
 --- a/src/vulkan/wsi/wsi_common_metal.c
 +++ b/src/vulkan/wsi/wsi_common_metal.c
 @@ -9,6 +9,8 @@
@@ -86,7 +94,7 @@ index e89ae9ef..a5ca2c7b 100644
  };
  
  struct wsi_metal_swapchain {
-@@ -689,16 +703,26 @@ wsi_metal_swapchain_set_present_mode(struct wsi_swapchain *wsi_chain,
+@@ -692,16 +706,26 @@ wsi_metal_swapchain_set_present_mode(struct wsi_swapchain *wsi_chain,
     wsi_metal_layer_set_immediate(chain->surface->pLayer, immediate_mode);
  }
  
@@ -117,7 +125,7 @@ index e89ae9ef..a5ca2c7b 100644
     mtx_unlock(&present_info->mutex);
  
     wsi_metal_release_present_info(present_info);
-@@ -718,10 +742,22 @@ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+@@ -721,10 +745,38 @@ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
     struct wsi_metal_image *image = &chain->images[image_index];
  
     if (present_id && wsi_chain->present_wait_enabled) {
@@ -135,6 +143,22 @@ index e89ae9ef..a5ca2c7b 100644
 +       * even unattached layer all still get their handlers called. Dropping
 +       * the registration reproduces it exactly, which is the only way to keep
 +       * the recovery path below under test. */
++      /* Known consequence of the recovery in wait_for_present: this reference
++       * is dropped by the handler, so for a present that is never displayed it
++       * is never dropped and present_info outlives its swapchain. That is one
++       * struct plus its mutex and condvar per swapchain that saw an undisplayed
++       * present -- bounded, not per frame. Balancing it would mean tracking
++       * which ids have been accounted for and moving the release inside the
++       * mutex, and a mistake there is a use-after-free in a shipping driver;
++       * the leak is the cheaper of the two. */
++      /* Known consequence of the recovery in wait_for_present: this reference
++       * is dropped by the handler, so for a present that is never displayed it
++       * is never dropped and present_info outlives its swapchain. That is one
++       * struct plus its mutex and condvar per swapchain that saw an undisplayed
++       * present -- bounded, not per frame. Balancing it would mean tracking
++       * which ids have been accounted for and moving the release inside the
++       * mutex, and a mistake there is a use-after-free in a shipping driver;
++       * the leak is the cheaper of the two. */
 +      if (!debug_get_option_wsi_metal_drop_present_handler()) {
 +         wsi_metal_retain_present_info(chain->present_info);
 +         wsi_metal_layer_add_presented_handler(
@@ -144,7 +168,7 @@ index e89ae9ef..a5ca2c7b 100644
     }
  
     if (wsi_chain->wsi->sw) {
-@@ -750,10 +786,7 @@ wsi_metal_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
+@@ -753,10 +805,7 @@ wsi_metal_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
     struct wsi_metal_present_info *present_info = chain->present_info;
  
     struct timespec abs_timespec;
@@ -156,7 +180,7 @@ index e89ae9ef..a5ca2c7b 100644
  
     /* Need to observe that the swapchain semaphore has been unsignalled,
      * as this is guaranteed when a present is complete. */
-@@ -764,13 +797,58 @@ wsi_metal_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
+@@ -767,13 +816,58 @@ wsi_metal_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
  
     timespec_from_nsec(&abs_timespec, abs_timeout);
  
