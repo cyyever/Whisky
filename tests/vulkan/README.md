@@ -87,7 +87,7 @@ the completion Metal will not send.
 The condition cannot be produced from the Vulkan side — occluded, hidden,
 miniaturized and unattached layers were all measured and all still get their
 handlers called in 4–9 ms — so the driver takes
-`KK_WSI_TEST_DROP_PRESENT_HANDLER` to skip the registration, and this mode
+`MESA_VK_WSI_METAL_DROP_PRESENT_HANDLER` to skip the registration, and this mode
 sets it. The verdict is not "the waits finished": it also requires them to
 have taken the grace period, because finishing fast would mean the hook did
 not take and the run proved nothing.
