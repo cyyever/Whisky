@@ -1,4 +1,15 @@
 SHELL := /bin/bash
+
+# No built-in rules. Every target here is built by a script; the built-ins only
+# add ways to go wrong, and one of them really did: GNU make ships a Pascal
+# suffix rule (`%: %.p`) whose compiler variable $(PC) is undefined, meson names
+# its private directories `d3d9.dll.p`, and the Wine stamp below takes
+# `.../src/d3d9/d3d9.dll` as a prerequisite. Whenever that directory ended up
+# newer than the DLL beside it, make "rebuilt" the DLL with an empty $(PC) and
+# the whole build died on `make: pc: No such file or directory`.
+MAKEFLAGS += --no-builtin-rules --no-builtin-variables
+.SUFFIXES:
+
 SCRIPTS_DIR := $(CURDIR)/scripts
 WINE_SRC := $(CURDIR)/vendor/proton-wine
 X86_BREW := $(CURDIR)/vendor/homebrew-x86/bin/brew
