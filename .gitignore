@@ -119,3 +119,4 @@ scratchpad/
 # Vulkan probe binaries (tests/vulkan/*.sh rebuild them when stale)
 tests/vulkan/vk-strip-cull-test
 tests/vulkan/vk-present-probe
+tests/activate-app
