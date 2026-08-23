@@ -55,8 +55,6 @@ that risk.
  src/vulkan/wsi/wsi_common_metal.c | 124 ++++++++++++++++++++++++++----
  1 file changed, 109 insertions(+), 15 deletions(-)
 
-diff --git a/src/vulkan/wsi/wsi_common_metal.c b/src/vulkan/wsi/wsi_common_metal.c
-index 8ceaf3b9..56eda2a0 100644
 --- a/src/vulkan/wsi/wsi_common_metal.c
 +++ b/src/vulkan/wsi/wsi_common_metal.c
 @@ -9,6 +9,8 @@
@@ -84,24 +82,39 @@ index 8ceaf3b9..56eda2a0 100644
  #include <assert.h>
  
  struct wsi_metal {
-@@ -332,6 +343,9 @@ struct wsi_metal_present_info {
+@@ -330,6 +341,24 @@
  
     struct u_cnd_monotonic present_id_cond;
     uint64_t present_id;
 +   /* Highest id handed to queue_present. present_id trails it and normally
 +    * catches up as each drawable's presented handler fires. */
 +   uint64_t queued_id;
++   /* Latched once a present has been declared undisplayed, and cleared by the
++    * next handler that really fires. Without it the grace period is paid again
++    * for every frame queued while the window is away, which caps the
++    * application at two frames a second -- slow enough that SSFIV's DirectShow
++    * graph, whose worker consumes samples on that same cadence, backs up until
++    * winegstreamer deadlocks at the application boundary and does not recover
++    * when the window comes back. */
++   bool undisplayed;
++   /* queued_id when the latch was set. Handlers for presents queued BEFORE
++    * that are still in flight when the window goes away, and they arrive after
++    * the recovery has fired; letting one of those clear the latch re-arms the
++    * full grace period for the next wait, which is the stall the latch exists
++    * to remove. Only a handler at or past the watermark proves the window
++    * server is displaying this swapchain again. */
++   uint64_t undisplayed_from;
  };
  
  struct wsi_metal_swapchain {
-@@ -692,16 +706,26 @@ wsi_metal_swapchain_set_present_mode(struct wsi_swapchain *wsi_chain,
+@@ -690,16 +719,28 @@
     wsi_metal_layer_set_immediate(chain->surface->pLayer, immediate_mode);
  }
  
 +/* The single definition of "presents up to this id are done". Metal delivers
 + * this for drawables it displays; wsi_metal_swapchain_wait_for_present
 + * synthesizes it for drawables it never will. Caller holds the mutex. */
-+static void
+ static void
 +wsi_metal_present_id_reached_locked(struct wsi_metal_present_info *info,
 +                                    uint64_t present_id)
 +{
@@ -111,7 +124,7 @@ index 8ceaf3b9..56eda2a0 100644
 +   }
 +}
 +
- static void
++static void
  wsi_metal_present_complete(void *present_info_ptr, uint64_t present_id)
  {
     struct wsi_metal_present_info *present_info = present_info_ptr;
@@ -121,11 +134,13 @@ index 8ceaf3b9..56eda2a0 100644
 -      present_info->present_id = present_id;
 -      u_cnd_monotonic_broadcast(&present_info->present_id_cond);
 -   }
++   if (present_id >= present_info->undisplayed_from)
++      present_info->undisplayed = false;
 +   wsi_metal_present_id_reached_locked(present_info, present_id);
     mtx_unlock(&present_info->mutex);
  
     wsi_metal_release_present_info(present_info);
-@@ -721,10 +745,38 @@ wsi_metal_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
+@@ -719,10 +760,30 @@
     struct wsi_metal_image *image = &chain->images[image_index];
  
     if (present_id && wsi_chain->present_wait_enabled) {
@@ -133,7 +148,7 @@ index 8ceaf3b9..56eda2a0 100644
 -      wsi_metal_layer_add_presented_handler(
 -         image->drawable, wsi_metal_present_complete, chain->present_info,
 -         present_id);
-+         mtx_lock(&chain->present_info->mutex);
++      mtx_lock(&chain->present_info->mutex);
 +      if (present_id > chain->present_info->queued_id)
 +         chain->present_info->queued_id = present_id;
 +      mtx_unlock(&chain->present_info->mutex);
@@ -151,14 +166,6 @@ index 8ceaf3b9..56eda2a0 100644
 +       * which ids have been accounted for and moving the release inside the
 +       * mutex, and a mistake there is a use-after-free in a shipping driver;
 +       * the leak is the cheaper of the two. */
-+      /* Known consequence of the recovery in wait_for_present: this reference
-+       * is dropped by the handler, so for a present that is never displayed it
-+       * is never dropped and present_info outlives its swapchain. That is one
-+       * struct plus its mutex and condvar per swapchain that saw an undisplayed
-+       * present -- bounded, not per frame. Balancing it would mean tracking
-+       * which ids have been accounted for and moving the release inside the
-+       * mutex, and a mistake there is a use-after-free in a shipping driver;
-+       * the leak is the cheaper of the two. */
 +      if (!debug_get_option_wsi_metal_drop_present_handler()) {
 +         wsi_metal_retain_present_info(chain->present_info);
 +         wsi_metal_layer_add_presented_handler(
@@ -168,22 +175,24 @@ index 8ceaf3b9..56eda2a0 100644
     }
  
     if (wsi_chain->wsi->sw) {
-@@ -753,10 +805,7 @@ wsi_metal_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
+@@ -751,11 +812,8 @@
     struct wsi_metal_present_info *present_info = chain->present_info;
  
     struct timespec abs_timespec;
 -   uint64_t abs_timeout = 0;
--
--   if (timeout != 0)
--      abs_timeout = os_time_get_absolute_timeout(timeout);
 +   uint64_t abs_timeout = os_time_get_absolute_timeout(timeout);
  
+-   if (timeout != 0)
+-      abs_timeout = os_time_get_absolute_timeout(timeout);
+-
     /* Need to observe that the swapchain semaphore has been unsignalled,
      * as this is guaranteed when a present is complete. */
-@@ -767,13 +816,58 @@ wsi_metal_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
+    VkResult result = wsi_swapchain_wait_for_present_semaphore(
+@@ -763,15 +821,75 @@
+    if (result != VK_SUCCESS)
+       return result;
  
-    timespec_from_nsec(&abs_timespec, abs_timeout);
- 
+-   timespec_from_nsec(&abs_timespec, abs_timeout);
 +   /* Grace period after which a present that was queued but never displayed is
 +    * taken as complete.
 +    *
@@ -207,7 +216,7 @@ index 8ceaf3b9..56eda2a0 100644
 +    * test for an infinite timeout because there does not need to be -- an
 +    * infinite caller deadline is simply always the later of the two. */
 +   uint64_t assumed_success_at = os_time_get_absolute_timeout(500ull * 1000 * 1000);
-+
+ 
 +   /* Computed once, before the loop, not per wakeup: every broadcast that does
 +    * not lift present_id to waitValue -- a late handler for an older id, say --
 +    * would otherwise restart the grace period, and a steady trickle of them
@@ -217,6 +226,18 @@ index 8ceaf3b9..56eda2a0 100644
 +   timespec_from_nsec(&abs_timespec, MIN2(abs_timeout, assumed_success_at));
 +
     mtx_lock(&present_info->mutex);
++
++   /* Already known undisplayed: complete at once rather than waiting out
++    * another grace period. The state is cleared by the first handler that
++    * fires, so a window that comes back pays nothing for having been away. */
++   if (present_info->undisplayed && present_info->present_id < waitValue &&
++       timeout > 0) {
++      wsi_metal_present_id_reached_locked(present_info,
++                                          present_info->queued_id);
++      mtx_unlock(&present_info->mutex);
++      return VK_SUCCESS;
++   }
++
     while (present_info->present_id < waitValue) {
        int ret = u_cnd_monotonic_timedwait(&present_info->present_id_cond,
 -                                          &present_info->mutex,
@@ -235,13 +256,15 @@ index 8ceaf3b9..56eda2a0 100644
 +             *
 +             * As far as the application is concerned these presents happened:
 +             * nobody saw them, which is not the same as them not occurring. */
++            /* queued_id, not MAX2(waitValue, queued_id): present_id only ever
++             * rises, so a caller waiting on an id that was never queued would
++             * park it above every future present and kill pacing -- and this
++             * recovery with it -- for the swapchain's whole life. */
++            present_info->undisplayed = true;
++            present_info->undisplayed_from = present_info->queued_id;
 +            wsi_metal_present_id_reached_locked(present_info,
-+                                                MAX2(waitValue,
-+                                                     present_info->queued_id));
++                                                present_info->queued_id);
 +         }
           break;
        }
        if (ret != thrd_success) {
--- 
-2.55.0
-
