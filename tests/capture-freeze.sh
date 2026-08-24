@@ -27,7 +27,12 @@ TARGET="${1:-SSFIV}"
 if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
     PID="$TARGET"
 else
-    PID=$(ps ax -o pid,command | grep -i "$TARGET" | grep -v grep | awk '{print $1}' | head -1)
+    # Exclude this script and its children: invoking it as
+    # `capture-freeze.sh SSFIV` puts the fragment in our own command line, and
+    # a plain grep then matches -- and attaches lldb to -- ourselves.
+    PID=$(ps ax -o pid,command | grep -i "$TARGET" | grep -v grep |
+          grep -v "capture-freeze" | awk '{print $1}' |
+          grep -vx "$$" | head -1)
 fi
 [ -n "${PID:-}" ] || { echo "no process matching '$TARGET'"; exit 1; }
 kill -0 "$PID" 2>/dev/null || { echo "pid $PID is gone"; exit 1; }
@@ -43,10 +48,24 @@ ps -M -p "$PID" > "$OUT/threads.txt" 2>&1
 echo "=== busiest threads (UTIME) ==="
 sort -k7 -rn "$OUT/threads.txt" | head -4
 
+# `sample` FIRST, and always. It is non-invasive, while attaching lldb to a
+# process that has a pending EXC_BAD_ACCESS and then detaching lets the
+# exception be delivered -- the process dies on the spot. That destroyed two
+# specimens of the dxvk-shader-n crash before the order was fixed, and each one
+# costs a full reproduction to get back.
+echo
+echo "=== sampling (non-invasive) ==="
+if sample "$PID" 3 -f "$OUT/sample.txt" >/dev/null 2>&1; then
+    echo "  saved sample.txt ($(wc -l < "$OUT/sample.txt" | tr -d ' ') lines)"
+    awk '/Sort by top of stack/,0' "$OUT/sample.txt" | head -6 | sed 's/^/  /'
+else
+    echo "  sample failed (needs sudo, or the process is already a zombie)"
+fi
+
 # Then the stacks. lldb detaches itself; a stopped process left behind would
 # look exactly like the freeze under investigation.
 echo
-echo "=== capturing stacks ==="
+echo "=== capturing stacks (lldb -- may kill a crashed target) ==="
 timeout 120 lldb -p "$PID" -b -o "thread backtrace all" -o detach > "$OUT/stacks.txt" 2>&1
 nthreads=$(grep -c 'thread #' "$OUT/stacks.txt")
 echo "threads: $nthreads"
@@ -67,13 +86,54 @@ if [ "$nthreads" -lt 10 ]; then
     exit 2
 fi
 
+# A second capture, and the difference between the two. One snapshot cannot
+# tell a wedged thread from a spinning one: a thread cycling through short
+# waits is inside some wait every time you look, so the classifier below called
+# a dxvk-submit that was looping in the drawable-acquire path "a third kind".
+# What moved between two captures is the thread that is actually running.
+sleep 3
+timeout 120 lldb -p "$PID" --batch -o "thread backtrace all" -o detach > "$OUT/stacks2.txt" 2>&1
+
 echo
-echo "=== which freeze is it ==="
-dr=$(grep -c "nextDrawable" "$OUT/stacks.txt")
-gs=$(grep -c "sink_chain_cb" "$OUT/stacks.txt")
-echo "  nextDrawable frames : $dr   $([ "$dr" -gt 0 ] && echo '<- drawable pool')"
-echo "  sink_chain_cb frames: $gs   $([ "$gs" -gt 0 ] && echo '<- winegstreamer app boundary')"
-[ "$dr" = 0 ] && [ "$gs" = 0 ] && echo "  neither -- a third kind; read stacks.txt"
+echo "=== which threads MOVED (these are running, not wedged) ==="
+python3 - "$OUT/stacks.txt" "$OUT/stacks2.txt" <<'EOF'
+import sys, re
+
+def load(path):
+    out, cur, frames = {}, None, []
+    for line in open(path, errors="ignore"):
+        m = re.match(r"\s*thread #(\d+)(?:, name = '([^']+)')?", line)
+        if m:
+            if cur:
+                out[cur] = tuple(frames[:4])
+            cur, frames = m.group(2) or "#" + m.group(1), []
+        elif "frame #" in line:
+            frames.append(re.sub(r"\s+", " ", re.sub(r"0x[0-9a-f]+", "", line)).strip())
+    if cur:
+        out[cur] = tuple(frames[:4])
+    return out
+
+# Keyed by NAME, not index: thread indices shift between captures as threads
+# come and go, and pairing by position compares unrelated threads.
+a, b = load(sys.argv[1]), load(sys.argv[2])
+named = [k for k in a if not k.startswith("#") and k in b]
+moved = [k for k in named if a[k] != b[k]]
+print(f"  named threads: {len(named)}, moved: {len(moved)}")
+for k in moved[:5]:
+    print(f"    {k}")
+    print(f"      was: {a[k][1] if len(a[k]) > 1 else a[k]}")
+    print(f"      now: {b[k][1] if len(b[k]) > 1 else b[k]}")
+if not moved:
+    print("    none -- every named thread is genuinely blocked")
+EOF
+
+echo
+echo "=== which freeze is it (both captures) ==="
+for f in stacks.txt stacks2.txt; do
+    dr=$(grep -c "nextDrawable" "$OUT/$f")
+    gs=$(grep -c "sink_chain_cb" "$OUT/$f")
+    echo "  $f: nextDrawable=$dr sink_chain_cb=$gs"
+done
 
 echo
 echo "=== dxvk-submit ==="
