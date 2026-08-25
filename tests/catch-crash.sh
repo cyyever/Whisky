@@ -30,7 +30,13 @@ WAIT="${2:-600}"
 if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
     PID="$TARGET"
 else
-    PID=$(ps ax -o pid,command | grep -i "$TARGET" | grep -v grep | awk '{print $1}' | head -1)
+    # Exclude this script and its children. capture-freeze.sh had exactly this
+    # bug -- invoked as `catch-crash.sh SSFIV`, the fragment is in our own
+    # command line, so a plain grep attaches lldb to ourselves and then waits
+    # out the full timeout for a fault that cannot come.
+    PID=$(ps ax -o pid,command | grep -i "$TARGET" | grep -v grep |
+          grep -v "catch-crash" | awk '{print $1}' |
+          grep -vx "$$" | head -1)
 fi
 [ -n "${PID:-}" ] || { echo "no process matching '$TARGET'"; exit 1; }
 kill -0 "$PID" 2>/dev/null || { echo "pid $PID is gone"; exit 1; }
@@ -49,8 +55,28 @@ rc=$?
 
 echo
 if [ "$rc" = 124 ]; then
-    echo "TIMED OUT with no fault. The wedge this time was not a crash."
+    # `timeout` SIGTERMs lldb while it is still attached and inside `continue`,
+    # before its `detach` command ever runs -- and a debugger dying attached can
+    # take the inferior with it. Say which happened rather than implying the
+    # specimen survived.
+    if kill -0 "$PID" 2>/dev/null; then
+        echo "TIMED OUT with no fault; pid $PID is still alive."
+        echo "The wedge this time was not a crash."
+    else
+        echo "TIMED OUT with no fault, and pid $PID is GONE -- killing lldb while"
+        echo "it was attached took the target with it. The specimen is lost."
+    fi
     exit 3
+fi
+
+if ! grep -q "stop reason = EXC_BAD_ACCESS" "$OUT"; then
+    # lldb exits non-zero for "attach failed" (no entitlement, needs sudo,
+    # target already exited) and the report below would then print two empty
+    # sections and exit 0, which reads exactly like "attached, saw no fault".
+    echo "NO FAULT CAPTURED (lldb exit $rc). First lines of its output:"
+    sed -n '1,6p' "$OUT" | sed 's/^/  /'
+    echo "full output: $OUT"
+    exit 4
 fi
 
 echo "=== the faulting thread ==="

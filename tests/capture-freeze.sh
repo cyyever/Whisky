@@ -92,7 +92,22 @@ fi
 # a dxvk-submit that was looping in the drawable-acquire path "a third kind".
 # What moved between two captures is the thread that is actually running.
 sleep 3
-timeout 120 lldb -p "$PID" --batch -o "thread backtrace all" -o detach > "$OUT/stacks2.txt" 2>&1
+if ! kill -0 "$PID" 2>/dev/null; then
+    echo
+    echo "  target is GONE -- the first lldb detach killed it, so there is no"
+    echo "  second capture and nothing can be said about what was running."
+    echo "  saved: $OUT"
+    exit 2
+fi
+timeout 120 lldb -p "$PID" --batch -o "thread list" -o "thread backtrace all" -o detach > "$OUT/stacks2.txt" 2>&1
+n2=$(grep -c 'thread #' "$OUT/stacks2.txt")
+if [ "$n2" -lt 10 ]; then
+    echo
+    echo "  second capture returned only $n2 thread(s) -- it failed, so the"
+    echo "  comparison below is skipped rather than reported as 'all blocked'."
+    echo "  saved: $OUT"
+    exit 2
+fi
 
 echo
 echo "=== which threads MOVED (these are running, not wedged) ==="
@@ -100,31 +115,50 @@ python3 - "$OUT/stacks.txt" "$OUT/stacks2.txt" <<'EOF'
 import sys, re
 
 def load(path):
+    """Thread id -> (name, first frames). Keyed by TID, from the `thread list`
+    section: names are not unique in a Wine process (worker pools share one),
+    and thread indices shift between captures as threads come and go, so
+    neither is safe to pair on."""
+    text = open(path, errors="ignore").read()
+    idx2tid = dict(re.findall(r"thread #(\d+): tid = (0x[0-9a-f]+)", text))
+    names = dict(re.findall(r"thread #(\d+): tid = 0x[0-9a-f]+.*?name = '([^']+)'", text))
+
     out, cur, frames = {}, None, []
-    for line in open(path, errors="ignore"):
-        m = re.match(r"\s*thread #(\d+)(?:, name = '([^']+)')?", line)
-        if m:
-            if cur:
-                out[cur] = tuple(frames[:4])
-            cur, frames = m.group(2) or "#" + m.group(1), []
+    def flush():
+        if cur is not None:
+            out[idx2tid.get(cur, "#" + cur)] = (names.get(cur, ""), tuple(frames[:4]))
+    for line in text.splitlines():
+        # The selected thread is printed as "* thread #1, ...": without the
+        # optional star the main thread is dropped and its frames are appended
+        # to whichever thread came before it.
+        m = re.match(r"\s*\*?\s*thread #(\d+)", line)
+        if m and "frame #" not in line:
+            flush()
+            cur, frames = m.group(1), []
         elif "frame #" in line:
             frames.append(re.sub(r"\s+", " ", re.sub(r"0x[0-9a-f]+", "", line)).strip())
-    if cur:
-        out[cur] = tuple(frames[:4])
+    flush()
     return out
 
-# Keyed by NAME, not index: thread indices shift between captures as threads
-# come and go, and pairing by position compares unrelated threads.
 a, b = load(sys.argv[1]), load(sys.argv[2])
-named = [k for k in a if not k.startswith("#") and k in b]
-moved = [k for k in named if a[k] != b[k]]
-print(f"  named threads: {len(named)}, moved: {len(moved)}")
-for k in moved[:5]:
-    print(f"    {k}")
-    print(f"      was: {a[k][1] if len(a[k]) > 1 else a[k]}")
-    print(f"      now: {b[k][1] if len(b[k]) > 1 else b[k]}")
+common = [k for k in a if k in b]
+moved = [k for k in common if a[k][1] != b[k][1]]
+print(f"  paired by tid: {len(common)}, moved: {len(moved)}")
+for k in moved[:6]:
+    name = a[k][0] or "(unnamed)"
+    fa, fb = a[k][1], b[k][1]
+    # Report the first frame that actually differs; comparing four but printing
+    # a fixed one prints identical was/now lines and reads like a tool bug.
+    i = next((i for i in range(max(len(fa), len(fb)))
+              if (fa[i] if i < len(fa) else None) != (fb[i] if i < len(fb) else None)), 0)
+    print(f"    tid {k} {name}")
+    print(f"      was: {fa[i] if i < len(fa) else '(no frame)'}")
+    print(f"      now: {fb[i] if i < len(fb) else '(no frame)'}")
 if not moved:
-    print("    none -- every named thread is genuinely blocked")
+    print("    no thread changed its top frames between the two captures.")
+    print("    That is NOT proof everything is blocked: a thread spinning in a")
+    print("    tight loop shows the same frames every time. Check the UTIME")
+    print("    column above -- a thread gaining seconds of user time is running.")
 EOF
 
 echo
