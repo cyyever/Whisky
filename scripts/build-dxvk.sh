@@ -38,9 +38,19 @@ MESON_OPTS=(
     -Denable_d3d10=false
     -Denable_d3d11=false
     -Denable_dxgi=false
-    --buildtype release
-    --strip
 )
+
+# WHISKY_DXVK_DEBUG=1 keeps symbols. A stripped release build is the right
+# default, but it is also why a crash inside DXVK reads as a bare address: the
+# dxvk-shader-n thread faulting at 0x0 symbolised as `__wine_reserve + 2063996129`,
+# which names nothing. Same optimisation level, so the timing that produced the
+# crash is not what changes.
+if [ "${WHISKY_DXVK_DEBUG:-0}" = 1 ]; then
+    MESON_OPTS+=( --buildtype debugoptimized )
+    echo "=== DXVK: keeping symbols (WHISKY_DXVK_DEBUG=1) ==="
+else
+    MESON_OPTS+=( --buildtype release --strip )
+fi
 
 setup_arch() {  # <cross-file> <build-dir> <install-subdir>
     local cross_file="$1" build_dir="$2" subdir="$3"

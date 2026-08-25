@@ -66,7 +66,7 @@ fi
 # look exactly like the freeze under investigation.
 echo
 echo "=== capturing stacks (lldb -- may kill a crashed target) ==="
-timeout 120 lldb -p "$PID" -b -o "thread backtrace all" -o detach > "$OUT/stacks.txt" 2>&1
+timeout 120 lldb -p "$PID" --batch -o "thread list" -o "thread backtrace all" -o detach > "$OUT/stacks.txt" 2>&1
 nthreads=$(grep -c 'thread #' "$OUT/stacks.txt")
 echo "threads: $nthreads"
 
@@ -143,6 +143,15 @@ def load(path):
 a, b = load(sys.argv[1]), load(sys.argv[2])
 common = [k for k in a if k in b]
 moved = [k for k in common if a[k][1] != b[k][1]]
+if not common:
+    # Zero pairs is a parse failure, not a quiet process. It happened once
+    # because only one of the two lldb invocations was given `thread list`, so
+    # one side keyed by tid and the other by index -- and the report still said
+    # "no thread changed", which is a conclusion drawn from nothing.
+    print("  PAIRED NOTHING -- the two captures share no thread ids, so they")
+    print("  were not comparable. Check that both lldb runs include `thread")
+    print("  list`; no conclusion can be drawn from this pair.")
+    raise SystemExit(0)
 print(f"  paired by tid: {len(common)}, moved: {len(moved)}")
 for k in moved[:6]:
     name = a[k][0] or "(unnamed)"
