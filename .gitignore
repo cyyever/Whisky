@@ -120,3 +120,4 @@ scratchpad/
 tests/vulkan/vk-strip-cull-test
 tests/vulkan/vk-present-probe
 tests/activate-app
+tests/vulkan/feature-gate-test
