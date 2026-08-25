@@ -67,7 +67,9 @@ fi
 echo
 echo "=== capturing stacks (lldb -- may kill a crashed target) ==="
 timeout 120 lldb -p "$PID" --batch -o "thread list" -o "thread backtrace all" -o detach > "$OUT/stacks.txt" 2>&1
-nthreads=$(grep -c 'thread #' "$OUT/stacks.txt")
+# `tid = ` appears once per thread; `thread #` now appears twice, once in the
+# list and once in the backtraces, and counting that reported 109 for 53.
+nthreads=$(grep -c 'tid = ' "$OUT/stacks.txt")
 echo "threads: $nthreads"
 
 # A capture that got a handful of threads is a FAILED capture, not a process
@@ -100,7 +102,7 @@ if ! kill -0 "$PID" 2>/dev/null; then
     exit 2
 fi
 timeout 120 lldb -p "$PID" --batch -o "thread list" -o "thread backtrace all" -o detach > "$OUT/stacks2.txt" 2>&1
-n2=$(grep -c 'thread #' "$OUT/stacks2.txt")
+n2=$(grep -c 'tid = ' "$OUT/stacks2.txt")
 if [ "$n2" -lt 10 ]; then
     echo
     echo "  second capture returned only $n2 thread(s) -- it failed, so the"
@@ -180,8 +182,14 @@ done
 
 echo
 echo "=== dxvk-submit ==="
-awk "/name = 'dxvk-submit'/,/^\$/" "$OUT/stacks.txt" |
-    grep "frame #" | head -6 | sed 's/^ *//;s/0x[0-9a-f]* //'
+# Anchored on the backtrace section: `thread list` names every thread too, so
+# matching there turned the switch on before any frames existed and the report
+# printed thread #1's stack under dxvk-submit's heading.
+awk '/thread backtrace all/{bt=1}
+     bt && /name = .dxvk-submit./{f=1; next}
+     f && /frame #/{print; n++}
+     f && n>=6{exit}' "$OUT/stacks.txt" |
+    sed 's/^ *//;s/0x[0-9a-f]* //'
 
 LOG=$(ls -t ~/Library/Logs/com.isaacmarovitz.Whisky/*.log 2>/dev/null | head -1)
 if [ -n "$LOG" ]; then
