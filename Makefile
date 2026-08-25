@@ -90,7 +90,8 @@ WINE_INPUTS := $(SCRIPTS_DIR)/build-proton-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
                $(wildcard $(CURDIR)/vendor/gstreamer-x86/lib/gstreamer-1.0/*.dylib) \
                $(wildcard $(CURDIR)/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib) \
                $(wildcard $(CURDIR)/vendor/dxmt/build/src/d3d11/d3d11.dll) \
-               $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d9/d3d9.dll)
+               $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d9/d3d9.dll) \
+               $(wildcard $(CURDIR)/vendor/vkd3d-proton/build.w64/libs/d3d12/d3d12.dll)
 
 $(WINE_STAMP): $(X86_BREW) $(GST_STAMP) $(WINE_INPUTS) | check-proton-src
 	$(SCRIPTS_DIR)/build-proton-x86.sh

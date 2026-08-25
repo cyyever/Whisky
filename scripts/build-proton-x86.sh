@@ -163,6 +163,25 @@ if [ -f "$DXVK_SRC_DIR/build.w64/src/d3d9/d3d9.dll" ]; then
     echo "DXVK restored: d3d9/d3d8 (x86_64 + i386)"
 fi
 
+# --- vkd3d-proton (D3D12) restore over Wine's own vkd3d ----------------------
+# Third instance of the same clobber. `make vkd3d` installs vkd3d-proton as the
+# builtin d3d12/d3d12core; the cp -R of lib/ above writes Wine's own (much
+# smaller) vkd3d back over them, and nothing says so -- the file keeps its name
+# and a D3D12 title just runs against a different implementation. That happened
+# within a day of `make vkd3d` being added, because the restore hook was not
+# added with it. 64-bit only: vkd3d-proton has no 32-bit target.
+VKD3D_SRC_DIR="$PROJECT_DIR/vendor/vkd3d-proton"
+if [ -f "$VKD3D_SRC_DIR/build.w64/libs/d3d12/d3d12.dll" ]; then
+    echo "=== Restoring vkd3d-proton builtins over Wine's vkd3d ==="
+    for vkd3d_dll in d3d12 d3d12core; do
+        vkd3d_src="$VKD3D_SRC_DIR/build.w64/libs/$vkd3d_dll/$vkd3d_dll.dll"
+        [ -f "$vkd3d_src" ] || continue
+        cp "$vkd3d_src" "$INSTALL_DIR/Wine/lib/wine/x86_64-windows/$vkd3d_dll.dll"
+        mark_wine_builtin "$INSTALL_DIR/Wine/lib/wine/x86_64-windows/$vkd3d_dll.dll"
+    done
+    echo "vkd3d-proton restored: d3d12/d3d12core (x86_64)"
+fi
+
 # Bundle x86 dylibs so Wine finds them at runtime. cp -R (implies -P on BSD)
 # preserves the libfoo.dylib -> libfoo.N.dylib -> libfoo.N.x.y.dylib symlink
 # chains — plain cp used to materialize each as a full copy (3x libavcodec
