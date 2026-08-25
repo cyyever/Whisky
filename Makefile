@@ -34,7 +34,7 @@ CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALL
 .NOTPARALLEL:
 
 .PHONY: all help setup-x86-brew proton proton-debug clean-proton \
-        gstreamer dxmt dxvk proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
+        gstreamer dxmt dxvk vkd3d proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -123,6 +123,13 @@ dxmt: proton  ## Build DXMT from source and install into Wine (needs full Xcode 
 
 dxvk: proton  ## Build DXVK d3d9.dll (win32 + win64) and install into Libraries/DXVK
 	$(SCRIPTS_DIR)/build-dxvk.sh
+
+# === vkd3d-proton (D3D12 on KosmicKrisp) ===
+
+# Not part of `all`: D3D12 is not known to render here. Device creation works,
+# nothing has been drawn. Build it deliberately, not by default.
+vkd3d: proton  ## Build vkd3d-proton d3d12.dll (win64) and install as the Wine builtin
+	$(SCRIPTS_DIR)/build-vkd3d.sh
 
 proxychains:  ## Build x86_64 proxychains-ng into Libraries/ProxyChains (routes Steam through the system SOCKS proxy)
 	$(SCRIPTS_DIR)/build-proxychains.sh
