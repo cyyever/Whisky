@@ -1,0 +1,73 @@
+Subject: ntdll: say when a native DLL is used instead of the builtin
+
+Wine marks some builtins IMAGE_DLLCHARACTERISTICS_PREFER_NATIVE, meaning "if a
+native file is present, use that instead" -- a deliberate per-DLL judgement, and
+often the right one. But applications install those files themselves: SSFIV runs
+DXSETUP on first launch and drops 89 native DLLs into the prefix, xaudio2_7 among
+them. From then on the application runs against an implementation this tree
+neither builds nor tests, and the only record is a TRACE nobody has enabled.
+
+That cost a debugging session here. A probe was compiled into the builtin
+xaudio2_7 to answer whether the game reaches CreateMasteringVoice. It could never
+fire -- the game had been loading the redistributed Microsoft DLL all along -- and
+an empty log would have read as "the game does not use XAudio2".
+
+Warn rather than override. Forcing builtin at this point would undo the upstream
+judgement for every DLL at once, and native is the better answer for plenty of
+them. The line names the DLL and how to try the builtin for one run.
+
+At this hook it covers every DLL rather than a hand-maintained list, which
+matters because each game installs its own redistributable. An earlier version of
+this patch hooked get_load_order() instead and would never have fired at all:
+the load order comes back as the plain default here, and the native preference is
+decided later, in virtual_map_builtin_module.
+
+On this bottle it names the three that are shadowed -- xaudio2_7, x3daudio1_7 and
+xactengine3_7, all from the same DXSETUP run.
+---
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4091,6 +4091,43 @@
+     }
+     else if (prefer_native && (image_info->dll_charact & IMAGE_DLLCHARACTERISTICS_PREFER_NATIVE))
+     {
++        /* The builtin is skipped because a native file is present and the builtin
++         * asks to yield to one -- upstream's per-DLL judgement, often right. But
++         * the application then runs against an implementation this tree neither
++         * builds nor tests, recorded only in a TRACE nobody has on, and
++         * applications install these themselves: SSFIV's DXSETUP drops 89 native
++         * DLLs into the prefix on first launch. A probe compiled into the builtin
++         * xaudio2_7 could never fire for exactly this reason, and the empty log
++         * nearly read as "the game does not use XAudio2".
++         *
++         * Warn, do not override: forcing builtin here would undo that judgement
++         * for every DLL at once. Once per module, best-effort. */
++        {
++            static WCHAR warned[32][64];
++            static unsigned int warned_count;
++            /* nt_name is a counted UNICODE_STRING and is NOT NUL-terminated, so
++             * the basename must be copied out before any wcs* call or
++             * debugstr_w reads it; printing it in place emitted the name
++             * followed by whatever happened to sit after it. */
++            WCHAR base[64];
++            unsigned int total = nt_name.Length / sizeof(WCHAR), off = 0, len, i;
++
++            for (i = 0; i < total; i++) if (nt_name.Buffer[i] == '\\') off = i + 1;
++            len = total - off;
++            if (len >= ARRAY_SIZE(base)) len = ARRAY_SIZE(base) - 1;
++            memcpy( base, nt_name.Buffer + off, len * sizeof(WCHAR) );
++            base[len] = 0;
++
++            for (i = 0; i < warned_count && i < ARRAY_SIZE(warned); i++)
++                if (!wcsicmp( warned[i], base )) break;
++            if (i == warned_count && warned_count < ARRAY_SIZE(warned))
++            {
++                wcscpy( warned[warned_count++], base );
++                ERR_(module)( "%s: using the NATIVE file, ignoring the builtin this "
++                              "tree ships. Set WINEDLLOVERRIDES=%s=b to compare.\n",
++                              debugstr_w(base), debugstr_w(base) );
++            }
++        }
+         TRACE_(module)( "%s has prefer-native flag, ignoring builtin\n", debugstr_us(&nt_name) );
+         status = STATUS_IMAGE_ALREADY_LOADED;
+     }
