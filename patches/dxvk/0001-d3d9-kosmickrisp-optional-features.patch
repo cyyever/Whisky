@@ -1,8 +1,8 @@
 diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
-index 633e3b56..29211300 100644
+index f125eb99..7ee89229 100644
 --- a/src/d3d9/d3d9_device.cpp
 +++ b/src/d3d9/d3d9_device.cpp
-@@ -7094,7 +7094,18 @@ namespace dxvk {
+@@ -7100,7 +7100,18 @@ namespace dxvk {
      state.setCullMode(DecodeCullMode(D3DCULL(rs[D3DRS_CULLMODE])));
      state.setDepthClip(true);
      state.setFrontFace(VK_FRONT_FACE_CLOCKWISE);
@@ -22,8 +22,31 @@ index 633e3b56..29211300 100644
      state.setFlatShading(m_state.renderStates[D3DRS_SHADEMODE] == D3DSHADE_FLAT);
      state.setSampleCount(m_state.renderStates[D3DRS_MULTISAMPLEANTIALIAS]
        ? VkSampleCountFlags(0u)
+diff --git a/src/d3d9/d3d9_device.h b/src/d3d9/d3d9_device.h
+index 2b30efba..69996384 100644
+--- a/src/d3d9/d3d9_device.h
++++ b/src/d3d9/d3d9_device.h
+@@ -1170,6 +1170,18 @@ namespace dxvk {
+      * It may also be set up to only support software vertex processing.
+      */
+     bool CanSWVP() const {
++      /* Software vertex processing is emulated with a geometry shader
++       * (DispatchSwvp binds one unconditionally), so a device without
++       * geometryShader cannot do it -- and patches/dxvk/0001 relaxes that
++       * feature from required to optional, which is exactly why the check has
++       * to be here. KosmicKrisp reports geometryShader = 0. Relaxing the
++       * requirement does not remove the use: without this, a title asking for
++       * SOFTWARE or MIXED vertex processing gets a device created without the
++       * feature and then builds a GS pipeline on it. Report SWVP as
++       * unavailable instead, and let the caller take its own error path. */
++      if (!m_dxvkDevice->features().core.features.geometryShader)
++        return false;
++
+       return m_behaviorFlags & (D3DCREATE_MIXED_VERTEXPROCESSING | D3DCREATE_SOFTWARE_VERTEXPROCESSING);
+     }
+ 
 diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
-index ac24f843..8824c41f 100644
+index ac24f843..396faa40 100644
 --- a/src/dxvk/dxvk_device_info.cpp
 +++ b/src/dxvk/dxvk_device_info.cpp
 @@ -827,10 +827,10 @@ namespace dxvk {
@@ -39,33 +62,3 @@ index ac24f843..8824c41f 100644
        ENABLE_FEATURE(core.features, imageCubeArray, true),
        ENABLE_FEATURE(core.features, independentBlend, true),
        ENABLE_FEATURE(core.features, largePoints, false),
-@@ -843,7 +843,7 @@ namespace dxvk {
-       ENABLE_FEATURE(core.features, sampleRateShading, true),
-       ENABLE_FEATURE(core.features, samplerAnisotropy, true),
-       ENABLE_FEATURE(core.features, shaderClipDistance, true),
--      ENABLE_FEATURE(core.features, shaderCullDistance, true),
-+      ENABLE_FEATURE(core.features, shaderCullDistance, false),
-       ENABLE_FEATURE(core.features, shaderFloat64, false),
-       ENABLE_FEATURE(core.features, shaderImageGatherExtended, true),
-       ENABLE_FEATURE(core.features, shaderInt16, true),
-@@ -928,7 +928,7 @@ namespace dxvk {
-       ENABLE_EXT_FEATURE(extCustomBorderColor, customBorderColorWithoutFormat, false),
- 
-       /* Depth clip matches D3D semantics where depth clamp does not */
--      ENABLE_EXT_FEATURE(extDepthClipEnable, depthClipEnable, true),
-+      ENABLE_EXT_FEATURE(extDepthClipEnable, depthClipEnable, false),
- 
-       /* Controls depth bias behaviour with emulated depth formats */
-       ENABLE_EXT_FEATURE(extDepthBiasControl, depthBiasControl, false),
-@@ -984,9 +984,9 @@ namespace dxvk {
-       ENABLE_EXT_FEATURE(extPageableDeviceLocalMemory, pageableDeviceLocalMemory, false),
- 
-       /* Robustness, all features effectively required for correctness */
--      ENABLE_EXT_FEATURE(extRobustness2, robustBufferAccess2, true),
-+      ENABLE_EXT_FEATURE(extRobustness2, robustBufferAccess2, false),
-       ENABLE_EXT_FEATURE(extRobustness2, robustImageAccess2, false),
--      ENABLE_EXT_FEATURE(extRobustness2, nullDescriptor, true),
-+      ENABLE_EXT_FEATURE(extRobustness2, nullDescriptor, false),
- 
-       /* Sample locations, used to "disable" MSAA rendering */
-       ENABLE_EXT(extSampleLocations, false),

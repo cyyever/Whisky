@@ -1,0 +1,46 @@
+Subject: TEMP probe: a D3D9 query that never completes
+
+Delete when the SSFIV main-thread spin is understood.
+---
+diff --git a/src/d3d9/d3d9_query.cpp b/src/d3d9/d3d9_query.cpp
+index 6d760344..e7fbc825 100644
+--- a/src/d3d9/d3d9_query.cpp
++++ b/src/d3d9/d3d9_query.cpp
+@@ -151,6 +151,25 @@ namespace dxvk {
+ 
+     HRESULT hr = this->GetQueryData(pData, dwSize);
+ 
++    /* Probe: the game's main thread spins on Sleep(0) at ~700k calls/s while
++     * the render thread keeps presenting, which is the shape of a query poll
++     * that never completes. Count consecutive S_FALSE per query object and
++     * report once it is well past any plausible GPU latency. */
++    {
++      if (hr == S_FALSE) {
++        if (++m_probeNotReady == 20000 || m_probeNotReady == 200000)
++          Logger::err(str::format("QPROBE query type ", uint32_t(m_queryType),
++                                  " state ", uint32_t(m_state),
++                                  " returned S_FALSE ", m_probeNotReady,
++                                  " times in a row, flush=", uint32_t(flush)));
++      } else {
++        if (m_probeNotReady >= 20000)
++          Logger::err(str::format("QPROBE query type ", uint32_t(m_queryType),
++                                  " recovered after ", m_probeNotReady, " S_FALSE"));
++        m_probeNotReady = 0;
++      }
++    }
++
+     // If we get S_FALSE and it's not from the fact
+     // they didn't call end, do some flushy stuff...
+     if (flush && hr == S_FALSE && m_state != D3D9_VK_QUERY_BEGUN) {
+diff --git a/src/d3d9/d3d9_query.h b/src/d3d9/d3d9_query.h
+index 154e1eed..609cb591 100644
+--- a/src/d3d9/d3d9_query.h
++++ b/src/d3d9/d3d9_query.h
+@@ -73,6 +73,7 @@ namespace dxvk {
+     D3DQUERYTYPE      m_queryType;
+ 
+     D3D9_VK_QUERY_STATE m_state;
++    uint32_t m_probeNotReady = 0;
+ 
+     std::array<Rc<DxvkQuery>, MaxGpuQueries> m_query;
+     std::array<Rc<DxvkEvent>, MaxGpuEvents>  m_event;

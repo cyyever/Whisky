@@ -7,7 +7,7 @@ index c84cf342..7b30ddd6 100644
      
      bool oldDynamicStrides = m_flags.test(DxvkContextFlag::GpDynamicVertexStrides);
 -    bool newDynamicStrides = true;
-+    /* MoltenVK/Metal validates dynamic vertex-buffer strides strictly
++    /* KosmicKrisp/Metal validates dynamic vertex-buffer strides strictly
 +       (setVertexBufferOffset:attributeStride:) and loses the device on D3D9
 +       vertex buffers, which have no VK_EXT_robustness2 to bound them. Force
 +       static strides so the real stride is baked into the pipeline instead. */

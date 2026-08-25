@@ -6,7 +6,7 @@ index 0c4ab96d..9905de25 100644
      iaInfo.topology               = state.ia.primitiveTopology();
      iaInfo.primitiveRestartEnable = state.ia.primitiveRestart();
  
-+    /* MoltenVK/Metal cannot disable primitive restart for strip/fan topologies
++    /* KosmicKrisp/Metal cannot disable primitive restart for strip/fan topologies
 +       (Metal always treats the max index as a restart). Force it on for those so
 +       pipeline creation doesn't fail with VK_ERROR_FEATURE_NOT_PRESENT ->
 +       VK_ERROR_DEVICE_LOST. The restart index is unused by D3D, so this is safe. */

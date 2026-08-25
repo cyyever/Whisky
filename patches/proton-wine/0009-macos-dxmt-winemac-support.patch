@@ -21,7 +21,7 @@ with the symptom surfacing far from the cause. It needed a build-time guard
 script to police it. There is now nothing to police, and no such script.
 
 The view comes from macdrv_client_surface_create() -- the call winemac's own
-Vulkan driver makes to hand MoltenVK a Metal view -- registered with win32u via
+Vulkan driver makes to hand the Vulkan driver a Metal view -- registered with win32u via
 add_window_client_surface(), which this patch moves from win32u_private.h to
 gdi_driver.h so a driver can call it. Wine then owns repositioning on
 move/resize (update_client_surfaces) and teardown on window destroy
