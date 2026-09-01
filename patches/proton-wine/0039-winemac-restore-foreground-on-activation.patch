@@ -1,0 +1,101 @@
+Subject: winemac: hand the foreground back when the application is activated
+
+macdrv_app_deactivated() gives the foreground window to the desktop and nothing
+ever takes it back, so a process runs on with the desktop as its foreground for
+the rest of its life. SSFIV pauses its intro movie when it loses focus -- correct
+behaviour, and visible in quartz as IMediaControl::Pause -- and then never calls
+Run, because the activation that should prompt it never reaches the game. The
+movie stops on a frame, gstreamer backs up behind a filter that stopped
+consuming, and the window is black until the game is killed.
+
+Remember the window that was given up, and restore it on activation. winex11
+needs neither half: its FocusIn event names the window that regained focus, and
+focus_out() keeps a last_focus as a fallback for when that window cannot be
+activated. macOS APP_ACTIVATED is process-wide and names nothing.
+
+The record is kept in win32u state rather than asked of Cocoa. An earlier
+attempt read [NSApp keyWindow] from applicationDidBecomeActive: and got the
+window that was key BEFORE the switch, since AppKit posts that notification
+before the newly clicked window becomes key; its fallback walked a keyWindows
+list that is pruned only on close, so it could name a window no longer on
+screen. Restoring goes through can_window_become_foreground(), the same gate
+every other path to the foreground uses, and only when the foreground is still
+the desktop -- a click that activates some other window arrives as its own
+focus event and has already done the right thing.
+
+The deactivation guard is replaced for a separate reason: it compared
+get_active_window(), which is GUITHREADINFO for the CALLING thread, against the
+global foreground window. APP_DEACTIVATED is handled by whichever thread pumps
+events first, so the two matched only by luck.
+---
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1799,10 +1799,46 @@
+  *
+  * Handler for APP_ACTIVATED events.
+  */
++/* The window this process gave up when macOS deactivated it, so activation can
++ * hand it back.
++ *
++ * winex11 never needs this: its FocusIn event names the window that regained
++ * focus, and focus_out() keeps a last_focus as a fallback when that window
++ * cannot be activated. macOS's APP_ACTIVATED is process-wide and names nothing,
++ * and macdrv_app_deactivated() below drops the foreground unconditionally --
++ * so without a record, nothing ever takes it back and the process runs on with
++ * the desktop as its foreground window for the rest of its life.
++ *
++ * Kept here rather than asked of Cocoa. An earlier version of this read
++ * [NSApp keyWindow] from applicationDidBecomeActive: and got the window that
++ * was key BEFORE the switch, because AppKit posts that notification before the
++ * newly clicked window becomes key; and its fallback walked a keyWindows list
++ * that is only pruned on close, so it could name a window no longer on screen.
++ * The foreground is win32u state, and this is win32u's side of it. */
++static HWND deactivated_foreground;
++
+ void macdrv_app_activated(void)
+ {
++    HWND hwnd = deactivated_foreground;
++
+     TRACE("\n");
+     macdrv_UpdateClipboard();
++
++    if (!hwnd) return;
++    deactivated_foreground = NULL;
++
++    /* The window may have been destroyed, hidden or disabled while we were in
++     * the background; can_window_become_foreground() is the same gate every
++     * other path to the foreground goes through. */
++    if (!can_window_become_foreground(hwnd)) return;
++
++    /* And something else may already have taken the foreground -- a click that
++     * activates a different window arrives as its own focus event, which has
++     * already done the right thing. Only restore what we ourselves cleared. */
++    if (NtUserGetForegroundWindow() != NtUserGetDesktopWindow()) return;
++
++    TRACE("restoring foreground window %p\n", hwnd);
++    NtUserSetForegroundWindowInternal(hwnd);
+ }
+ 
+ 
+@@ -1813,10 +1849,20 @@
+  */
+ void macdrv_app_deactivated(void)
+ {
++    HWND foreground = NtUserGetForegroundWindow();
++    DWORD pid = 0;
++
+     NtUserClipCursor(NULL);
+ 
+-    if (get_active_window() == NtUserGetForegroundWindow())
++    /* The guard this replaces compared get_active_window() -- GUITHREADINFO for
++     * the CALLING thread -- against the global foreground window. APP_DEACTIVATED
++     * is process-wide and is handled by whichever thread pumps events first, so
++     * the two matched only when that thread happened to own the foreground.
++     * What matters is whether the foreground window is ours. */
++    if (foreground && NtUserGetWindowThread(foreground, &pid) &&
++        pid == GetCurrentProcessId())
+     {
++        deactivated_foreground = foreground;
+         TRACE("setting fg to desktop\n");
+         NtUserSetForegroundWindowInternal(NtUserGetDesktopWindow());
+     }
