@@ -30,16 +30,21 @@ apply_patches "$MESA_SRC" "$PROJECT_DIR/patches/mesa" Mesa
 
 TOOLS_BUILD="$MESA_SRC/build-arm64-tools"
 TOOLS_BIN="$TOOLS_BUILD/staged-bin"
-if [ ! -x "$TOOLS_BIN/mesa_clc" ]; then
-    echo "=== Phase 1: arm64 mesa_clc / vtn_bindgen2 ==="
+echo "=== Phase 1: arm64 mesa_clc / vtn_bindgen2 ==="
+# ninja every time, not just when the tools are absent. These are compilers for
+# phase 2's .cl shaders, built from the same tree they compile, so a bump moves
+# both -- and a stale mesa_clc does not fail cleanly: after ~500 commits it took
+# SIGBUS on kk_draws.cl, and ninja reported only `FAILED: [code=138]`, with the
+# four builds that follow still returning 0. ninja is incremental, so this costs
+# nothing when the tree has not moved.
+[ -f "$TOOLS_BUILD/build.ninja" ] ||
     meson setup "$TOOLS_BUILD" "$MESA_SRC" -Dbuildtype=release -Dplatforms=macos \
         -Dvulkan-drivers= -Dgallium-drivers= -Dopengl=false \
         -Dmesa-clc=enabled -Dinstall-mesa-clc=true -Dzstd=disabled
-    ninja -C "$TOOLS_BUILD" src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2
-    mkdir -p "$TOOLS_BIN"
-    cp "$TOOLS_BUILD/src/compiler/clc/mesa_clc" \
-       "$TOOLS_BUILD/src/compiler/spirv/vtn_bindgen2" "$TOOLS_BIN/"
-fi
+ninja -C "$TOOLS_BUILD" src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2
+mkdir -p "$TOOLS_BIN"
+cp "$TOOLS_BUILD/src/compiler/clc/mesa_clc" \
+   "$TOOLS_BUILD/src/compiler/spirv/vtn_bindgen2" "$TOOLS_BIN/"
 
 DRIVER_BUILD="$MESA_SRC/build-x86_64"
 # Outside the submodule. meson self-ignores its build dirs (it writes a
