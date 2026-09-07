@@ -348,9 +348,15 @@ fi
 cd "$INSTALL_DIR/Wine/bin"
 [ ! -f wine64 ] && ln -s wine wine64
 
-# Write version plist. wine64 --version may add a git-describe suffix like
-# "11.9-1-gede55241ff5"; strip it so the parts are plain integers.
-WINE_VER=$("$INSTALL_DIR/Wine/bin/wine64" --version 2>&1 | sed 's/^wine-//; s/-.*$//')
+# Write version plist, from the tree's VERSION file rather than from the binary.
+# `wine --version` is git-describe output against whatever tags the clone has,
+# and ours is deepened rather than complete: the nearest wine-* tag it can see is
+# wine-8.0, so the binary calls itself "wine-8.0-21162-g0509a0b64a4" and the
+# plist claimed major 8 for a Wine 11.0 build. VERSION says "Wine version 11.0"
+# and is what the tree is. Fall back to the binary if it is ever missing.
+WINE_VER=$(sed -n 's/^Wine version //p' "$WINE_SRC/VERSION" 2>/dev/null)
+[ -n "$WINE_VER" ] ||
+    WINE_VER=$("$INSTALL_DIR/Wine/bin/wine64" --version 2>&1 | sed 's/^wine-//; s/-.*$//')
 MAJOR=$(echo "$WINE_VER" | cut -d. -f1)
 MINOR=$(echo "$WINE_VER" | cut -d. -f2)
 PATCH=$(echo "$WINE_VER" | cut -d. -f3)
