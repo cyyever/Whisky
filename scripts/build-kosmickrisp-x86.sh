@@ -28,8 +28,28 @@ export PATH="$ARM_BREW_PREFIX/opt/llvm/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/u
 # executing; the freed quad tears into a diagonal under GPU backlog).
 apply_patches "$MESA_SRC" "$PROJECT_DIR/patches/mesa" Mesa
 
+# A brew upgrade moves a dependency's Cellar directory, and meson does not
+# notice: it caches dependency lookups in meson-private, so --reconfigure
+# reports `LLVMSPIRVLib found: YES 23.1.0.0 (cached)` and keeps emitting -I for a
+# 23.1.0 directory brew deleted when it installed 23.1.1 -- phase 1 then dies on
+# a header that is present all along, one directory over. Only starting the build
+# dir over clears that cache. Detect it by asking whether a Cellar path the build
+# dir still names is actually there, so this triggers on any upgraded dependency
+# rather than on a list we would have to maintain.
+drop_if_stale() {  # <build-dir>
+    local dir=$1 path
+    [ -f "$dir/build.ninja" ] || return 0
+    for path in $(grep -ohE '/opt/homebrew/Cellar/[^/]+/[^/ :"]+' "$dir/build.ninja" | sort -u); do
+        [ -d "$path" ] && continue
+        echo "=== $(basename "$dir") was configured against $path, which is gone; rebuilding it from scratch ==="
+        rm -rf "$dir"
+        return 0
+    done
+}
+
 TOOLS_BUILD="$MESA_SRC/build-arm64-tools"
 TOOLS_BIN="$TOOLS_BUILD/staged-bin"
+drop_if_stale "$TOOLS_BUILD"
 echo "=== Phase 1: arm64 mesa_clc / vtn_bindgen2 ==="
 # ninja every time, not just when the tools are absent. These are compilers for
 # phase 2's .cl shaders, built from the same tree they compile, so a bump moves
@@ -37,10 +57,18 @@ echo "=== Phase 1: arm64 mesa_clc / vtn_bindgen2 ==="
 # SIGBUS on kk_draws.cl, and ninja reported only `FAILED: [code=138]`, with the
 # four builds that follow still returning 0. ninja is incremental, so this costs
 # nothing when the tree has not moved.
-[ -f "$TOOLS_BUILD/build.ninja" ] ||
-    meson setup "$TOOLS_BUILD" "$MESA_SRC" -Dbuildtype=release -Dplatforms=macos \
-        -Dvulkan-drivers= -Dgallium-drivers= -Dopengl=false \
-        -Dmesa-clc=enabled -Dinstall-mesa-clc=true -Dzstd=disabled
+#
+# --reconfigure rather than skip, for the same reason build-dxvk.sh and
+# build-vkd3d.sh use it: meson caches the flags pkg-config gave it, and a brew
+# upgrade moves the paths those flags name. A build dir configured against
+# spirv-llvm-translator 23.1.0 kept compiling with -I.../23.1.0/include after
+# brew replaced it with 23.1.1, and phase 1 died on a header that was present all
+# along, just one directory over. Reconfiguring is cheap and keeps object files.
+tools_setup=(meson setup "$TOOLS_BUILD" "$MESA_SRC" -Dbuildtype=release
+    -Dplatforms=macos -Dvulkan-drivers= -Dgallium-drivers= -Dopengl=false
+    -Dmesa-clc=enabled -Dinstall-mesa-clc=true -Dzstd=disabled)
+if [ -f "$TOOLS_BUILD/build.ninja" ]; then tools_setup+=(--reconfigure); fi
+"${tools_setup[@]}"
 ninja -C "$TOOLS_BUILD" src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2
 mkdir -p "$TOOLS_BIN"
 cp "$TOOLS_BUILD/src/compiler/clc/mesa_clc" \
@@ -86,13 +114,15 @@ meson_args=( "$DRIVER_BUILD" "$MESA_SRC" --cross-file "$CROSS_FILE"
 # moved cannot be repaired by --reconfigure or --wipe; it dies in
 # machinefile.py with a FileNotFoundError that names the path and nothing else.
 # Start over instead. Costs one full rebuild, once.
+drop_if_stale "$DRIVER_BUILD"
 recorded="$DRIVER_BUILD/meson-private/cmd_line.txt"
 if [ -d "$DRIVER_BUILD" ] && [ -f "$recorded" ] &&
    ! grep -qF "$CROSS_FILE" "$recorded"; then
     echo "=== Build dir was configured against a different cross-file; reconfiguring from scratch ==="
     rm -rf "$DRIVER_BUILD"
 fi
-[ -d "$DRIVER_BUILD" ] || meson setup "${meson_args[@]}"
+if [ -d "$DRIVER_BUILD" ]; then meson_args+=(--reconfigure); fi
+meson setup "${meson_args[@]}"
 ninja -C "$DRIVER_BUILD"
 
 echo "=== Installing to $OUT_DIR ==="
