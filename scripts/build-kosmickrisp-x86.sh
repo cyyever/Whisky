@@ -22,6 +22,7 @@ ARM_BREW_PREFIX="$(brew --prefix)"
 # ARM brew meson/ninja (~/.local/bin has a meson with a broken interpreter — keep it
 # off PATH). llvm is keg-only; phase 1 (mesa_clc) needs its llvm-config.
 export PATH="$ARM_BREW_PREFIX/opt/llvm/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 
 # Apply out-of-tree Mesa patches (patches/mesa/0001-*.patch: the WSI present-blit
 # command-buffer lifetime fix -- acquire frees a blit cmdbuf the GPU may still be

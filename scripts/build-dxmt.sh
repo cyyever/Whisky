@@ -11,6 +11,7 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 whisky_ccache_guard   # honor WHISKY_CCACHE=0 for the meson/clang build
+whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 DXMT_SRC="$PROJECT_DIR/vendor/dxmt"
 # WINE_BUILD (Wine build tree for headers) and WINE_LIB (install target) default
 # to the Proton build (the shipped backend); override to build DXMT against a

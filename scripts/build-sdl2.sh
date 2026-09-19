@@ -34,6 +34,7 @@
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 SDL_SRC="$PROJECT_DIR/vendor/sdl2"
 BUILD_DIR="$SDL_SRC/build-win32"
 

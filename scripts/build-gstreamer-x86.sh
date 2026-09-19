@@ -29,6 +29,7 @@ set -e
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 whisky_ccache_guard   # honor WHISKY_CCACHE=0
+whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 
 GST_SRC="$PROJECT_DIR/vendor/gstreamer"
 OUT_DIR="$PROJECT_DIR/vendor/gstreamer-x86"

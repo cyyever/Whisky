@@ -33,6 +33,7 @@ set -e
 # apart from the reconfigure + linking the two test PEs, and never `make install`s.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 WINE_SRC="$PROJECT_DIR/vendor/proton-wine"
 BUILD_DIR="$WINE_SRC/build"
 

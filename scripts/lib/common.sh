@@ -208,6 +208,35 @@ whisky_ccache_guard() {
     fi
 }
 
+# whisky_link_probe: fail fast when the active DEVELOPER_DIR cannot link against
+# the installed SDK. These can drift apart silently: the DEVELOPER_DIR fallback
+# above picks Xcode.app for its fat libxcrun, and an SDK refresh that lands
+# without a matching Xcode update leaves Xcode's older ld/tapi unable to parse
+# the new TBDs (tapi "malformed file" / "unknown architecture" on arm64e.x1).
+# Until configure runs, nothing else notices; meson then reports only "Compiler
+# ... cannot compile programs" -- and through a `| tail` pipeline even that
+# loses the exit code. One tiny compile+link says it up front. Only for scripts
+# that link with Apple tools; mingw-only builds (dxvk, vkd3d-proton) must not
+# call this -- they build fine on a machine in this state. Call after the
+# PATH exports, so the probe sees the same cc the build will.
+whisky_link_probe() {
+    local src bin err
+    src="$(mktemp)"
+    bin="$(mktemp)"
+    err="$(mktemp)"
+    printf 'int main(void){return 0;}\n' >"$src"
+    if ! cc -x c "$src" -o "$bin" 2>"$err"; then
+        echo "ERROR: the active toolchain ($DEVELOPER_DIR) cannot link against the installed SDK." >&2
+        echo "Every Apple-toolchain build would fail; the compiler said:" >&2
+        sed 's/^/    /' "$err" >&2
+        echo "If this is tapi \"malformed file\"/\"unknown architecture\" on a TBD, the SDK was" >&2
+        echo "refreshed past the toolchain: update Xcode.app (and/or the CommandLineTools) to match." >&2
+        rm -f "$src" "$bin" "$err"
+        return 1
+    fi
+    rm -f "$src" "$bin" "$err"
+}
+
 # --- x86_64 Wine configure/toolchain (shared by the two Wine builds) ----------
 # build-proton-x86.sh (the shipping Proton build) and build-msync-tests.sh (the
 # msync test-PE build) reconfigure the SAME vendor/proton-wine/build tree with an
