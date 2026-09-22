@@ -262,8 +262,18 @@ wine_clean_path() {
 # Wine build, wrapped in ccache when whisky_ccache_on (the default). Pure: no
 # banner on stdout so they are safe in $(...) — wine_configure prints the ccache
 # status line itself.
-wine_cc_cmd()  { if whisky_ccache_on; then echo "ccache gcc"; else echo "gcc"; fi; }
-wine_cxx_cmd() { if whisky_ccache_on; then echo "ccache g++"; else echo "g++"; fi; }
+#
+# -arch x86_64, explicitly: Xcode 27 (2026-09) made the toolchain clang
+# arm64-only, so the old trick — run gcc under the arch -x86_64 clean room and
+# let it target the Rosetta host — silently produced arm64 objects instead
+# (the Rosetta exec preference falls back to the native slice when no x86_64
+# one exists; wine's configure then dies on "-lfreetype ... required
+# architecture 'arm64'"). Asking the arm64 clang to cross-compile is Xcode's
+# own normal path, works whether or not a future clang regains an x86_64
+# slice, and conftest binaries still run inside the x86_64 clean room, so
+# configure keeps concluding "not cross compiling".
+wine_cc_cmd()  { if whisky_ccache_on; then echo "ccache clang -arch x86_64"; else echo "clang -arch x86_64"; fi; }
+wine_cxx_cmd() { if whisky_ccache_on; then echo "ccache clang++ -arch x86_64"; else echo "clang++ -arch x86_64"; fi; }
 
 # wine_configure <build_dir> [extra_configure_flags...] — cd into build_dir and
 # run Wine's ../configure for the x86_64/Rosetta build inside an `env -i` clean
