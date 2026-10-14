@@ -71,20 +71,20 @@ index 72e57494e8f..516c58d24ae 100644
  /**********************************************************************
   *		segv_handler
   *
-@@ -2749,7 +2785,12 @@ static void segv_trace( const void *addr, ULONG_PTR rip, ULONG_PTR rsp, unsigned
- 
+@@ -2749,8 +2785,13 @@ static void segv_trace( const void *addr, ULONG_PTR rip, ULONG_PTR rsp, unsigned
  static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  {
--    ucontext_t *ucontext = init_handler( sigcontext );
-+    ucontext_t *ucontext;
-+
-+#ifdef __APPLE__
-+    if (handle_foreign_thread_fault( signal )) return;
-+#endif
-+    ucontext = init_handler( sigcontext );
+     ucontext_t *ucontext = sigcontext;
      EXCEPTION_RECORD rec = { 0 };
      struct xcontext context;
      void *steamclient_addr = NULL;
+ 
++#ifdef __APPLE__
++    /* First statement in the body: init_handler() further down resets GSBASE,
++     * and a foreign thread must return before reaching it. */
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
+     /* cpuid fault may happen in native thread. */
 @@ -2852,7 +2893,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
   */
  static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )

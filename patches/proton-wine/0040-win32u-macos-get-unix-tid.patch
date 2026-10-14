@@ -1,0 +1,45 @@
+Subject: win32u: provide a macOS get_unix_tid for the vulkan signaller
+
+Proton's d3d12 fence timeline work (66ee546cbea "win32u: Support d3d12
+fence timelines") labels the signaller worker's debug output with
+gettid(), which is Linux-only -- the macOS build fails with "use of
+undeclared identifier 'gettid'".
+
+The id only ever reaches a debug fprintf, so pthread_threadid_np()
+truncated to int serves the same purpose. Wrapping it in one helper keeps
+the single call site free of the ifdef.
+
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index b397641592a..755b2dfaf17 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -642,11 +642,28 @@ signal_op_complete:
+     return add_sem_wait( wait_info, wait_alloc_count, sem->shared_sem, global_sem_wait_value );
+ }
+ 
++/* gettid(2) is Linux-only. The id is used to label debug output, so the pthread
++ * id truncated to int is as good here, and this keeps the one call site common. */
++#ifdef __APPLE__
++static int get_unix_tid(void)
++{
++    uint64_t tid = 0;
++
++    pthread_threadid_np( NULL, &tid );
++    return (int)tid;
++}
++#else
++static int get_unix_tid(void)
++{
++    return gettid();
++}
++#endif
++
+ #define SIGNALLER_INITIAL_WAIT_COUNT 256
+ 
+ static void *signaller_worker( void *arg )
+ {
+-    int unix_tid = gettid();
++    int unix_tid = get_unix_tid();
+     struct vulkan_device *device = arg;
+     struct semaphore *sem;
+     VkSemaphoreWaitInfo wait_info = { 0 };
