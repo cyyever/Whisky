@@ -130,7 +130,17 @@ echo "=== Installing to $OUT_DIR ==="
 mkdir -p "$OUT_DIR"
 DYLIB="$DRIVER_BUILD/src/kosmickrisp/vulkan/libvulkan_kosmickrisp.dylib"
 cp "$DYLIB" "$OUT_DIR/"
-API_VERSION=$(/opt/homebrew/bin/python3 -c "import json,glob; print(json.load(open(glob.glob('$DRIVER_BUILD/src/kosmickrisp/vulkan/*_icd.*.json')[0]))['ICD']['api_version'])")
+# Homebrew does not always leave an unversioned python3 symlink in bin (this
+# machine has only python3.12 and python3.14), and PATH here is the x86 brew,
+# so resolve an interpreter instead of hardcoding one. Any python3 will do --
+# this only reads one key out of one JSON file.
+PY=""
+for cand in /opt/homebrew/bin/python3 /opt/homebrew/bin/python3.14 \
+            /opt/homebrew/bin/python3.12 /usr/bin/python3; do
+    [ -x "$cand" ] && { PY="$cand"; break; }
+done
+[ -n "$PY" ] || { echo "ERROR: no python3 found to read the ICD api_version" >&2; exit 1; }
+API_VERSION=$("$PY" -c "import json,glob; print(json.load(open(glob.glob('$DRIVER_BUILD/src/kosmickrisp/vulkan/*_icd.*.json')[0]))['ICD']['api_version'])")
 cat > "$OUT_DIR/kosmickrisp_icd.x86_64.json" <<EOF
 {
     "ICD": {

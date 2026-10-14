@@ -10,7 +10,13 @@ set -e
 
 API="https://gitlab.freedesktop.org/api/v4/projects/mesa%2Fmesa"
 RAW="https://gitlab.freedesktop.org/mesa/mesa/-/raw/main"
-PY=/opt/homebrew/bin/python3
+# Homebrew may have no unversioned python3 symlink (see build-kosmickrisp-x86.sh);
+# without this the MR listing below silently produced nothing.
+for cand in /opt/homebrew/bin/python3 /opt/homebrew/bin/python3.14 \
+            /opt/homebrew/bin/python3.12 /usr/bin/python3; do
+    [ -x "$cand" ] && { PY="$cand"; break; }
+done
+[ -n "${PY:-}" ] || { echo "ERROR: no python3 found" >&2; exit 1; }
 
 echo "=== KosmicKrisp geometry-stage progress (Mesa main) ==="
 echo
