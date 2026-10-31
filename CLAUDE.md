@@ -19,7 +19,7 @@ make dxmt             # DXMT builtin (needs full Xcode; builds its x86_64 LLVM 1
 make dxvk             # DXVK d3d9.dll
 make app / make run   # build / run the app
 ```
-Fresh-machine order: ARM brew deps (`autoconf automake bison cmake meson ninja nasm pkg-config mingw-w64 ccache llvm libclc spirv-llvm-translator spirv-tools`, plus `mako pyyaml` for brew's python3) → Rosetta 2 → `vendor/proton-wine` at the base hash in `scripts/build-proton-x86.sh` → `make x86-deps` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` (builds GStreamer first — Wine is configured `--with-gstreamer` and configure hard-errors without it) → `make dxmt` / `make dxvk`. The scripts own the decisions.
+Fresh-machine order: ARM brew deps (`autoconf automake bison cmake meson ninja nasm glslang pkg-config mingw-w64 ccache llvm libclc spirv-llvm-translator spirv-tools`, plus `mako pyyaml` for brew's python3) → Rosetta 2 → `vendor/proton-wine` at the base hash in `scripts/build-proton-x86.sh` → `make x86-deps` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` (builds GStreamer first — Wine is configured `--with-gstreamer` and configure hard-errors without it) → `make dxmt` / `make dxvk`. The scripts own the decisions.
 
 ## Key paths
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`
