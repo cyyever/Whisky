@@ -12,15 +12,24 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 FFMPEG_SRC="$PROJECT_DIR/vendor/ffmpeg"
 FFMPEG_PREFIX="$PROJECT_DIR/vendor/ffmpeg-x86"
-FFMPEG_TAG=n8.1.3
+FFMPEG_TAG=n9.0.2
 
+BUILD_DIR="$FFMPEG_SRC/build-x86_64"
 if [ ! -d "$FFMPEG_SRC" ]; then
     echo "=== Cloning FFmpeg $FFMPEG_TAG ==="
     git clone --depth 1 --branch "$FFMPEG_TAG" \
         https://github.com/FFmpeg/FFmpeg.git "$FFMPEG_SRC"
+elif [ "$(git -C "$FFMPEG_SRC" describe --tags --exact-match 2>/dev/null)" != "$FFMPEG_TAG" ]; then
+    # An existing checkout is never moved by the clone above, so a bumped
+    # FFMPEG_TAG would otherwise silently rebuild the old tree. The clone is a
+    # single-tag shallow one: fetch just the new tag (fetching all tags dies
+    # with `early EOF`), and drop the old build dir so no stale objects link in.
+    echo "=== Switching FFmpeg to $FFMPEG_TAG ==="
+    git -C "$FFMPEG_SRC" fetch --depth 1 origin tag "$FFMPEG_TAG"
+    git -C "$FFMPEG_SRC" checkout -q "$FFMPEG_TAG"
+    rm -rf "$BUILD_DIR"
 fi
 
-BUILD_DIR="$FFMPEG_SRC/build-x86_64"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 

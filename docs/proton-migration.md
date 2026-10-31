@@ -97,7 +97,7 @@ falling back to the config, so `init` synthesises one from the repo config.
   dispatcher owns `%gs`/pthread TSD; raw TEB write → SIGBUS). Trimmed so `sync.c`/
   `loader.c` de-linux hunks live in `0008`.
 - `0002-winedmo-ffmpeg8-pcm-bsf` — drop reliance on FFmpeg-internal BSF plumbing for
-  PCM byte-order reversal (winedmo builds against our x86_64 FFmpeg 8).
+  PCM byte-order reversal (winedmo builds against our x86_64 FFmpeg 8+; public API only, so FFmpeg 9 too).
 - `0003-win32u-opengl-compile-without-libegl` — compile framebuffer-surface / fs_hack
   path without libEGL.
 - `0004-media-converter-pthread-include-macos` — `#include <pthread.h>` for

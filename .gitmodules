@@ -13,7 +13,7 @@
 [submodule "vendor/sdl2"]
 	path = vendor/sdl2
 	url = https://github.com/libsdl-org/SDL.git
-	branch = release-2.30.x
+	branch = release-2.32.x
 [submodule "vendor/gstreamer"]
 	path = vendor/gstreamer
 	url = https://gitlab.freedesktop.org/gstreamer/gstreamer.git
