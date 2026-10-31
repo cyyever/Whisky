@@ -12,7 +12,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 FFMPEG_SRC="$PROJECT_DIR/vendor/ffmpeg"
 FFMPEG_PREFIX="$PROJECT_DIR/vendor/ffmpeg-x86"
-FFMPEG_TAG=n8.1.1
+FFMPEG_TAG=n8.1.3
 
 if [ ! -d "$FFMPEG_SRC" ]; then
     echo "=== Cloning FFmpeg $FFMPEG_TAG ==="
