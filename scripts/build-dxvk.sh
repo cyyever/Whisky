@@ -9,7 +9,10 @@ set -e
 #
 # d3d8 is a thin wrapper over DXVK's d3d9 (it calls Direct3DCreate9 from d3d9.dll),
 # so it ships alongside d3d9. D3D11/D3D10/DXGI are NOT built here: DXMT owns them on
-# macOS (upstream DXVK's d3d11 needs Vulkan geometryShader, absent on Apple GPUs).
+# macOS. KosmicKrisp now exposes geometryShader, which was the original blocker, but
+# it still has no transform feedback, so DXVK's d3d11 would fail every stream-output
+# shader (DXGI_ERROR_INVALID_CALL) where DXMT emulates the vertex-shader case --
+# switching wants an A/B against real games first.
 # Must run AFTER `make proton`, which rebuilds Wine/lib and would otherwise clobber
 # these builtins — same lifecycle as `make dxmt`.
 #

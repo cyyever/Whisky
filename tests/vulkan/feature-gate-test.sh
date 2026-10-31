@@ -64,8 +64,6 @@ echo "cross-checking each relaxation against the patch that carries it:"
 dead=0
 gate fillModeNonSolid    dxvk/0001-d3d9-kosmickrisp-optional-features.patch \
      '^+.*fillModeNonSolid, false' || dead=$((dead+1))
-gate geometryShader      dxvk/0001-d3d9-kosmickrisp-optional-features.patch \
-     '^+.*geometryShader, false' || dead=$((dead+1))
 gate shaderCullDistance  dxvk/0001-d3d9-kosmickrisp-optional-features.patch \
      '^+.*shaderCullDistance, false' || dead=$((dead+1))
 gate depthClipEnable     dxvk/0001-d3d9-kosmickrisp-optional-features.patch \
