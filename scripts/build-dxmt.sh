@@ -4,8 +4,9 @@
 # install it into the Wine library. Gives modern D3D11 games feature level 11.x
 # via Metal (wined3d on macOS caps at FL10).
 #
-# Requires: full Xcode (Metal toolchain), meson, ninja, mingw-w64, and the x86
-# Homebrew (for x86_64 llvm@15). Run `make proton` first (needs the Wine build dir).
+# Requires: full Xcode (Metal toolchain), cmake, meson, ninja, mingw-w64. Builds
+# its own x86_64 LLVM 15 on first run. Run `make proton` first (needs the Wine
+# build dir).
 #
 set -euo pipefail
 
@@ -20,7 +21,10 @@ WINE_BUILD="${DXMT_WINE_BUILD:-$PROJECT_DIR/vendor/proton-wine/build}"
 WINE_LIB="${DXMT_WINE_LIB:-$INSTALL_DIR/Wine/lib/wine}"
 
 # --- prerequisites -----------------------------------------------------------
-if ! xcrun -f metal >/dev/null 2>&1; then
+# Run it, not just `xcrun -f`: since Xcode 26 the metal in the toolchain is a stub
+# that `xcrun -f` finds happily and that refuses to run until the separately
+# downloaded Metal Toolchain component is installed.
+if ! xcrun metal --version >/dev/null 2>&1; then
     echo "ERROR: Metal toolchain not found. Install full Xcode 16+ and run:" >&2
     echo "  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer" >&2
     echo "  xcodebuild -downloadComponent MetalToolchain" >&2
@@ -30,14 +34,75 @@ require_tools meson ninja x86_64-w64-mingw32-gcc
 [ -d "$WINE_BUILD" ] || { echo "ERROR: Wine build dir missing ($WINE_BUILD). Run 'make proton' first." >&2; exit 1; }
 [ -d "$WINE_LIB/x86_64-windows" ] || { echo "ERROR: Wine not installed. Run 'make proton' first." >&2; exit 1; }
 
-X86_PREFIX="$(arch -x86_64 "$X86_BREW" --prefix)"
-LLVM15="$X86_PREFIX/opt/llvm@15"
-ZSTD_LIB="$X86_PREFIX/opt/zstd/lib/libzstd.dylib"
+export PATH="$(brew --prefix)/bin:$PATH"   # native cmake/meson/ninja/mingw
 
-# DXMT pins LLVM 15 (its codegen API + Apple AIR bitcode compatibility).
-if [ ! -x "$LLVM15/bin/llvm-config" ]; then
-    echo "=== Installing x86_64 llvm@15 ==="
-    arch -x86_64 "$X86_BREW" install llvm@15
+# DXMT pins LLVM 15, exact major (docs/DEVELOPMENT.md upstream; its CI builds
+# llvmorg-15.0.7), and links it statically into the x86_64 winemetal.so -- so
+# it must be an x86_64 LLVM 15, which no package manager here provides: the ARM
+# brew's llvm is arm64 and 23, and the x86 brew's llvm@15 this used to come from
+# is gone with the x86 brew. Build it the way DXMT's CI does: the arm64 clang
+# cross-compiling with -arch x86_64, no backends, no tools, no zstd -- airconv
+# only needs the IR, bitcode and pass libraries. Once, into vendor/llvm15-x86
+# (gitignored); later runs find the stamp and skip it.
+#
+# Not under /opt/homebrew, so src/airconv/darwin/meson.build adds neither
+# brew's libzstd nor libunwind -- this script used to have to patch zstd in.
+LLVM15="$PROJECT_DIR/vendor/llvm15-x86"
+LLVM15_VER=15.0.7
+LLVM15_SRC_SHA=4ad8b2cc8003c86d0078d15d987d84e3a739f24aae9033865c027abae93ee7a4
+LLVM15_CMAKE_SHA=8986f29b634fdaa9862eedda78513969fe9788301c9f2d938f4c10a3e7a3e7ea
+if [ ! -f "$LLVM15/.built" ]; then
+    require_tools cmake
+    DL_DIR="$PROJECT_DIR/build/downloads"
+    WORK="$PROJECT_DIR/build/llvm15"
+    mkdir -p "$DL_DIR"
+    # llvm-<ver>.src no longer carries LLVM's shared cmake modules; it expects
+    # them in ../cmake, which is the separate (7 KB) cmake-<ver>.src tarball.
+    for pair in "llvm-$LLVM15_VER.src.tar.xz:$LLVM15_SRC_SHA" "cmake-$LLVM15_VER.src.tar.xz:$LLVM15_CMAKE_SHA"; do
+        f="${pair%%:*}" sha="${pair#*:}"
+        for t in $(seq 1 10); do
+            [ "$(shasum -a 256 "$DL_DIR/$f" 2>/dev/null | cut -d' ' -f1)" = "$sha" ] && break
+            echo "=== Downloading $f (try $t) ==="
+            curl -sSfL -C - --retry 3 --retry-all-errors -o "$DL_DIR/$f" \
+                "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM15_VER/$f" || true
+        done
+        [ "$(shasum -a 256 "$DL_DIR/$f" | cut -d' ' -f1)" = "$sha" ] ||
+            { echo "ERROR: could not download $f (or its sha256 does not match)" >&2; exit 1; }
+    done
+    rm -rf "$WORK"
+    mkdir -p "$WORK/llvm" "$WORK/cmake"
+    tar -xf "$DL_DIR/llvm-$LLVM15_VER.src.tar.xz" -C "$WORK/llvm" --strip-components 1
+    tar -xf "$DL_DIR/cmake-$LLVM15_VER.src.tar.xz" -C "$WORK/cmake" --strip-components 1
+
+    echo "=== Building x86_64 LLVM $LLVM15_VER into $LLVM15 ==="
+    launcher=()
+    if whisky_ccache_on; then
+        launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+    fi
+    # The flags are DXMT's CI ones (.github/workflows/ci.yml, "Build LLVM for
+    # Darwin (x86_64)"), including _LIBCPP_KEEP_TRANSITIVE_INCLUDES_LLVM23:
+    # LLVM 15 relies on headers the current libc++ no longer pulls in
+    # transitively. Tests, examples and docs are off only to build less.
+    cmake -S "$WORK/llvm" -B "$WORK/build" -G Ninja \
+        "${launcher[@]}" \
+        -DCMAKE_INSTALL_PREFIX="$LLVM15" \
+        -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+        -DLLVM_HOST_TRIPLE=x86_64-apple-darwin \
+        -DLLVM_ENABLE_ASSERTIONS=On \
+        -DLLVM_ENABLE_ZSTD=Off \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_FLAGS="-D_LIBCPP_KEEP_TRANSITIVE_INCLUDES_LLVM23" \
+        -DLLVM_TARGETS_TO_BUILD="" \
+        -DLLVM_BUILD_TOOLS=Off \
+        -DLLVM_INCLUDE_BENCHMARKS=Off \
+        -DLLVM_INCLUDE_TESTS=Off \
+        -DLLVM_INCLUDE_EXAMPLES=Off \
+        -DLLVM_INCLUDE_DOCS=Off \
+        -DLLVM_VERSION_PRINTER_SHOW_HOST_TARGET_INFO=Off
+    cmake --build "$WORK/build"
+    rm -rf "$LLVM15"
+    cmake --install "$WORK/build"
+    touch "$LLVM15/.built"
 fi
 
 # --- submodule ---------------------------------------------------------------
@@ -49,21 +114,8 @@ git -C "$PROJECT_DIR" submodule update --init --recursive vendor/dxmt
 # same pattern as build-dxvk.sh; the patch files are the source of truth in main.
 apply_patches "$DXMT_SRC" "$PROJECT_DIR/patches/dxmt" DXMT
 
-# --- zstd link fix -----------------------------------------------------------
-# brew's llvm@15 is built with zstd enabled, so its static libs reference zstd
-# symbols. DXMT's link lists don't include zstd, so inject it. (Idempotent;
-# reverted at the end so the submodule stays clean.)
-AIRCONV_MESON="$DXMT_SRC/src/airconv/meson.build"
-if ! grep -q "libzstd" "$AIRCONV_MESON"; then
-    sed -i '' \
-        "s#'-lLLVMBinaryFormat', '-lLLVMSupport', '-lLLVMDemangle'#'-lLLVMBinaryFormat', '-lLLVMSupport', '-lLLVMDemangle', '$ZSTD_LIB', '-lz'#" \
-        "$AIRCONV_MESON"
-fi
-
-cleanup() { git -C "$DXMT_SRC" checkout -- src/airconv/meson.build 2>/dev/null || true; }
-trap cleanup EXIT
-
-export PATH="$(brew --prefix)/bin:$PATH"   # native meson/ninja/mingw
+# Older runs of this script injected brew's libzstd here; put it back.
+git -C "$DXMT_SRC" checkout -- src/airconv/meson.build 2>/dev/null || true
 
 # meson resolves the source dir from cwd, so build from inside the DXMT tree.
 cd "$DXMT_SRC"

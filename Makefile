@@ -12,7 +12,7 @@ MAKEFLAGS += --no-builtin-rules --no-builtin-variables
 
 SCRIPTS_DIR := $(CURDIR)/scripts
 WINE_SRC := $(CURDIR)/vendor/proton-wine
-X86_BREW := $(CURDIR)/vendor/homebrew-x86/bin/brew
+X86_DEPS_STAMP := $(CURDIR)/vendor/x86-deps/.built
 WINE_STAMP := $(CURDIR)/vendor/.proton-installed
 APP_PRODUCTS := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Products
 
@@ -33,7 +33,7 @@ CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALL
 # interleave, and none of it is the slow part -- the scripts parallelise inside.
 .NOTPARALLEL:
 
-.PHONY: all help setup-x86-brew proton proton-debug clean-proton \
+.PHONY: all help x86-deps proton proton-debug clean-proton \
         gstreamer dxmt dxvk vkd3d proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
@@ -42,12 +42,15 @@ help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-# === x86_64 Homebrew ===
+# === x86_64 libraries ===
 
-setup-x86-brew: $(X86_BREW)  ## Install x86_64 Homebrew and Wine build deps
+x86-deps: $(X86_DEPS_STAMP)  ## Cross-build Wine's x86_64 libraries into vendor/x86-deps
 
-$(X86_BREW):
-	$(SCRIPTS_DIR)/setup-x86-brew.sh
+# The script pins every version, so a bump edits it -- hence the dependency.
+# The stamp is the script's last act, so a run that died halfway is not taken
+# for a finished one.
+$(X86_DEPS_STAMP): $(SCRIPTS_DIR)/build-x86-deps.sh
+	$(SCRIPTS_DIR)/build-x86-deps.sh
 
 # === GStreamer (winegstreamer's backend, for WMV) ===
 
@@ -93,18 +96,20 @@ WINE_INPUTS := $(SCRIPTS_DIR)/build-proton-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
                $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d9/d3d9.dll) \
                $(wildcard $(CURDIR)/vendor/vkd3d-proton/build.w64/libs/d3d12/d3d12.dll)
 
-$(WINE_STAMP): $(X86_BREW) $(GST_STAMP) $(WINE_INPUTS) | check-proton-src
+$(WINE_STAMP): $(X86_DEPS_STAMP) $(GST_STAMP) $(WINE_INPUTS) | check-proton-src
 	$(SCRIPTS_DIR)/build-proton-x86.sh
 	@touch $@
 
 # vendor/proton-wine is gitignored (laid down from a tarball, not a submodule), so
 # guard the build with a clear message instead of make's cryptic "No rule to make
 # target '.../configure'" when the source tree is absent on a fresh clone.
+# configure.ac, not configure: Valve's tree does not ship a generated configure,
+# and build-proton-x86.sh deletes and regenerates it on every run anyway.
 check-proton-src:
-	@test -f "$(WINE_SRC)/configure" || { \
+	@test -f "$(WINE_SRC)/configure.ac" || { \
 		echo "ERROR: Proton source missing at $(WINE_SRC)"; \
 		echo "       It is gitignored (not a submodule). Lay down the proton-wine"; \
-		echo "       source there first — see the Proton section in CLAUDE.md."; \
+		echo "       source there first — see the base hash in scripts/build-proton-x86.sh."; \
 		exit 1; }
 
 proton-debug:  ## Reinstall Proton keeping PE debug info (for winedbg sessions)
@@ -207,5 +212,5 @@ run: app  ## Build, install and run Whisky
 submodule:  ## Init/update git submodules
 	git submodule update --init --recursive
 
-clean: clean-proton  ## Remove Proton and Xcode build artifacts (not DXMT/DXVK/brew)
+clean: clean-proton  ## Remove Proton and Xcode build artifacts (not DXMT/DXVK/x86-deps)
 	$(XCODEBUILD) clean 2>/dev/null || true

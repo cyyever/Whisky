@@ -12,9 +12,12 @@ WINE_BUILD="${WHISKY_WINE_BUILD:-release}"
 
 echo "=== Building Proton (proton-wine) x86_64 from $WINE_SRC ==="
 
-# Apply the Proton macOS patch series (patches/proton-wine/, base c3007e6f on Valve's
+# Apply the Proton macOS patch series (patches/proton-wine/, base 7fc704ef49c on Valve's
 # bleeding-edge — the only branch Valve still pushes to; proton_11.0 and
-# experimental_11.0 are both older). The reset arg
+# experimental_11.0 are both older). On a fresh machine vendor/proton-wine is laid
+# down from https://codeload.github.com/ValveSoftware/wine/tar.gz/<base> and
+# committed once as a local git tree, so the reset below has something to reset
+# to. Keep this hash in step with every rebase of the series. The reset arg
 # cleans the source first (`git checkout -- .` + `git clean -fdq`), so add-file patches
 # (msync_*.c, server/msync.c, …) re-apply cleanly on a forced rebuild. `git clean -fdq`
 # removes untracked NON-ignored files — patch leftovers, the generated inputs, and stray
@@ -45,18 +48,16 @@ rm -f "$WINE_SRC/configure"
     tools/make_specfiles && \
     autoreconf -f )
 
-export_homebrew_mirrors
-
-if [ ! -f "$X86_BREW" ]; then
-    echo "ERROR: x86_64 Homebrew not found. Run scripts/setup-x86-brew.sh first."
+if [ ! -f "$X86_DEPS/.built" ]; then
+    echo "ERROR: x86_64 libraries not found in $X86_DEPS. Run 'make x86-deps' first."
     exit 1
 fi
 
-X86_PREFIX=$(arch -x86_64 "$X86_BREW" --prefix)
 # Build tools (bison, the mingw-w64 cross-compiler, pkg-config) come from the ARM64
 # brew — they are arch-independent / target PE, so no x86_64 copies are needed. Only
-# the libraries linked into x86_64 Wine (freetype, gnutls, sdl2, gettext/libintl,
-# MoltenVK) must be x86_64, and those are picked up via PKG_CONFIG_PATH below.
+# the libraries linked into x86_64 Wine (freetype, gnutls, SDL2, the Vulkan loader)
+# must be x86_64; build-x86-deps.sh cross-builds those into X86_DEPS, and
+# wine_configure finds them via PKG_CONFIG_PATH.
 ARM_BREW_PREFIX="$(brew --prefix)"
 
 # The reset above KEEPS the gitignored build/ tree, so configure+make below are
@@ -188,25 +189,10 @@ fi
 # chains — plain cp used to materialize each as a full copy (3x libavcodec
 # alone wasted ~28 MB).
 echo "=== Bundling runtime dylibs ==="
-for lib in freetype sdl2 molten-vk gnutls gettext/lib; do
-    LIBDIR="$X86_PREFIX/opt/$lib/lib"
-    if [ -d "$LIBDIR" ]; then
-        cp -Rn "$LIBDIR"/*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
-    fi
-done
-# Also copy top-level lib dylibs. These are brew's link farm: symlinks into
-# ../Cellar/<keg>/..., which would be dangling inside the bundle — materialize
-# those with cp -L. (The keg loop above already copied real files with their
-# intra-directory version-chain symlinks; -n below keeps them.)
-for f in "$X86_PREFIX/lib/"*.dylib; do
-    dest="$INSTALL_DIR/Wine/lib/$(basename "$f")"
-    if [ -e "$dest" ] || [ -L "$dest" ]; then continue; fi
-    if [ -L "$f" ] && [[ "$(readlink "$f")" == */* ]]; then
-        cp -L "$f" "$dest" 2>/dev/null || true
-    else
-        cp -R "$f" "$dest" 2>/dev/null || true
-    fi
-done
+# The x86_64 libraries from build-x86-deps.sh. Their symlinks are all leaf-name
+# version chains within lib/, so cp -R keeps them intact; the install names that
+# still point into vendor/x86-deps are rewritten by the relocation loop below.
+cp -R "$X86_DEPS/lib/"*.dylib "$INSTALL_DIR/Wine/lib/"
 # Minimal x86_64 FFmpeg for winedmo (built by build-ffmpeg-x86.sh)
 cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
 
@@ -253,7 +239,7 @@ if [ -d "$GST_PREFIX/lib" ]; then
         # name while dependents record the real one.
         [ -L "$f" ] && continue
         # Only what came from a bundled build-tree prefix (see bundled_prefixes).
-        # Not `grep "$PROJECT_DIR/"`: X86_BREW_HOME is under PROJECT_DIR too.
+        # Not `grep "$PROJECT_DIR/"`: DXMT's LLVM is under PROJECT_DIR too.
         has_bundled_ref "$f" || continue
         case "$f" in
         */lib/gstreamer-1.0/*)     rp='@loader_path/..' ;;
@@ -281,26 +267,23 @@ fi
 
 # --- KosmicKrisp Vulkan driver (Mesa) loader swap ----------------------------
 # winevulkan dlopens the Vulkan implementation by leaf name: historically
-# "libMoltenVK.dylib", but a Wine configured against the x86 brew vulkan-loader
-# keg uses "libvulkan.1.dylib" instead. Install the real Khronos loader at BOTH
-# names so ICD discovery picks KosmicKrisp up either way. This lives here (not
-# in build-dxvk.sh) because the Wine/lib bundling above just re-copied the
-# brew dylibs — asserting the swap right after keeps every `make proton` correct.
-# Skipped entirely when the KosmicKrisp artifacts are absent (stock MoltenVK
-# stays in place).
+# "libMoltenVK.dylib", but a Wine configured against a Vulkan loader uses
+# "libvulkan.1.dylib" instead. Install the Khronos loader (build-x86-deps.sh)
+# at BOTH names so ICD discovery picks KosmicKrisp up either way. There is no
+# MoltenVK fallback any more: KosmicKrisp is the Vulkan driver, and without
+# its artifacts Wine has no Vulkan at all.
 KK_DYLIB="$PROJECT_DIR/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib"
-VK_LOADER_DIR="$X86_PREFIX/opt/vulkan-loader/lib"
-if [ -f "$KK_DYLIB" ] && [ -d "$VK_LOADER_DIR" ]; then
+if [ -f "$KK_DYLIB" ]; then
     echo "=== Asserting KosmicKrisp Vulkan loader swap ==="
-    # No backup copy: stock MoltenVK is always recoverable from the x86 brew
-    # molten-vk keg. Drop stale backups from older installs.
     rm -f "$INSTALL_DIR/Wine/lib/libMoltenVK.dylib.mvk-stock" \
           "$INSTALL_DIR/Wine/lib/libMoltenVK.dylib.orig"
     # cp -L resolves the libvulkan.1 -> libvulkan.1.x.y symlink to a real file
     # (the bundling above may have left symlinks; replace with the loader).
     for name in libMoltenVK.dylib libvulkan.1.dylib; do
         rm -f "$INSTALL_DIR/Wine/lib/$name"
-        cp -L "$VK_LOADER_DIR/libvulkan.1.dylib" "$INSTALL_DIR/Wine/lib/$name"
+        cp -L "$X86_DEPS/lib/libvulkan.1.dylib" "$INSTALL_DIR/Wine/lib/$name"
+        # After the relocation loop above, so these copies need their own pass.
+        relocate_to_rpath "$INSTALL_DIR/Wine/lib/$name"
     done
 
     # ICD manifest so the loader finds the KosmicKrisp driver.

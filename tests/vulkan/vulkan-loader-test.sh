@@ -26,7 +26,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$PROJECT_DIR/tests/lib/bottles.sh"
 
 WHISKY_LIB="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine"
-VK_HEADERS="$PROJECT_DIR/vendor/homebrew-x86/opt/vulkan-headers/include"
+VK_HEADERS="$PROJECT_DIR/vendor/x86-deps/include"
 PROBE_SRC="$PROJECT_DIR/tests/vulkan/vk-instance-ext-test.c"
 PROBE_EXE="$PROJECT_DIR/tests/vulkan/vk-instance-ext-test.exe"
 
@@ -37,8 +37,8 @@ pass() { echo "pass  $*"; }
 [ -x "$WHISKY_LIB/bin/wine64" ] || { echo "SKIP: no Wine at $WHISKY_LIB (run 'make proton')"; exit 0; }
 command -v i686-w64-mingw32-gcc >/dev/null ||
     { echo "SKIP: mingw-w64 not found (brew install mingw-w64)"; exit 0; }
-[ -d "$VK_HEADERS" ] ||
-    { echo "SKIP: no vulkan headers at $VK_HEADERS (run 'make setup-x86-brew')"; exit 0; }
+[ -f "$VK_HEADERS/vulkan/vulkan.h" ] ||
+    { echo "SKIP: no vulkan headers at $VK_HEADERS (run 'make x86-deps')"; exit 0; }
 
 # Any bottle, and one is enough: the search is per-process, keyed on HOME.
 select_bottles "$@"

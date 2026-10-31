@@ -90,7 +90,8 @@ fastlane/test_output
 # https://github.com/johnno1962/injectionforxcode
 
 iOSInjectionProject/
-vendor/homebrew-x86/
+vendor/x86-deps/
+vendor/llvm15-x86/
 vendor/wine/build*/
 vendor/.wine-installed
 vendor/ffmpeg/

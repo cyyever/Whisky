@@ -25,7 +25,7 @@ stay available. Revisit when a GA macOS fixes the framework.
 
 | file | layer | build & run |
 |---|---|---|
-| `sdl_probe.c` | SDL enumeration under winebus conditions (`plain`/`runloop`/`thread` modes — SDL#11742 said GCController needs a pumped CFRunLoop; enumeration turned out fine in all three) | `clang -arch x86_64 sdl_probe.c -I$X86/include/SDL2 -D_THREAD_SAFE -L$X86/lib -lSDL2 -framework CoreFoundation -Wl,-rpath,$X86/lib` with `X86=vendor/homebrew-x86/opt/sdl2` |
+| `sdl_probe.c` | SDL enumeration under winebus conditions (`plain`/`runloop`/`thread` modes — SDL#11742 said GCController needs a pumped CFRunLoop; enumeration turned out fine in all three) | `clang -arch x86_64 sdl_probe.c -I$X86/include/SDL2 -D_THREAD_SAFE -L$X86/lib -lSDL2 -framework CoreFoundation -Wl,-rpath,$X86/lib` with `X86=vendor/x86-deps` |
 | `sdl_input.c` | SDL *input delivery* (the layer that actually broke). Args: `bg` sets ALLOW_BACKGROUND_EVENTS. Compare `./sdl_input bg` (0 changes) vs `SDL_JOYSTICK_MFI=0 ./sdl_input bg` (input flows) | same as above, no CoreFoundation |
 | `xinput_probe.c` | one-shot XInput + winmm inside Wine (connect status, duplicate-device check — SDL and IOHID backends double-reporting would show 2 winmm joysticks) | `x86_64-w64-mingw32-gcc xinput_probe.c -lwinmm` |
 | `xinput_poll.c` | 8-second XInput poll inside Wine — proves reports flow (A button = `buttons=1000`) | `x86_64-w64-mingw32-gcc xinput_poll.c` |

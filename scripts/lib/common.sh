@@ -6,9 +6,9 @@
 #     source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 #
 # Sourcing has no side effects beyond defining variables and functions: it sets
-# PROJECT_DIR / INSTALL_DIR / X86_BREW(_HOME) and defines the helpers below
-# (export_homebrew_mirrors, apply_patches, require_tools, whisky_ncpu, and the
-# ccache helpers). No subprocesses (brew, git) run until a function is called.
+# PROJECT_DIR / INSTALL_DIR / X86_DEPS and defines the helpers below
+# (apply_patches, require_tools, whisky_ncpu, and the ccache helpers). No
+# subprocesses (brew, git) run until a function is called.
 
 # Repo root, derived from this file's own location (scripts/lib/common.sh).
 # Reliable regardless of the caller's cwd or how it was invoked.
@@ -17,10 +17,10 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Where the build payloads land (Wine, DXVK, DXMT, ProxyChains, version plist).
 INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
 
-# x86_64 Homebrew (installed by setup-x86-brew.sh) — provides the libraries
-# linked into x86_64 Wine. Build tools come from the ARM64 brew.
-X86_BREW_HOME="$PROJECT_DIR/vendor/homebrew-x86"
-X86_BREW="$X86_BREW_HOME/bin/brew"
+# The x86_64 libraries linked into x86_64 Wine (freetype, gnutls, SDL2, the
+# Vulkan loader), cross-built by build-x86-deps.sh. Build tools come from the
+# ARM64 brew; there is no x86_64 Homebrew.
+X86_DEPS="$PROJECT_DIR/vendor/x86-deps"
 
 # Branch maintenance (scripts/proton-branch.sh): when a vendored tree is checked
 # out on WHISKY_PATCH_BRANCH, the patch series is committed one commit per patch
@@ -47,15 +47,6 @@ if [ -z "${DEVELOPER_DIR:-}" ]; then
     fi
 fi
 export DEVELOPER_DIR
-
-# USTC mirrors for Homebrew (git remotes + bottle/api domains). Call before any
-# x86_64 `brew` invocation that may fetch from the network.
-export_homebrew_mirrors() {
-    export HOMEBREW_BREW_GIT_REMOTE=https://mirrors.ustc.edu.cn/brew.git
-    export HOMEBREW_CORE_GIT_REMOTE=https://mirrors.ustc.edu.cn/homebrew-core.git
-    export HOMEBREW_BOTTLE_DOMAIN=https://mirrors.ustc.edu.cn/homebrew-bottles
-    export HOMEBREW_API_DOMAIN=https://mirrors.ustc.edu.cn/homebrew-bottles/api
-}
 
 # Stamp the "Wine builtin DLL" signature into a PE so wineboot treats it as a real
 # builtin. wineboot only mirrors a lib/wine PE into a bottle's system32 — making it
@@ -244,18 +235,17 @@ whisky_link_probe() {
 # ONLY difference is that proton passes --disable-tests and the test build does
 # not. These helpers own that shared block so the two can never drift; each is
 # pure (echoes a value, no side effects) except wine_configure, which cds + runs
-# configure. Callers still keep their own X86_PREFIX/ARM_BREW_PREFIX/CLEAN_PATH
-# where they need them for OTHER steps (dylib bundling, the make PATH, strip).
+# configure. Callers still keep their own ARM_BREW_PREFIX/CLEAN_PATH where they
+# need them for OTHER steps (the make PATH, strip).
 
 # wine_clean_path — echo the PATH for the x86_64 Wine configure+make. bison is
 # keg-only (macOS ships an old one) so its keg bin leads; build tools otherwise
-# come from the ARM64 brew, the x86 brew bin trails (only its linked libraries
-# matter, reached via PKG_CONFIG_PATH in wine_configure), then the system dirs.
+# come from the ARM64 brew, then the system dirs. The x86_64 libraries are
+# reached via PKG_CONFIG_PATH in wine_configure, not PATH.
 wine_clean_path() {
-    local x86_prefix arm_prefix
-    x86_prefix=$(arch -x86_64 "$X86_BREW" --prefix)
+    local arm_prefix
     arm_prefix="$(brew --prefix)"
-    echo "$arm_prefix/opt/bison/bin:$arm_prefix/bin:$x86_prefix/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    echo "$arm_prefix/opt/bison/bin:$arm_prefix/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
 # wine_cc_cmd / wine_cxx_cmd — echo the C/C++ compiler command for the x86_64
@@ -287,8 +277,7 @@ wine_cxx_cmd() { if whisky_ccache_on; then echo "ccache clang++ -arch x86_64"; e
 # NOTE: cds into build_dir; the cwd persists to the caller's subsequent `make`.
 wine_configure() {
     local build_dir="$1"; shift
-    local x86_prefix arm_prefix clean_path cc_cmd cxx_cmd
-    x86_prefix=$(arch -x86_64 "$X86_BREW" --prefix)
+    local arm_prefix clean_path cc_cmd cxx_cmd
     arm_prefix="$(brew --prefix)"
     clean_path="$(wine_clean_path)"
     cc_cmd="$(wine_cc_cmd)"
@@ -304,11 +293,11 @@ wine_configure() {
         CC="$cc_cmd" \
         CXX="$cxx_cmd" \
         PKG_CONFIG="$arm_prefix/bin/pkg-config" \
-        PKG_CONFIG_PATH="$x86_prefix/lib/pkgconfig:$x86_prefix/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig:$PROJECT_DIR/vendor/gstreamer-x86/lib/pkgconfig" \
-        PKG_CONFIG_LIBDIR="$x86_prefix/lib/pkgconfig:$x86_prefix/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig:$PROJECT_DIR/vendor/gstreamer-x86/lib/pkgconfig" \
-        SDL2_CFLAGS="-I$x86_prefix/include/SDL2 -D_THREAD_SAFE" \
-        SDL2_LIBS="-L$x86_prefix/lib -lSDL2" \
-        LDFLAGS="-L$x86_prefix/lib -L$x86_prefix/opt/molten-vk/lib" \
+        PKG_CONFIG_PATH="$X86_DEPS/lib/pkgconfig:$X86_DEPS/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig:$PROJECT_DIR/vendor/gstreamer-x86/lib/pkgconfig" \
+        PKG_CONFIG_LIBDIR="$X86_DEPS/lib/pkgconfig:$X86_DEPS/share/pkgconfig:$PROJECT_DIR/vendor/ffmpeg-x86/lib/pkgconfig:$PROJECT_DIR/vendor/gstreamer-x86/lib/pkgconfig" \
+        SDL2_CFLAGS="-I$X86_DEPS/include/SDL2 -D_THREAD_SAFE" \
+        SDL2_LIBS="-L$X86_DEPS/lib -lSDL2" \
+        LDFLAGS="-L$X86_DEPS/lib" \
         `# NOTE: no -O here, so the unix side (ntdll.so, winemac.drv.so, ...) builds` \
         `# unoptimised: setting CFLAGS at all suppresses autoconf's default -g -O2,` \
         `# and nothing puts it back. The PE side still gets -O2 from Wine's own` \
@@ -316,8 +305,8 @@ wine_configure() {
         `# an optimised build makes sample(1) stacks much harder to read. Add -O2` \
         `# once that closes, and re-run scripts/test-msync.sh afterwards, since -O2` \
         `# changes atomics scheduling and can shake out races -O0 hides.` \
-        CFLAGS="-I$x86_prefix/include -I$x86_prefix/opt/freetype/include/freetype2 -I$x86_prefix/opt/molten-vk/include" \
-        CPPFLAGS="-I$x86_prefix/include -I$x86_prefix/opt/freetype/include/freetype2 -I$x86_prefix/opt/molten-vk/include" \
+        CFLAGS="-I$X86_DEPS/include -I$X86_DEPS/include/freetype2" \
+        CPPFLAGS="-I$X86_DEPS/include -I$X86_DEPS/include/freetype2" \
         ../configure \
             --enable-archs=i386,x86_64 \
             --with-vulkan \
@@ -339,12 +328,12 @@ wine_configure() {
 }
 
 # The build-tree prefixes whose libraries get copied into Wine/lib. Scope for
-# relocate_to_rpath below, and it must stay this narrow: vendor/homebrew-x86 is
-# under PROJECT_DIR too, so matching on "$PROJECT_DIR/" rewrites brew
-# dependencies as well. That broke DXMT -- winemetal.so links llvm@15's
-# libunwind.1.dylib, llvm@15 is keg-only so nothing bundles it, and the
-# rewritten @rpath/libunwind.1.dylib resolved nowhere. The module failed to
-# load and took D3D11 with it, silently.
+# relocate_to_rpath below, and it must stay this narrow: the LLVM that DXMT
+# builds against is under PROJECT_DIR too (vendor/llvm15-x86), so matching on
+# "$PROJECT_DIR/" rewrites references into it as well. That broke DXMT once,
+# with the x86 brew's llvm@15 -- winemetal.so linked its libunwind.1.dylib,
+# nothing bundles that, and the rewritten @rpath/libunwind.1.dylib resolved
+# nowhere. The module failed to load and took D3D11 with it, silently.
 # One per line, and every reader consumes it with `while IFS= read -r`: joined
 # with spaces and word-split by $(...) it breaks on a checkout path containing a
 # space -- "/Users/me/My Code/Whisky/vendor/..." becomes the tokens
@@ -352,7 +341,7 @@ wine_configure() {
 # everything under the home directory, including the brew keg this scope exists
 # to exclude. That is the DXMT breakage above, reintroduced by a quoting bug.
 bundled_prefixes() {
-    printf '%s\n' "$PROJECT_DIR/vendor/gstreamer-x86/" "$PROJECT_DIR/vendor/ffmpeg-x86/"
+    printf '%s\n' "$PROJECT_DIR/vendor/gstreamer-x86/" "$PROJECT_DIR/vendor/ffmpeg-x86/" "$X86_DEPS/"
 }
 
 # Point one Mach-O at the copies bundled in Wine/lib instead of the build tree:

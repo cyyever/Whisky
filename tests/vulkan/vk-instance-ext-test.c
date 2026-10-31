@@ -1,7 +1,7 @@
 /*
  * vk-instance-ext-test — what instance extensions does winevulkan actually offer?
  *
- * Build: i686-w64-mingw32-gcc -O2 -I../../vendor/homebrew-x86/opt/vulkan-headers/include \
+ * Build: i686-w64-mingw32-gcc -O2 -I../../vendor/x86-deps/include \
  *            -o vk-instance-ext-test.exe vk-instance-ext-test.c
  *        (x86_64-w64-mingw32-gcc for the 64-bit twin; the 32-bit one is what
  *         matters for a 32-bit game. vulkan-loader-test.sh builds it for you.)

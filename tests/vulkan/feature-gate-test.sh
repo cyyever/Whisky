@@ -22,11 +22,11 @@ set -uo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROBE="$PROJECT_DIR/tests/vulkan/feature-gate-test"
 SRC="$PROJECT_DIR/tests/vulkan/feature-gate-test.c"
-X86="$PROJECT_DIR/vendor/homebrew-x86"
-VKH="$X86/opt/vulkan-headers/include"
-VKL="$X86/opt/vulkan-loader/lib"
+X86="$PROJECT_DIR/vendor/x86-deps"
+VKH="$X86/include"
+VKL="$X86/lib"
 
-[ -d "$VKH" ] || { echo "SKIP: no x86 vulkan-headers (scripts/setup-x86-brew.sh)"; exit 0; }
+[ -f "$VKH/vulkan/vulkan.h" ] || { echo "SKIP: no x86 vulkan-headers (make x86-deps)"; exit 0; }
 ICD=$(find "$PROJECT_DIR/vendor/kosmickrisp" -name '*icd*.json' 2>/dev/null | head -1)
 [ -n "$ICD" ] || { echo "SKIP: no KosmicKrisp ICD (scripts/build-kosmickrisp-x86.sh)"; exit 0; }
 

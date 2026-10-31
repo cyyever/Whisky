@@ -24,7 +24,7 @@ set -e
 # --disable-tests, so this self-corrects (the shipping install is untouched
 # either way — this script never runs `make install`).
 #
-# Env/toolchain (env -i clean room, CLEAN_PATH, X86_PREFIX, PKG_CONFIG_PATH,
+# Env/toolchain (env -i clean room, CLEAN_PATH, X86_DEPS, PKG_CONFIG_PATH,
 # SDL2/LDFLAGS/CFLAGS, arch -x86_64) is the SAME as the shipping
 # build-proton-x86.sh, MINUS --disable-tests. That shared block lives in
 # wine_configure (lib/common.sh) so the two can never drift; the ONLY divergence
@@ -45,8 +45,8 @@ if [ ! -d "$BUILD_DIR" ] || [ ! -f "$BUILD_DIR/config.status" ]; then
     exit 1
 fi
 
-if [ ! -f "$X86_BREW" ]; then
-    echo "ERROR: x86_64 Homebrew not found. Run scripts/setup-x86-brew.sh first." >&2
+if [ ! -f "$X86_DEPS/.built" ]; then
+    echo "ERROR: x86_64 libraries not found in $X86_DEPS. Run 'make x86-deps' first." >&2
     exit 1
 fi
 

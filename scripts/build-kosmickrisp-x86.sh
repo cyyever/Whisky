@@ -16,7 +16,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 whisky_ccache_guard   # honor WHISKY_CCACHE=0 for the meson/clang build
 MESA_SRC="$PROJECT_DIR/vendor/mesa"
 OUT_DIR="$PROJECT_DIR/vendor/kosmickrisp"
-X86_PREFIX="$X86_BREW_HOME"
 ARM_BREW_PREFIX="$(brew --prefix)"
 
 # ARM brew meson/ninja (~/.local/bin has a meson with a broken interpreter — keep it
@@ -104,7 +103,11 @@ EOF
 
 echo "=== Phase 2: x86_64 KosmicKrisp driver ==="
 export PATH="$TOOLS_BIN:$PATH"
-export PKG_CONFIG_PATH="$X86_PREFIX/lib/pkgconfig:$X86_PREFIX/share/pkgconfig"
+# LIBDIR, not PATH: PKG_CONFIG_PATH only puts these first, and anything missing
+# from them then resolves from the ARM brew -- an arm64 spirv-tools that the
+# x86_64 kk_clc cannot link ("_spvTextDestroy ... not found for architecture
+# x86_64"). With LIBDIR an absent x86_64 library fails at configure instead.
+export PKG_CONFIG_LIBDIR="$X86_DEPS/lib/pkgconfig:$X86_DEPS/share/pkgconfig"
 meson_args=( "$DRIVER_BUILD" "$MESA_SRC" --cross-file "$CROSS_FILE"
     -Dbuildtype=release -Dplatforms=macos
     -Dvulkan-drivers=kosmickrisp -Dgallium-drivers= -Dopengl=false
@@ -131,8 +134,8 @@ mkdir -p "$OUT_DIR"
 DYLIB="$DRIVER_BUILD/src/kosmickrisp/vulkan/libvulkan_kosmickrisp.dylib"
 cp "$DYLIB" "$OUT_DIR/"
 # Homebrew does not always leave an unversioned python3 symlink in bin (this
-# machine has only python3.12 and python3.14), and PATH here is the x86 brew,
-# so resolve an interpreter instead of hardcoding one. Any python3 will do --
+# machine has only python3.12 and python3.14), so resolve an interpreter
+# instead of hardcoding one. Any python3 will do --
 # this only reads one key out of one JSON file.
 PY=""
 for cand in /opt/homebrew/bin/python3 /opt/homebrew/bin/python3.14 \
@@ -154,4 +157,3 @@ EOF
 echo "=== Done ==="
 file "$OUT_DIR/libvulkan_kosmickrisp.dylib"
 echo "MTL4 symbol references: $(strings "$OUT_DIR/libvulkan_kosmickrisp.dylib" | grep -c MTL4 || true)"
-echo "Test: VK_DRIVER_FILES=$OUT_DIR/kosmickrisp_icd.x86_64.json arch -x86_64 $X86_PREFIX/opt/vulkan-tools/bin/vulkaninfo --summary"

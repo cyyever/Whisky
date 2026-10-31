@@ -35,7 +35,6 @@ GST_SRC="$PROJECT_DIR/vendor/gstreamer"
 OUT_DIR="$PROJECT_DIR/vendor/gstreamer-x86"
 BUILD_DIR="$GST_SRC/build-x86_64"
 FFMPEG_PREFIX="$PROJECT_DIR/vendor/ffmpeg-x86"
-X86_PREFIX="$X86_BREW_HOME"
 ARM_BREW_PREFIX="$(brew --prefix)"
 
 [ -f "$GST_SRC/meson.build" ] || {
@@ -85,22 +84,7 @@ endian = 'little'
 
 [properties]
 needs_exe_wrapper = false
-pkg_config_libdir = ['$FFMPEG_PREFIX/lib/pkgconfig', '$X86_PREFIX/lib/pkgconfig', '$X86_PREFIX/share/pkgconfig']
-
-# So glib's \`dependency('intl')\` finds the brew gettext. gettext ships no .pc,
-# meson looks for libintl.h and the library directly, and pkg-config paths alone
-# do not help it. Without this glib falls back to its proxy-libintl subproject,
-# which installs a libintl.8.dylib exporting g_libintl_* -- the same file name
-# as the brew gettext that freetype and gnutls link, different ABI. Only one can
-# sit in Wine/lib, and whichever loses takes every GStreamer plugin with it:
-# "Symbol not found: _g_libintl_bind_textdomain_codeset".
-[built-in options]
-c_args = ['-I$X86_PREFIX/include']
-cpp_args = ['-I$X86_PREFIX/include']
-objc_args = ['-I$X86_PREFIX/include']
-c_link_args = ['-L$X86_PREFIX/lib']
-cpp_link_args = ['-L$X86_PREFIX/lib']
-objc_link_args = ['-L$X86_PREFIX/lib']
+pkg_config_libdir = ['$FFMPEG_PREFIX/lib/pkgconfig', '$X86_DEPS/lib/pkgconfig', '$X86_DEPS/share/pkgconfig']
 EOF
 
 meson_args=( "$BUILD_DIR" "$GST_SRC"
@@ -123,11 +107,12 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     # cost exactly that, and the symptom named zlib's cousin, not the scanner.
     -Dgstreamer:tools=enabled
     # glib's wrap otherwise builds proxy-libintl, which installs its own
-    # libintl.8.dylib exporting g_libintl_* -- the same file name as the brew
-    # gettext that freetype and gnutls link, with a different ABI. Only one can
-    # sit in Wine/lib, and whichever loses takes every GStreamer plugin with it
-    # ("Symbol not found: _g_libintl_bind_textdomain_codeset"). Nothing here
-    # needs translated GLib messages, so the dependency goes away instead.
+    # libintl.8.dylib exporting g_libintl_* -- the same file name as the x86
+    # brew gettext that freetype and gnutls used to link, with a different
+    # ABI; only one could sit in Wine/lib, and whichever lost took every
+    # GStreamer plugin with it ("Symbol not found:
+    # _g_libintl_bind_textdomain_codeset"). Nothing links a libintl now, and
+    # nothing here needs translated GLib messages, so it stays off.
     -Dglib:nls=disabled
     -Dwebrtc=disabled -Dtls=disabled -Dlibnice=disabled
     # asfdemux is GPL-gated in gst-plugins-ugly.

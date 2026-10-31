@@ -21,7 +21,7 @@ Download the latest build from this fork's
 ## Build
 
 ```bash
-make setup-x86-brew  # one-time: x86_64 Homebrew + deps
+make x86-deps        # one-time: cross-build Wine's x86_64 libraries
 make proton          # build proton-wine
 make dxmt            # build DXMT (Metal D3D11), install as Wine builtin
 make dxvk            # build DXVK d3d9.dll

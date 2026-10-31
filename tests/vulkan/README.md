@@ -131,16 +131,16 @@ gone rather than one that is merely waiting.
 ## Build & run
 
 ```bash
-X=vendor/homebrew-x86
+X=vendor/x86-deps
 # Regenerate SPIR-V headers only if you edit the shaders:
 #   glslangValidator -V --vn vert_spv -o tri_vert.h tri.vert
 #   glslangValidator -V --vn frag_spv -o tri_frag.h tri.frag
 clang -arch x86_64 tests/vulkan/vk_triangle.c -o /tmp/vk_triangle \
-    -I$X/opt/vulkan-headers/include -Itests/vulkan \
-    -L$X/opt/vulkan-loader/lib -lvulkan
+    -I$X/include -Itests/vulkan \
+    -L$X/lib -lvulkan
 VK_DRIVER_FILES=vendor/kosmickrisp/kosmickrisp_icd.x86_64.json \
-    DYLD_LIBRARY_PATH=$X/opt/vulkan-loader/lib arch -x86_64 /tmp/vk_triangle
+    DYLD_LIBRARY_PATH=$X/lib arch -x86_64 /tmp/vk_triangle
 ```
 
 Needs the x86_64 KosmicKrisp driver built (`scripts/build-kosmickrisp-x86.sh`)
-and the x86 Homebrew Vulkan headers/loader.
+and the x86_64 Vulkan headers/loader (`make x86-deps`).

@@ -24,13 +24,13 @@
 set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VKH="$PROJECT_DIR/vendor/homebrew-x86/opt/vulkan-headers/include"
-VKL="$PROJECT_DIR/vendor/homebrew-x86/opt/vulkan-loader/lib"
+VKH="$PROJECT_DIR/vendor/x86-deps/include"
+VKL="$PROJECT_DIR/vendor/x86-deps/lib"
 ICD="$PROJECT_DIR/vendor/kosmickrisp/kosmickrisp_icd.x86_64.json"
 SRC="$PROJECT_DIR/tests/vulkan/vk-present-probe.m"
 EXE="$PROJECT_DIR/tests/vulkan/vk-present-probe"
 
-[ -d "$VKH" ] || { echo "SKIP: no x86 vulkan-headers (scripts/setup-x86-brew.sh)"; exit 0; }
+[ -f "$VKH/vulkan/vulkan.h" ] || { echo "SKIP: no x86 vulkan-headers (make x86-deps)"; exit 0; }
 [ -f "$ICD" ] || { echo "SKIP: no KosmicKrisp ICD (scripts/build-kosmickrisp-x86.sh)"; exit 0; }
 
 if [ ! -x "$EXE" ] || [ "$SRC" -nt "$EXE" ]; then

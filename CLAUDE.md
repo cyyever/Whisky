@@ -12,19 +12,19 @@ Keep this file high-level. Details live in `docs/`, the build scripts, `patches/
 
 ## Build
 ```bash
-make setup-x86-brew   # one-time: x86_64 Homebrew + deps
+make x86-deps         # one-time: cross-build Wine's x86_64 libraries (freetype, gnutls, SDL2, Vulkan loader)
 make gstreamer        # x86_64 GStreamer for winegstreamer (WMV); make proton needs it
 make proton           # build + install Proton (applies patches/proton-wine/*)
-make dxmt             # DXMT builtin (needs full Xcode + llvm@15)
+make dxmt             # DXMT builtin (needs full Xcode; builds its x86_64 LLVM 15 on first run)
 make dxvk             # DXVK d3d9.dll
 make app / make run   # build / run the app
 ```
-Fresh-machine order: ARM brew deps → `make setup-x86-brew` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` (builds GStreamer first — Wine is configured `--with-gstreamer` and configure hard-errors without it) → `make dxmt` / `make dxvk`. The scripts own the decisions.
+Fresh-machine order: ARM brew deps (`autoconf automake bison cmake meson ninja nasm pkg-config mingw-w64 ccache llvm libclc spirv-llvm-translator spirv-tools`, plus `mako pyyaml` for brew's python3) → Rosetta 2 → `vendor/proton-wine` at the base hash in `scripts/build-proton-x86.sh` → `make x86-deps` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` (builds GStreamer first — Wine is configured `--with-gstreamer` and configure hard-errors without it) → `make dxmt` / `make dxvk`. The scripts own the decisions.
 
 ## Key paths
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`
 - Bottles: `~/Library/Containers/com.isaacmarovitz.Whisky/Bottles/`
-- x86 brew: `vendor/homebrew-x86/` (gitignored). Build scripts: `scripts/`.
+- x86_64 libraries: `vendor/x86-deps/` (gitignored), cross-built by the arm64 clang with `-arch x86_64` — there is no x86_64 Homebrew. Build scripts: `scripts/`.
 
 ## Detailed docs
 - Proton migration + per-patch notes → `docs/proton-migration.md`
