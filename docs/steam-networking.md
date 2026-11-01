@@ -6,7 +6,7 @@ load the store/CDN yet stay **`[Logged Off]`**. This note explains why and what 
 > **Read this first.** As of 2026-08-07 Steam logs in fully here with **no proxy and
 > no TUN** (`RecvMsgClientLogOnResponse 'OK'`, full UI). The long-standing
 > "login is blocked, the fix is a system TUN" conclusion was reached *before* the
-> DXMT child-HWND fix (`docs/steam-webhelper.md` §0) and was never re-verified; the
+> former child-HWND graphics fix (`docs/steam-webhelper.md` §0) and was never re-verified; the
 > actual blocker was that bug, not the network. What follows is architecture plus
 > advice for a genuinely filtering network — not a prerequisite for logging in.
 

@@ -4,7 +4,7 @@
  * Chromium/CEF under Wine never paints: its GPU layer fails at
  * `eglCreateWindowSurface` (EGL_BAD_ALLOC, after SwapChain11::reset returns
  * 0x80004005). tests/dxgi-swapchain-test.c already proved every DXGI call ANGLE
- * makes succeeds on DXMT at feature level 11_0, so the fault is inside ANGLE's
+ * makes succeeded with the former D3D11 provider at feature level 11_0; inspect ANGLE's
  * own libGLESv2 — but Chromium is a poor place to look at it from.
  *
  * This makes the same EGL calls directly against the ANGLE DLLs already shipped

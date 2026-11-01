@@ -117,7 +117,7 @@ index 45d7a3f7466..3a5b69081f9 100644
   *	open_app_key
   *
 @@ -420,6 +474,36 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
- #endif
+         d3d12W, d3d12coreW,
      };
  
 +#ifdef __APPLE__
@@ -156,7 +156,7 @@ index 45d7a3f7466..3a5b69081f9 100644
 @@ -511,33 +595,15 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
       * the app dies on STATUS_DLL_NOT_FOUND with the DLL sitting right there.
       * WINEDLLOVERRIDES still wins: it is set per run, so it cannot go stale, and
-      * it is the lever for A/B-ing a provider (e.g. wined3d vs DXMT). */
+      * it is the lever for A/B-ing a provider (e.g. wined3d vs DXVK). */
 -    for (i = 0; i < ARRAY_SIZE(builtin_onlyW); i++)
 -        if (!wcsicmp( basename, builtin_onlyW[i] )) break;
 +    if ((ret = forced_load_order( nt_name, module, basename, builtin_onlyW,

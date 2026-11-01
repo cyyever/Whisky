@@ -24,8 +24,8 @@ frontend            SwiftUI app (macOS, today)  ┐ Qt/wx (macOS+FreeBSD, later)
 
 platform-<os>       concrete conformances to the Core seam
   macOS:   SystemProxy(CFNetwork), Rosetta2(sysctl), bundled-Wine layout + DYLD/
-           KosmicKrisp env, Metal/DXMT
-  freebsd: env-proxy, uname, PATH-Wine + LD_LIBRARY_PATH, native Vulkan (no DXMT)
+           KosmicKrisp env
+  freebsd: env-proxy, uname, PATH-Wine + LD_LIBRARY_PATH, native Vulkan
 
 core                portable: models, PE/lnk parsing, Wine/Steam orchestration,
                     Steam single-instance guard (pkill/pgrep), file watching
@@ -113,9 +113,9 @@ read a shortcut's target, so this parse stays in core.
 
 - **Rosetta 2 is macOS-only.** FreeBSD/x86 needs no translation; FreeBSD/ARM has no
   equivalent — a hard capability gap.
-- **DXMT = Metal = macOS-only.** FreeBSD renders D3D11/10 via wined3d or a Vulkan
-  path, not DXMT.
-- **KosmicKrisp (Metal-on-Vulkan) is macOS-only.** BSD uses native Mesa Vulkan.
+- **DXVK / vkd3d-proton** use Vulkan on both hosts; driver capabilities must be
+  validated separately on each platform.
+- **KosmicKrisp (Vulkan-on-Metal) is macOS-only.** BSD uses native Mesa Vulkan.
 - **Proxy:** CFNetwork on macOS; env/config on BSD.
 
 ## Staged path

@@ -1,45 +1,53 @@
-# D3D12-on-KosmicKrisp probes
+# D3D12 on KosmicKrisp
 
-Minimal headless D3D12 programs that map how far the **open** D3D12 path
-(vkd3d-proton → winevulkan → KosmicKrisp/Metal 4, under Rosetta) gets. Re-run
-after bumping `vendor/mesa` (KosmicKrisp) to see whether a wall has lifted.
+The optional path is vkd3d-proton → winevulkan → KosmicKrisp → Metal.
+Whisky packages win64 `d3d12.dll` and `d3d12core.dll` as Wine builtins. It does
+not enable D3D12 in the default build or claim real-game compatibility.
 
-| Probe | Exercises | Status (2026-07-18, Mesa 26.3-dev) |
-|-------|-----------|-------------------------------------|
-| `d3d12_smoke.c` | device + command queue + fence | ✅ PASS |
-| `d3d12_compute.c` | DXBC `cs_5_0` → compute PSO → root UAV → dispatch → readback | ✅ PASS (correct results) |
-| `d3d12_triangle.c` | VS/PS → offscreen RT → draw → readback | ✅ PASS (green) |
-
-**Basic D3D12 device creation, compute, and graphics all work** through
-vkd3d-proton → winevulkan → KosmicKrisp → Metal 4 under Rosetta, with the two
-device-init gates relaxed by `patches/vkd3d-proton/0001`. Device creation still
-warns that `VK_EXT_dynamic_rendering_unused_attachments` is missing (relevant
-only to multi/mismatched-RT cases, not these probes). What remains untested is
-real-game complexity: multiple render targets, depth/stencil, geometry shaders
-and transform feedback (Metal-hardware gaps), tessellation, bindless, etc.
-
-> Note: an earlier version of `d3d12_triangle` rendered black — that was a bug
-> *in the probe* (it left `RenderTargetWriteMask = 0`, masking all color
-> output), not in KosmicKrisp or vkd3d. Fixed by setting
-> `D3D12_COLOR_WRITE_ENABLE_ALL`. The `tests/vulkan/` control confirmed KK's
-> graphics were fine all along.
-
-Device creation itself needs two vkd3d-proton gates made non-fatal —
-`patches/vkd3d-proton/0001-optional-features-kosmickrisp.patch`.
-
-## Build & run
-
-```bash
-# 1. Build vkd3d-proton (win64) with the KosmicKrisp patch:
-git clone --recurse-submodules https://github.com/HansKristian-Work/vkd3d-proton.git vendor/vkd3d-proton
-git -C vendor/vkd3d-proton apply "$PWD/patches/vkd3d-proton/0001-optional-features-kosmickrisp.patch"
-PATH=/opt/homebrew/bin:/usr/bin:/bin meson setup vendor/vkd3d-proton/build.w64 \
-    --cross-file vendor/vkd3d-proton/build-win64.txt --buildtype release
-PATH=/opt/homebrew/bin:/usr/bin:/bin ninja -C vendor/vkd3d-proton/build.w64
-
-# 2. Run the probes (needs a bottle + the KosmicKrisp loader swap in Wine/lib):
-tests/d3d12/run.sh [bottle-dir]
+```sh
+make vkd3d           # fetch pinned source + submodules, build and install the pair
+make test-d3d12      # build/install as needed, then run the installed-provider tests
+# After building, rerun only the tests:
+tests/d3d12/run.sh
 ```
 
-The probes shell-compile their HLSL at runtime via Wine's builtin
-`d3dcompiler_47` (DXBC), so no `dxc`/DXIL toolchain is required.
+The revision is pinned in `scripts/lib/vkd3d.sh`. An existing source tree at a
+different revision is rejected instead of reset. Local adaptations live in
+`patches/vkd3d-proton/`. `make vkd3d` builds the complete pair before invoking `make proton`, so it
+can recover from an interrupted partial build. `make proton` restores both DLLs
+after reinstalling Wine and rejects partial artifacts before replacing the
+installation.
+
+The runner checks installed DLL provenance, creates a disposable prefix, and
+uses the normal builtin load order, without native overrides or app-local DLL
+copies. Each process has a timeout; crashes, nonzero exits, missing success
+markers, and wrong GPU results fail the suite. Logs remain in `.build/run.*`.
+The prefix is removed after its wineserver stops; user bottles are untouched.
+
+| Probe | Checks |
+| --- | --- |
+| smoke | Device, command queue, fence completion |
+| compute | DXBC compute dispatch, root raw UAV, all 64 output values |
+| triangle | Fullscreen draw, all pixels including alpha |
+| mrt | Two simultaneous render targets, green and blue pixel readbacks |
+| depth | Green draw writes depth; equal-depth red draw must fail LESS |
+| stencil | Matching reference draws green; mismatched red draw must fail EQUAL |
+
+Shaders are compiled with Wine's `d3dcompiler_47` to DXBC. This does not test
+DXIL/SM6, bindless resources, geometry/tessellation shaders, stream output,
+presentation, or real games. The texel-buffer alignment relaxation in the local
+patch remains experimental; passing these probes does not validate that path.
+
+Historical smoke/compute/triangle results predate the current checkout. Current
+results should be taken from a fresh run, not inferred from those old records.
+
+## Validation on 2026-11-01
+
+The pinned vkd3d-proton build and the Wine rebuild/install completed. All twelve
+DXVK/vkd3d-proton DLLs still matched their stamped build artifacts after Wine's
+reinstall. The D3D12 probes compiled with `-Wall -Werror`.
+
+Runtime execution was blocked before the first probe: wineserver could not bind
+its local IPC socket in the execution sandbox (`Operation not permitted`). No
+current GPU pass result is claimed for the six cases. Run `make test-d3d12` and
+`tests/loadorder/run.sh` from a normal macOS terminal to complete runtime validation.

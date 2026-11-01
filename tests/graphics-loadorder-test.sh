@@ -4,8 +4,8 @@
 # builtins we ship.
 #
 # This tree provides d3d9/d3d8/d3d11/d3d10core/dxgi (DXVK) and vulkan-1
-# (winevulkan) as Wine *builtins* (winemetal is DXMT's, no longer shipped, but
-# patch 0017 still lists it), and patch 0017 resolves those
+# (winevulkan), plus optional d3d12/d3d12core (vkd3d-proton), as Wine
+# *builtins*. Patch 0017 resolves those
 # basenames to LO_BUILTIN ahead of the DllOverrides registry. Two kinds of
 # leftover state used to defeat that, and both were written by the same retired
 # feature -- Whisky's old per-game DXVK install, which dropped a copy of
@@ -37,8 +37,8 @@ WINE_LIB="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/W
 
 # The modules patch 0017 owns. Registry names carry no .dll extension; the file
 # check only applies to the ones a game would ship beside its .exe.
-MODULES=(d3d9 d3d8 d3d11 d3d10core dxgi vulkan-1 winemetal)
-DLLS=(d3d9.dll d3d8.dll d3d11.dll d3d10core.dll dxgi.dll)
+MODULES=(d3d9 d3d8 d3d11 d3d10core dxgi vulkan-1 d3d12 d3d12core)
+DLLS=(d3d9.dll d3d8.dll d3d11.dll d3d10core.dll dxgi.dll d3d12.dll d3d12core.dll)
 
 if [ ! -d "$WINE_LIB/x86_64-windows" ]; then
     echo "SKIP: no Wine installed at $WINE_LIB (run 'make proton')"

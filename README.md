@@ -24,6 +24,8 @@ Download the latest build from this fork's
 make x86-deps        # one-time: cross-build Wine's x86_64 libraries
 make proton          # build proton-wine
 make dxvk            # build DXVK (D3D9 + D3D11), install as Wine builtins
+make vkd3d           # optional D3D12 (vkd3d-proton; real games unverified)
+make test-d3d12      # test the installed D3D12 provider
 make app             # build the Whisky app (or: make run)
 ```
 
@@ -39,6 +41,7 @@ notes on Steam, D3D9/DXVK, Unity fullscreen, and controllers.
 
 - [proton-wine](https://github.com/ValveSoftware/wine) by Valve, and [WineHQ](https://www.winehq.org)
 - [DXVK](https://github.com/doitsujin/dxvk) by doitsujin
+- [vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton) for optional D3D12
 - [KosmicKrisp / Mesa](https://gitlab.freedesktop.org/mesa/mesa) by LunarG and the Mesa project
 - Built on the original Whisky by Isaac Marovitz and contributors.
 

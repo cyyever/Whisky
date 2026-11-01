@@ -9,11 +9,9 @@ set -e
 # through winevulkan on KosmicKrisp.
 #
 # d3d8 is a thin wrapper over DXVK's d3d9 (it calls Direct3DCreate9 from d3d9.dll),
-# and d3d10core over its d3d11, so each ships with the DLL it wraps. D3D11 used to
-# be DXMT's (Metal directly); it moved here once KosmicKrisp exposed geometryShader.
-# Known gap: KosmicKrisp has no transform feedback, so a stream-output shader gets
-# DXGI_ERROR_INVALID_CALL -- DXMT emulated the vertex-shader case of that, DXVK
-# does not.
+# and d3d10core over its d3d11, so each ships with the DLL it wraps.
+# Known gap: KosmicKrisp has no transform feedback, so stream-output shaders
+# cannot use that Vulkan extension.
 # Must run AFTER `make proton`, which rebuilds Wine/lib; build-proton-x86.sh
 # restores these builtins from the build trees, so the order only matters on the
 # first build.
@@ -31,8 +29,8 @@ require_tools meson ninja i686-w64-mingw32-gcc x86_64-w64-mingw32-gcc
 
 echo "=== Building DXVK from $DXVK_SRC ==="
 
-# Apply out-of-tree DXVK patches (MoltenVK adaptations), kept as files so the
-# submodule stays clean. Idempotent: skip a patch that is already applied,
+# Apply out-of-tree DXVK patches (KosmicKrisp adaptations), tracked in the
+# parent repository. Applying them makes the submodule worktree dirty. Idempotent: skip a patch that is already applied,
 # fail loudly on conflicts.
 apply_patches "$DXVK_SRC" "$PROJECT_DIR/patches/dxvk" DXVK
 

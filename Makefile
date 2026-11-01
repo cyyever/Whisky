@@ -34,7 +34,7 @@ CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALL
 .NOTPARALLEL:
 
 .PHONY: all help x86-deps proton proton-debug clean-proton \
-        gstreamer dxvk vkd3d proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
+        gstreamer dxvk vkd3d test-d3d12 proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -94,7 +94,9 @@ WINE_INPUTS := $(SCRIPTS_DIR)/build-proton-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
                $(wildcard $(CURDIR)/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib) \
                $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d9/d3d9.dll) \
                $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d11/d3d11.dll) \
-               $(wildcard $(CURDIR)/vendor/vkd3d-proton/build.w64/libs/d3d12/d3d12.dll)
+               $(SCRIPTS_DIR)/lib/vkd3d.sh \
+               $(wildcard $(CURDIR)/vendor/vkd3d-proton/build.w64/libs/d3d12/d3d12.dll) \
+               $(wildcard $(CURDIR)/vendor/vkd3d-proton/build.w64/libs/d3d12core/d3d12core.dll)
 
 $(WINE_STAMP): $(X86_DEPS_STAMP) $(GST_STAMP) $(WINE_INPUTS) | check-proton-src
 	$(SCRIPTS_DIR)/build-proton-x86.sh
@@ -127,10 +129,15 @@ dxvk: proton  ## Build DXVK d3d9/d3d8/d3d11/d3d10core/dxgi (win32 + win64) as Wi
 
 # === vkd3d-proton (D3D12 on KosmicKrisp) ===
 
-# Not part of `all`: D3D12 is not known to render here. Device creation works,
-# nothing has been drawn. Build it deliberately, not by default.
-vkd3d: proton  ## Build vkd3d-proton d3d12.dll (win64) and install as the Wine builtin
-	$(SCRIPTS_DIR)/build-vkd3d.sh
+# D3D12 is opt-in: basic rendering has worked, real games remain unverified.
+# test-d3d12 validates the actual installed builtins in a disposable prefix.
+vkd3d:  ## Fetch pinned vkd3d-proton and install d3d12/d3d12core (win64)
+	$(SCRIPTS_DIR)/build-vkd3d.sh --build-only
+	$(MAKE) --no-print-directory proton
+	$(SCRIPTS_DIR)/build-vkd3d.sh --install-only
+
+test-d3d12: vkd3d  ## Test installed D3D12 builtins in a disposable prefix
+	$(CURDIR)/tests/d3d12/run.sh
 
 proxychains:  ## Build x86_64 proxychains-ng into Libraries/ProxyChains (routes Steam through the system SOCKS proxy)
 	$(SCRIPTS_DIR)/build-proxychains.sh

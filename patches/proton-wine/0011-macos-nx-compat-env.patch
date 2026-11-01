@@ -1,11 +1,12 @@
-Subject: ntdll: keep DEP on for legacy images by default (macOS/DXMT)
+Subject: ntdll: keep DEP on for legacy images by default (macOS)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 Ports Whisky wine patch 0002. Wine disables no-exec for images without
 IMAGE_DLLCHARACTERISTICS_NX_COMPAT, which forces PROT_EXEC onto data pages and
-turns DXMT placed buffers into a slideshow on macOS Tahoe (3Shain/dxmt#161).
+can interfere with Metal buffers backed by those pages. Keep the existing
+DEP default for the Vulkan-on-Metal path as well.
 
 DEP now stays on. This was WINE_NX_COMPAT=1 set by the launcher on every bottle
 — a constant in the environment that every harness standing in for a GUI launch
@@ -29,8 +30,8 @@ index bbb448cc69d..c06e82b4e84 100644
 +        /* Keep DEP enabled for legacy (non-NX_COMPAT) images; WINE_NX_COMPAT=0
 +         * restores upstream behaviour, per program, for a game that needs the
 +         * DEP-off legacy handling. Disabling no-exec forces PROT_EXEC on data
-+         * pages, which cripples Metal/DXMT on macOS Tahoe (placed buffers turn
-+         * games into a slideshow); see 3Shain/dxmt#161. */
++         * pages used by the Metal-backed Vulkan driver. Keep data non-executable
++         * unless the application explicitly needs the legacy behaviour. */
 +        UNICODE_STRING nx_name = RTL_CONSTANT_STRING( L"WINE_NX_COMPAT" );
 +        WCHAR nx_buf[8];
 +        UNICODE_STRING nx_value = { 0, sizeof(nx_buf), nx_buf };

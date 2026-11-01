@@ -4,7 +4,7 @@ Thanks for your interest! First, make a fork of Whisky, make a new branch for yo
 
 # Build environment
 
-Whisky is built with the current Xcode toolchain on macOS 26 (Swift 6.3). All external dependencies are handled through the Swift Package Manager. See [`CLAUDE.md`](CLAUDE.md) for the full native-Wine / DXMT / KosmicKrisp / DXVK build steps.
+Whisky is built with the current Xcode toolchain on macOS 26 (Swift 6.3). All external dependencies are handled through the Swift Package Manager. See [`CLAUDE.md`](CLAUDE.md) for the full Proton / DXVK / vkd3d-proton / KosmicKrisp build steps.
 
 # Code style
 

@@ -1,71 +1,76 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# Cross-compile and run the D3D12 conformance probes against vkd3d-proton on
-# whatever Vulkan driver Wine currently loads (KosmicKrisp/Metal 4 when the
-# loader swap is in place — see CLAUDE.md "Vulkan backend: KosmicKrisp").
-#
-# The graphics render wall (VK_EXT_dynamic_rendering_unused_attachments) has
-# LIFTED as of 2026-08-13: d3d12_triangle compiles HLSL, builds a graphics
-# pipeline, draws and reads back the right green pixel. What still fails is
-# d3d12_compute, and not in the driver -- vkd3d-shader's HLSL front end rejects
-# a structured-buffer store with "E5017: not yet implemented".
-#
-# Usage: tests/d3d12/run.sh [bottle-dir]
-#   bottle-dir defaults to $WINEPREFIX, else the first bottle found.
-
+# Exercise the installed builtins, with no native overrides or app-local DLLs.
+# A fresh, disposable prefix avoids touching a user's games or wineserver.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
-WINE="$INSTALL_DIR/Wine/bin/wine64"
-VKD3D_BUILD="$PROJECT_DIR/vendor/vkd3d-proton/build.w64/libs"
-
-BOTTLE="${1:-${WINEPREFIX:-}}"
-if [ -z "$BOTTLE" ]; then
-    BOTTLE=$(find "$HOME/Library/Containers/com.isaacmarovitz.Whisky/Bottles" \
-        -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
-fi
-
-[ -x "$WINE" ] || { echo "ERROR: Wine not found at $WINE (run make wine)"; exit 1; }
-[ -d "$BOTTLE" ] || { echo "ERROR: no bottle (pass one as \$1 or set WINEPREFIX)"; exit 1; }
-[ -f "$VKD3D_BUILD/d3d12/d3d12.dll" ] || {
-    echo "ERROR: vkd3d-proton not built. See tests/d3d12/README.md"; exit 1; }
-
+source "$SCRIPT_DIR/../../scripts/lib/common.sh"
+source "$PROJECT_DIR/scripts/lib/vkd3d.sh"
 export PATH="/opt/homebrew/bin:/usr/bin:/bin"
-command -v x86_64-w64-mingw32-gcc >/dev/null || {
-    echo "ERROR: mingw-w64 not found (brew install mingw-w64)"; exit 1; }
+require_tools x86_64-w64-mingw32-gcc python3 timeout
+WINE="$INSTALL_DIR/Wine/bin/wine64"
+SERVER="$INSTALL_DIR/Wine/bin/wineserver"
+LIBS="$PROJECT_DIR/vendor/vkd3d-proton/build.w64/libs"
+INSTALLED="$INSTALL_DIR/Wine/lib/wine/x86_64-windows"
+[ -x "$WINE" ] || { echo "ERROR: run make proton first" >&2; exit 1; }
+[ "$#" -eq 0 ] || { echo "Usage: $0 (always uses a disposable prefix)" >&2; exit 2; }
+
+# Byte-for-byte provenance check, allowing only the builtin signature we stamp.
+# Otherwise a test might pass against Wine's fallback implementation after rebuild.
+python3 - "$LIBS" "$INSTALLED" <<'PY'
+from pathlib import Path
+import sys
+source, installed = map(Path, sys.argv[1:])
+for name in ('d3d12', 'd3d12core'):
+    src, dst = source/name/(name+'.dll'), installed/(name+'.dll')
+    if not src.is_file() or not dst.is_file():
+        sys.exit(f'ERROR: missing {name}; run make vkd3d')
+    expected = bytearray(src.read_bytes())
+    expected[64:81] = b'Wine builtin DLL\0'
+    if expected != dst.read_bytes():
+        sys.exit(f'ERROR: installed {name} differs from vkd3d-proton; run make vkd3d')
+    print(f'{name}: installed vkd3d-proton builtin verified')
+PY
 
 WORK="$SCRIPT_DIR/.build"
 mkdir -p "$WORK"
-# vkd3d-proton as native d3d12; keep the dlls beside the test exes.
-cp "$VKD3D_BUILD/d3d12/d3d12.dll" "$VKD3D_BUILD/d3d12core/d3d12core.dll" "$WORK/"
+RUN=$(mktemp -d "$WORK/run.XXXXXX")
+export WINEPREFIX="$RUN/prefix"
+export DYLD_FALLBACK_LIBRARY_PATH="$INSTALL_DIR/Wine/lib"
+export WINEDEBUG=-all VKD3D_DEBUG=warn
+unset WINEDLLOVERRIDES WINEARCH WINEMSYNC WINEESYNC WINEFSYNC
+cleanup() {
+    timeout 15 "$SERVER" -k >/dev/null 2>&1 || true
+    if timeout 15 "$SERVER" -w >/dev/null 2>&1; then
+        rm -rf "$WINEPREFIX"
+    else
+        echo "Keeping $WINEPREFIX: wineserver did not stop."
+    fi
+}
+trap cleanup EXIT
+mkdir -p "$WINEPREFIX"
+echo "Logs: $RUN"
+if ! timeout 180 "$WINE" wineboot --init > "$RUN/wineboot.log" 2>&1; then
+    cat "$RUN/wineboot.log"
+    exit 1
+fi
 
 pass=0 fail=0
-for test in smoke compute triangle; do
-    src="$SCRIPT_DIR/d3d12_$test.c"
-    exe="$WORK/d3d12_$test.exe"
-    x86_64-w64-mingw32-gcc "$src" -o "$exe" -ld3d12 -ld3dcompiler
-    echo "=== d3d12_$test ==="
-    # Keep the output: a hardcoded "expected for 'triangle'" used to be printed
-    # for whichever test failed, which read as a known-good failure and hid a
-    # real one in a different test.
-    # `|| true`: the script runs under `set -e`, and a failing probe is a result
-    # to report, not a reason to stop. The old form was exempt only because it
-    # sat inside an `if`.
-    out=$(WINEPREFIX="$BOTTLE" WINEMSYNC=1 VKD3D_DEBUG=warn \
-        WINEDLLOVERRIDES="d3d12,d3d12core=n" WINEDEBUG=-all \
-        "$WINE" "$exe" 2>&1) || true
-    if echo "$out" | grep -qE 'ALL OK'; then
-        echo "  PASS"; pass=$((pass + 1))
+for test in smoke compute triangle mrt depth stencil; do
+    source_test="$test"
+    case "$test" in mrt|depth|stencil) source_test=triangle ;; esac
+    exe="$RUN/d3d12_$test.exe"
+    x86_64-w64-mingw32-gcc -O2 -Wall "$SCRIPT_DIR/d3d12_$source_test.c" -o "$exe" -ld3d12 -ld3dcompiler
+    status=0
+    (cd "$RUN"; timeout 90 "$WINE" "$exe" "$test") > "$RUN/$test.log" 2>&1 || status=$?
+    if [ "$status" -eq 0 ] && grep -q 'ALL OK' "$RUN/$test.log"; then
+        echo "PASS: $test"; pass=$((pass + 1))
     else
-        # Fall back to the last line of output, then to a plain statement: a bare
-        # "FAIL:" for a crash or a hang would be the same unreadable result the
-        # hardcoded string used to give.
-        why=$(echo "$out" | grep -E 'E[0-9]{4}:|[Ff]ailed|FAIL' | tail -1)
-        [ -n "$why" ] || why=$(echo "$out" | grep -v '^[[:space:]]*$' | tail -1)
-        echo "  FAIL: ${why:-no output captured (crash or hang?)}"
+        echo "FAIL: $test (exit $status)"; cat "$RUN/$test.log"
         fail=$((fail + 1))
     fi
 done
 
 echo "=== $pass passed, $fail failed ==="
+# The EXIT trap stops only this prefix's server, then removes the prefix.
+[ "$fail" -eq 0 ]

@@ -104,9 +104,9 @@ apply_patches() {
         # patches (e.g. msync_*.c/.h, server/msync.c) linger and make a re-apply hit
         # "already exists" and hard-fail. `git clean -fdq` removes untracked NON-ignored
         # files (patch leftovers + generated inputs + stray dirs) for a deterministic base.
-        # Deliberately no -x, so gitignored paths survive — notably an out-of-tree build/
-        # tree, keeping compiles incremental across forced rebuilds.
-        git -C "$src_dir" clean -fdq
+        # No -x: ignored products survive. Explicitly preserve build/ as well:
+        # tarball-based source repos may not have an ignore rule for it.
+        git -C "$src_dir" clean -fdq -e build/
     fi
     local patch
     for patch in "$patch_dir"/*.patch; do
@@ -159,7 +159,14 @@ bottle_shellenv() {
 
 # whisky_ncpu — parallelism for make/ninja (physical CPU count). A function, not
 # a source-time variable, so sourcing stays subprocess-free per the header.
-whisky_ncpu() { sysctl -n hw.ncpu; }
+whisky_ncpu() {
+    local jobs="${WHISKY_BUILD_JOBS:-}"
+    if [ -z "$jobs" ]; then
+        jobs=$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+    fi
+    case "$jobs" in ''|*[!0-9]*|0) echo "ERROR: invalid build parallelism: $jobs" >&2; return 1 ;; esac
+    printf '%s\n' "$jobs"
+}
 
 # require_tools <tool>... — exit with an error if any named tool is missing from
 # PATH. The install hint names the brew formulae for the shared build tools
@@ -288,6 +295,7 @@ wine_configure() {
     cd "$build_dir"
     arch -x86_64 env -i \
         HOME="$HOME" \
+        TMPDIR="${TMPDIR:-/private/tmp}" \
         PATH="$clean_path" \
         DEVELOPER_DIR="$DEVELOPER_DIR" \
         CC="$cc_cmd" \
@@ -330,10 +338,8 @@ wine_configure() {
 # The build-tree prefixes whose libraries get copied into Wine/lib. Scope for
 # relocate_to_rpath below, and it must stay this narrow: rewriting a reference
 # into anything else under PROJECT_DIR to @rpath/<leaf> points it at a library
-# nothing bundles. That happened once, with the x86 brew (then under vendor/)
-# and DXMT's winemetal.so, which linked brew llvm@15's libunwind.1.dylib: the
-# rewritten @rpath/libunwind.1.dylib resolved nowhere, and the module failed to
-# load and took D3D11 with it, silently.
+# nothing bundles. Only relocate dependencies we actually copy; an external
+# Homebrew library rewritten to @rpath would otherwise become unresolvable.
 # One per line, and every reader consumes it with `while IFS= read -r`: joined
 # with spaces and word-split by $(...) it breaks on a checkout path containing a
 # space -- "/Users/me/My Code/Whisky/vendor/..." becomes the tokens

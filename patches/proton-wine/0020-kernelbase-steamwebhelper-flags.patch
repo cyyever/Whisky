@@ -16,23 +16,14 @@ Chromium flags:
         EGL Driver message (Critical) eglCreateWindowSurface: Bad allocation.
         eglCreateWindowSurface failed with error EGL_BAD_ALLOC
 
-This flag was removed once, on the theory that the surface failure was a symptom
-of patch 0009 -- winemac's DXMT shim built a Metal view only for toplevel
-windows, so a child HWND, which is what a browser composites into, got NULL and
-DXMT abort()ed -- and that 0009 creating a client surface for child HWNDs had
-made it unnecessary. Retested against a live Steam session: it had not. The
-webhelper came up, ran at normal CPU with no death-loop, and logged exactly the
-three errors above; no window ever appeared. The two failures are independent,
-so the flag stays.
+Keep both flags: the out-of-process surface failure was observed independently
+of the retired Metal-view shim. Removing that shim does not establish that
+CEF can create cross-process surfaces through winevulkan.
 
-NOTE: the GPU process's SharedImageStub (GPU virtualization) requires a shared
-GLES3 context. ANGLE's D3D11 backend only reaches GLES3 when d3d11 is DXMT
-(Metal, feature level 11_1); the Wine builtin wined3d caps at feature level
-9_3 (macOS GL 2.1, no core context) -> GLES2 only -> "Failed to create shared
-context for virtualization" retry loop. So this flag assumes DXMT is installed
-as the d3d11 builtin (`make dxmt`); `make proton` alone reinstalls wined3d's
-d3d11 and must be followed by `make dxmt` (build-proton-x86.sh now restores
-DXMT over wined3d after install to make this order-independent).
+CEF also needs a shared GLES3 context. DXVK's D3D11 supplies feature level
+11_1 on KosmicKrisp; Wine's wined3d path on this host falls back to FL_9_3,
+causing a GLES2 SharedImageStub retry loop. Run make dxvk after the first Wine
+build; subsequent make proton runs restore DXVK over Wine's builtins.
 
 Whisky previously injected the flags via an IFEO "Debugger" wrapper around
 steamwebhelper.exe (steamwebhelper_wrapper.exe + a steamwebhelper_real.exe copy

@@ -1,38 +1,18 @@
 # Steam webhelper: CEF flags via Proton + update-stuck proxy fix
 
-Three Steam-under-Wine problems and how Whisky solves them. §0 and §1 both present as a
-black window and are easy to confuse — §0's vanishes, §1's stays.
+Steam's D3D11 renderer uses DXVK → winevulkan → KosmicKrisp. Always validate
+Steam from the Whisky GUI; a bare CLI launch is not equivalent.
 
-## 0. Black window that then *vanishes* — the DXMT child-HWND abort (root cause, fixed 2026-08-06)
+## 0. Child-window presentation
 
-Distinct from §1's permanently-black window: this one paints black for a few seconds
-and then the window disappears, taking the GPU process with it. It hit Steam's CEF,
-GOG Galaxy (Qt WebEngine) **and** plain upstream Chromium in the same bottle — but never
-a game.
+CEF and Qt WebEngine render into child HWNDs. The former private Metal-view shim
+has been removed; Wine's Vulkan client surfaces now own positioning and lifetime.
+`tests/d3d11-child-swapchain-test.c` covers top-level, child, nested, hidden-parent,
+concurrent-child, and destroyed-window cases in both bitnesses.
 
-Cause was ours, in `patches/proton-wine/0009`. Its winemac Metal-view shim hand-rolled a
-view with `macdrv_create_view()` and only attached it when `data->cocoa_window` was set —
-true for a toplevel window, never for a **child HWND**, which has no Cocoa window of its
-own. DXMT reads the resulting NULL view as a broken Wine: `d3d11_swapchain.cpp:138` logs
-*"your Wine has no exported symbols needed by DXMT"* and calls `abort()`. Browsers
-composite into child HWNDs; games render into their toplevel. Hence "only browsers".
-
-Fixed by rewriting `0009` (`fc088f9e` → `845bd4d4` → `77a47e98`) onto
-`macdrv_client_surface_create()` + `add_window_client_surface()`, exporting two scalar
-functions instead of a struct-shaped ABI — details in `docs/proton-migration.md` under
-`0009`. Regression test: `tests/d3d11-child-swapchain-test.c`.
-
-**Diagnosing this one:** the DXMT log line above is the tell. If you instead see feature
-level 9_3 in `tests/d3d11-featurelevel-test.c`, that is the *other* DXMT bug — `make proton`
-clobbering DXMT with wined3d, §1 below.
-
-**Status after the fix:** steam.exe survives 7+ minutes (it used to die inside 45 s) and
-steamwebhelper no longer hits "Quit message loop" (it used to, at 12–21 s). Login now
-works end to end when launched **from the Whisky GUI** — the 700x440 login window renders,
-`RecvMsgClientLogOnResponse 'OK'`, and the full UI (main window 1280x800, Friends List,
-Special Offers) comes up onscreen. The earlier "the window exists at 1102x659 with
-`WS_VISIBLE` unset, Steam never calls `ShowWindow`" reading came from a bare-CLI launch,
-which is not equivalent to the GUI launch and does not count.
+Feature-level and child-window probes have passed with DXVK, but the full Steam UI
+still needs GUI verification for flicker with many interleaved swapchains. Earlier
+successful Steam login/UI observations predate this provider change.
 
 `gldriverquery.exe` exiting `3221225781` (`STATUS_DLL_NOT_FOUND`, the missing 32-bit
 `SDL2.dll`) is **not** a lead for anything — measured 2026-08-07 by moving the DLL aside:
@@ -87,51 +67,16 @@ and the host exits. `--no-sandbox` is the universal Wine/Proton workaround
 (Valve's own Linux Steam passes `-no-cef-sandbox`); there is no realistic root
 fix, so the flag is permanent.
 
-> **D3D11 is DXVK now, not DXMT** (2026-11-01). Everything below about DXMT is the
-> history that got the webhelper working. What carries over: the webhelper needs a
-> D3D11 at feature level 10+ (DXVK reports 11_1 on KosmicKrisp), and DXVK must stay
-> restored over wined3d after every `make proton`. What is **unverified**: DXVK's
-> D3D11 presents through KosmicKrisp's WSI -- the same WSI the shelved ANGLE-Vulkan
-> experiment below found flickering with CEF's ~10 interleaved swapchains. Check the
-> Steam UI for flicker first if it looks wrong.
+**GPU rendering and GLES3.** CEF's SharedImageStub needs a shared GLES3
+context. DXVK reports D3D11 feature level 11_1 on this host. Wine's wined3d path
+falls back to FL_9_3, leaving ANGLE at GLES2 and causing a shared-context retry
+loop. `make dxvk` installs d3d11/d3d10core/dxgi as builtins; subsequent
+`make proton` runs restore those artifacts after Wine's install. On a first build,
+run `make dxvk` before launching Steam.
 
-**GPU rendering and the GLES3 requirement (DXMT on the D3D11 path).** CEF's GPU
-process needs a shared **GLES3** context for its `SharedImageStub` (GPU
-virtualization); without it CEF hits `kFatalFailure` and retries forever — the
-**webhelper death-loop** (~160% CPU, multi-GB `cef_log`, no login window). On
-Wine+macOS that GLES3 context only exists when ANGLE's D3D11 backend is served by
-**DXMT** (the Metal `d3d11.dll` builtin, feature level **11_1** → GLES3). With
-DXMT active the webhelper renders correctly and roughly **halves the webhelper
-CPU** vs software raster (software-raster ~44% → ~24% on the main renderer). So
-patch `0020` appends only `--no-sandbox`; there is no
-`--disable-gpu`/SwiftShader path — it was the old approach and was briefly retried
-this investigation, but SwANGLE fails at `eglInitialize` (winevulkan rejects
-`VK_KHR_surface` on the host instance) and crashes inside ANGLE's closed
-`libGLESv2`. The real GLES3 fix is DXMT on the D3D11 path. (An experimental
-**ANGLE-Vulkan** path also reaches GLES 3.0 but has an open flicker bug — see the
-ANGLE-Vulkan subsection below.)
-
-**Why DXMT is required (the wined3d failure mode).** The Wine builtin `d3d11.dll`
-is **wined3d** (D3D11-on-macOS-GL), not DXMT. wined3d gets a core GL 4.1 context
-but caps at **FL_9_3 / SM3** because Apple's frozen GL 4.1 lacks
-`GL_EXT_shader_integer_mix` (and `GL_ARB_polygon_offset_clamp`), which
-`shader_glsl_get_shader_model` requires for SM4. Forcing SM4/FL_10 anyway (patch
-0016, reverted in `d0994f4b`) makes ANGLE's D3D11 init **hang** — the gate exists
-because Apple GL can't compile SM4's integer `mix()`. Under wined3d ANGLE's
-Renderer11 therefore caps at **GLES 2.0** (`eglCreateContext: Requested GLES 3.0 >
-max supported 2.0`) → `SharedImageStub` "Failed to create shared context for
-virtualization" → death-loop. **ES3 can only come from DXMT (or Vulkan), not
-wined3d-GL.**
-
-**Death-loop root cause — `make proton` clobbering DXMT (fixed, commit e20c85ca).**
-Wine's `make install` rewrites the builtin `d3d11.dll` (wined3d) **over** the DXMT
-copy that `make dxmt` had installed, silently dropping the webhelper (and D3D11
-games) back to FL_9_3 → GLES2 → death-loop. The patch-0017 load order is correct
-(it routes `d3d11` to the builtin); the bug was the builtin being wined3d. Fix:
-`scripts/build-proton-x86.sh` restores the D3D11 provider over wined3d after
-`make install` -- DXMT then, DXVK's d3d11/d3d10core/dxgi now -- so `make proton` is
-order-independent. Skipped when the artifacts are absent (wined3d stays; run
-`make dxvk`).
+Patch 0020 appends both `--no-sandbox` and `--in-process-gpu`. Keep these until
+GUI testing establishes that the out-of-process surface path works with DXVK.
+Removing the old graphics shim alone does not establish that.
 
 **Experimental ANGLE-Vulkan ES3 (shelved).** `--use-angle=vulkan --use-cmd-decoder=passthrough`
 routes ANGLE → `vulkan-1.dll` (winevulkan) → KosmicKrisp → Metal, giving real **GLES 3.0**
@@ -141,7 +86,7 @@ Metal-4 WSI: ruled out present-mode (force-FIFO no effect), `framebufferOnly=NO`
 correct Metal-4 (which is why single-swapchain DXVK games render fine). Likely cause:
 CEF's ~10 swapchains interleaving on KosmicKrisp's single Metal-4 queue — a WSI-maturity
 issue, not a Wine/flag fix. The flags are **not** in the tree and **not** shipped;
-the Steam UI stays on stable DXMT-ES3 (renders fine, no flicker). Do NOT set a
+the Steam UI uses ANGLE-D3D11 through DXVK; multi-swapchain flicker is unverified. Do NOT set a
 bottle-global `d3d11=native` override for the UI.
 
 **Bundled `cef.win64/vulkan-1.dll` shadows winevulkan — fixed with `vulkan-1=b`
@@ -160,9 +105,9 @@ a standalone probe confirmed **builtin winevulkan** exposes `VK_KHR_surface` +
 was always healthy, the wrong loader was just shadowing it. Fix: default **`vulkan-1`**
 to builtin so Wine substitutes builtin winevulkan even for that app-directory load. This
 now lives in **proton-wine patch `0017`** (the macOS builtin-DLL load-order default),
-which matches `vulkan-1` (plus d3d9/d3d8/d3d11/d3d10core/dxgi/winemetal) **by basename** —
-so it catches CEF's `bin/cef/cef.win64/vulkan-1.dll` full-path load, which no env-level
-`WINEDLLOVERRIDES` could. (The earlier Swift wiring — a `BottleSettings.swift`
+which matches `vulkan-1` (plus d3d9/d3d8/d3d11/d3d10core/dxgi/d3d12/d3d12core) **by basename** —
+so it catches CEF's `bin/cef/cef.win64/vulkan-1.dll` full-path load and takes
+precedence over stale registry overrides. Explicit `WINEDLLOVERRIDES` still wins. (The earlier Swift wiring — a `BottleSettings.swift`
 `WINEDLLOVERRIDES=vulkan-1=b` env plus a `Steam.configure` registry override — has been
 removed; the load-order default replaces both.) The on-disk `vulkan-1.dll` stays
 byte-identical, so Steam's `BVerifyInstalledFiles` (see below) still passes. Verified:
@@ -171,9 +116,8 @@ CPU dropped from ~160% to ~0.5%, and the log flood stopped. (The login window th
 needs network connectivity — a separate proxy/network matter, see §2.)
 
 Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXVK_LOG_LEVEL=info` /
-`DXVK_LOG_PATH` for the webhelper's D3D11 (DXVK; `DXMT_LOG_PATH` while it was DXMT). Always launch Steam with the **full bottle env**
-(the app builds it in `Wine.runProgram`) — a minimal env missing `winemetal=b` /
-`DYLD_FALLBACK_LIBRARY_PATH` makes steam.exe spin at ~100% with no window.
+`DXVK_LOG_PATH` for the webhelper's D3D11. Launch Steam from the Whisky GUI,
+which supplies the bottle environment including `DYLD_FALLBACK_LIBRARY_PATH`.
 
 ### Solution: append the flags in Proton (patch 0020)
 
@@ -181,17 +125,8 @@ Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXVK_LOG_LEVEL=info
 inside Wine itself: `hack_append_command_line()` (in `dlls/kernelbase/process.c`)
 gains a `steamwebhelper.exe` entry — `patches/proton-wine/0020` — so every
 `steamwebhelper.exe` launch (the browser host **and** its renderer/gpu/utility
-children) picks up `--no-sandbox`. CEF propagates flags to its own
+children) picks up `--no-sandbox --in-process-gpu`. CEF propagates flags to its own
 child processes anyway; the substring match just makes sure each child also matches.
-
-`--in-process-gpu` used to be appended here too: the out-of-process GPU could not
-create an ANGLE/D3D11 window surface on the browser window (`eglCreateWindowSurface`
-failed, `SwapChain11.cpp`) and the UI never painted. That was a *symptom* of patch
-`0009` — winemac's DXMT shim built a Metal view only for toplevel windows, so any
-child HWND, which is what a browser composites into, got NULL and DXMT `abort()`ed.
-`0009` now creates a client surface for child HWNDs as well, so the flag is gone.
-**UNVERIFIED**: not retested against a live Steam session. If the webhelper UI stops
-painting, putting `--in-process-gpu` back is the first thing to try.
 
 This replaces a heavier mechanism. Whisky formerly attached a small
 `steamwebhelper_wrapper.exe` launcher through the image's IFEO `Debugger` value

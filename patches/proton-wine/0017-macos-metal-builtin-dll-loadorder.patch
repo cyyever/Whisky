@@ -1,90 +1,46 @@
 Subject: ntdll: resolve the D3D/Vulkan builtins ahead of the registry load order
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-This tree ships its D3D/Vulkan stack as Wine builtins: DXVK provides d3d9/d3d8
-(and d3d11/d3d10core/dxgi on FreeBSD), DXMT provides d3d11/d3d10core/dxgi on
-macOS, and winevulkan provides vulkan-1 (backed by KosmicKrisp on macOS).
-wined3d's D3D9/D3D8 is broken here, and an app-bundled native loader (e.g. Steam
-CEF's own vulkan-1.dll) exposes no WSI, so each of these must resolve to builtin.
+DXVK supplies d3d8/d3d9/d3d10core/d3d11/dxgi, vkd3d-proton supplies the
+optional d3d12/d3d12core pair, and winevulkan supplies vulkan-1. All are
+installed with the Wine builtin signature. Prefer them to stale DllOverrides
+registry entries (including per-application entries), which otherwise make
+stamped DLLs unloadable when an old installer requested native only.
 
-The reason is the *registry*, and only the registry. A bottle's DllOverrides are
-persistent state written by things this tree does not control: an older Whisky
-that installed DXVK per-game as native, winetricks, a game's own installer. Such
-an entry does not select a different provider — the builtins we ship carry the
-"Wine builtin DLL" signature, so a leftover "d3d9"="native" matches nothing at
-all and the app dies on STATUS_DLL_NOT_FOUND with a usable d3d9.dll sitting in
-system32, syswow64 and its own directory. That was a real failure: Super Street
-Fighter IV, exit c0000135, traced to a single stale value.
-
-So extend get_load_order() — the same place Proton already hard-codes the
-EasyAntiCheat bridge — to resolve these basenames to builtin before the
-DllOverrides keys are consulted.
-
-WINEDLLOVERRIDES still wins, in all three spellings get_load_order_value() would
-have tried: the full module name, "*basename", and basename. It is set per run
-so it cannot go stale, and it is the lever for A/B-ing a provider (wined3d vs
-DXMT, say) during debugging. Checking only the bare name — as an earlier version
-of this did — silently ignored "*d3d9=n", the form winetricks and most of the
-documentation use, while the TRACE still reported "fork builtin"; an A/B run
-then reads as "the override made no difference to the bug".
-
-Note what this deliberately does *not* claim. An earlier version of this message
-argued that a host-set WINEDLLOVERRIDES could not catch a full-path
-app-directory load, which would have made the env route unusable and this patch
-the only option. That is wrong: the "*basename" rung a few lines below runs
-unconditionally, including for loads by explicit path, so a per-bottle
-WINEDLLOVERRIDES would catch Steam CEF's bundled vulkan-1.dll perfectly well.
-The env route is viable and simpler; it is the *stale registry* that an env var
-cannot defend against, since the registry is consulted whether or not anyone set
-an env.
-
-Two consequences worth stating. Wine's own per-application overrides for these
-modules — loader/wine.inf.in ships rayne1/rayne2 d3d8=native and RDR2
-vulkan-1=native — are inert in this tree, since AppDefaults is part of the
-registry this now resolves ahead of. And the module set lives in several places
-(here, the build scripts, tests/); nothing enforces agreement.
-
-The D3D/DXGI/vulkan-1 modules apply on every host this tree targets (macOS and
-FreeBSD) — the provider differs but "builtin" is always right — so they are
-unguarded. Only winemetal (DXMT's Metal interface) stays behind __APPLE__.
+Explicit WINEDLLOVERRIDES still wins: full module path, wildcard basename,
+and bare basename are checked in the same order as upstream. This permits
+per-run debugging and native D3D12 Agility SDK overrides when needed.
+Without make vkd3d, builtin d3d12 is Wine's implementation; this rule does
+not install or promise vkd3d-proton. No private Metal interface is needed:
+all graphics providers use winevulkan on macOS.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
-index 722190da255..45d7a3f7466 100644
+index 722190d..0f31a53 100644
 --- a/dlls/ntdll/unix/loadorder.c
 +++ b/dlls/ntdll/unix/loadorder.c
-@@ -396,6 +396,29 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -396,6 +396,22 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
      static const WCHAR easyanticheat_x64W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','6','4',0};
      static const WCHAR easyanticheatW[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t',0};
      static const WCHAR soW[] = {'.','s','o',0};
-+    /* D3D and Vulkan are shipped as Wine builtins on every host this tree targets:
-+     * macOS uses DXMT (d3d11/d3d10core/dxgi) + DXVK (d3d9/d3d8), FreeBSD uses DXVK
-+     * for all of them; vulkan-1 is winevulkan. wined3d's D3D9 is broken and an
-+     * app-bundled native loader (e.g. Steam CEF's vulkan-1.dll) exposes no WSI, so
-+     * all of these must resolve to builtin — the provider differs by platform, but
-+     * "builtin" is always right. winemetal is DXMT's Metal interface DLL, so it is
-+     * the one entry that is macOS-only. */
++    /* DXVK, vkd3d-proton and winevulkan ship as Wine builtins. Resolve them
++     * ahead of stale registry overrides; explicit environment overrides still
++     * win below. D3D12 is optional and uses Wine's builtin until installed. */
 +    static const WCHAR d3d9W[]      = {'d','3','d','9',0};
 +    static const WCHAR d3d8W[]      = {'d','3','d','8',0};
 +    static const WCHAR d3d11W[]     = {'d','3','d','1','1',0};
 +    static const WCHAR d3d10coreW[] = {'d','3','d','1','0','c','o','r','e',0};
 +    static const WCHAR dxgiW[]      = {'d','x','g','i',0};
 +    static const WCHAR vulkan1W[]   = {'v','u','l','k','a','n','-','1',0};
-+#ifdef __APPLE__
-+    static const WCHAR winemetalW[] = {'w','i','n','e','m','e','t','a','l',0};
-+#endif
++    static const WCHAR d3d12W[]     = {'d','3','d','1','2',0};
++    static const WCHAR d3d12coreW[] = {'d','3','d','1','2','c','o','r','e',0};
 +    static const WCHAR * const builtin_onlyW[] =
 +    {
 +        d3d9W, d3d8W, d3d11W, d3d10coreW, dxgiW, vulkan1W,
-+#ifdef __APPLE__
-+        winemetalW,
-+#endif
++        d3d12W, d3d12coreW,
 +    };
  
      static const WCHAR prefixW[] = {'\\','?','?','\\'};
      enum loadorder ret = LO_INVALID;
-@@ -479,6 +502,43 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -479,6 +495,43 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
          }
      }
  
@@ -96,7 +52,7 @@ index 722190da255..45d7a3f7466 100644
 +     * not select a different provider, it makes every candidate unloadable and
 +     * the app dies on STATUS_DLL_NOT_FOUND with the DLL sitting right there.
 +     * WINEDLLOVERRIDES still wins: it is set per run, so it cannot go stale, and
-+     * it is the lever for A/B-ing a provider (e.g. wined3d vs DXMT). */
++     * it is the lever for A/B-ing a provider (e.g. wined3d vs DXVK). */
 +    for (i = 0; i < ARRAY_SIZE(builtin_onlyW); i++)
 +        if (!wcsicmp( basename, builtin_onlyW[i] )) break;
 +

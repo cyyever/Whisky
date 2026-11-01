@@ -1,18 +1,9 @@
 /*
  * d3d11-child-swapchain-test — assert D3D11 can build a swapchain on a child HWND.
  *
- * A browser composites into a child HWND; a game does not. That difference hid
- * a regression once, under DXMT (D3D11's provider until it moved to DXVK): its
- * Metal view came from winemac.drv, the shim in patches/proton-wine/0009 only
- * produced one for a toplevel window, and DXMT abort()ed on the NULL -- Steam,
- * GOG and a plain upstream Chromium all showed a black window for a few seconds
- * and then vanished, while games ran fine and it looked like a graphics bug.
- * DXVK reaches the window through winevulkan's surface instead, which is a
- * different path to the same requirement, so the test stays.
- *
- * Because that failure was abort() rather than a bad HRESULT, "the test process
- * exited normally" is itself an assertion here -- a regression kills this
- * program outright, and the exit code says so.
+ * Browsers composite into child HWNDs. DXVK reaches those windows through
+ * winevulkan surfaces; check both presentation and surface lifetime, including
+ * concurrent children and window destruction. Crashes count as failures too.
  *
  * Deliberately talks to D3D11/DXGI directly rather than through ANGLE, so a
  * failure points at the driver rather than at a browser's GL layer.

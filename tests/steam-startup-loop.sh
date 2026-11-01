@@ -6,7 +6,7 @@
 # single steamwebhelper (healthy is 4-6), zero visible windows and low CPU, and
 # the only way out is to kill it and try again. A single observation of an
 # intermittent fault proves nothing, and every A/B against it (msync on/off,
-# Vulkan, DXMT) is unreadable without a failure *rate* to compare against. So:
+# Vulkan, DXVK) is unreadable without a failure *rate* to compare against. So:
 # run the launch N times, classify each round, and keep the evidence from the
 # rounds that fail.
 #

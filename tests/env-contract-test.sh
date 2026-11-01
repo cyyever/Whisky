@@ -28,7 +28,7 @@ SWIFT="$PROJECT_DIR/WhiskyKit/Sources/WhiskyKit/Wine/Wine.swift"
 [ -d "$WINE_SRC" ]  || { echo "ERROR: proton-wine tree missing; run 'make proton' first" >&2; exit 1; }
 
 # Variables Whisky puts in a bottle's environment, as "NAME": "VALUE" literals.
-vars=$(grep -oE '"(WINE|PROTON|SDL|DXVK|DXMT|GST|MVK|MTL)[A-Z0-9_]*"[[:space:]]*:' "$SWIFT" |
+vars=$(grep -oE '"(WINE|PROTON|SDL|DXVK|VKD3D|GST|MVK|MTL)[A-Z0-9_]*"[[:space:]]*:' "$SWIFT" |
        tr -d '":' | sort -u)
 
 # Wine reads its own variables through getenv() in the unix side, and Proton's

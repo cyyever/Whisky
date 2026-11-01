@@ -1,8 +1,7 @@
 # Proton migration — Valve Proton_11.0 on Apple Silicon (Rosetta 2)
 
 Goal: replace Whisky's x86_64 Wine 11.13 with **Valve's `proton-wine` 11.0** so Proton
-inherits all of Whisky's macOS capabilities — msync fast-sync, DXMT (D3D11/10/DXGI;
-since replaced by DXVK's), KosmicKrisp Vulkan, DXVK (D3D9), Steam webhelper CEF flags, CoreAudio
+inherits all of Whisky's macOS capabilities — msync fast-sync, KosmicKrisp Vulkan, DXVK (D3D8–11/DXGI), Steam webhelper CEF flags, CoreAudio
 virtual-device hiding, `WINE_NX_COMPAT` — while keeping D3D9/10/11 all working. Motivation:
 Proton ships Valve's game fixes, media-converter, `amd_ags`, fsync, and a maintained
 tree that plain WineHQ 11.13 lacks.
@@ -12,7 +11,7 @@ tree that plain WineHQ 11.13 lacks.
   `WineBackend` enum and the side-by-side `Libraries/WineProton` plumbing that existed
   during bring-up are gone; legacy Whisky-Wine 11.13 (`vendor/wine`) is removed entirely.
 - Built x86_64, runs under Rosetta 2; DXVK (D3D9 and D3D11) installed on top of the
-  Proton build. D3D11 was DXMT until KosmicKrisp exposed geometryShader.
+  Proton build. Optional vkd3d-proton provides D3D12 via the same Vulkan path.
   Reports `wine-11.0`.
 - **Steam logs in fully.** With the minimal-msync config Steam boots → CEF webhelper →
   full CM logon: `RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, login window
@@ -24,7 +23,7 @@ tree that plain WineHQ 11.13 lacks.
   (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
   redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
-  in main: `patches/proton-wine/` (**39-patch series**, base `7fc704ef49c` on Valve's
+  in main: `patches/proton-wine/` (**38-patch series**, base `7fc704ef49c` on Valve's
   `bleeding-edge`) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`).
 - **App wiring**: single backend, no selector. `BottleSettings` has no `WineBackend`;
@@ -55,13 +54,13 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 39-patch series
+## patches/proton-wine/ — 38-patch series
 Base: **`7fc704ef49c`** on Valve's `bleeding-edge` — the only branch Valve still pushes to
 (see the header comment in `scripts/build-proton-x86.sh`, which is the source of truth).
 
 Disjoint file ownership; all apply cleanly (`git apply --check`). Exported as
 `git format-patch` style `.patch` files. Groups: `0001`–`0006` build/portability
-(`0007` **dropped** → gap), `0008` the single consolidated msync patch, `0009` + `0011`–`0013`
+(`0007` **dropped** → gap), `0008` the single consolidated msync patch, `0011`–`0013`
 macOS capability ports, `0010` the temporary msync MRING wait-path tracer,
 `0014`–`0015` Steam-runtime deadlock fixes, `0016` msync
 abandoned-mutex on last-handle-close, `0017` D3D/Vulkan builtin load-order default,
@@ -209,38 +208,13 @@ conformance work above: msync-only failures went **6 → 2**.
   log — a wineserver left over from a previous run makes msync init fail, and a 0-byte log
   reads as "zero failures".
 
-### 0009–0013 — macOS capability ports
-- `0009-macos-dxmt-winemac-support` — the winemac side DXMT needed: a Metal view for an
-  HWND. **Dormant since D3D11 moved to DXVK** (nothing loads winemetal any more); kept
-  until it is worth a rebase to drop, along with 0017's `winemetal` entry. The rest is
-  history: a Metal view for an
-  HWND. **Rewritten 2026-08-06** (`fc088f9e` → `845bd4d4` → `77a47e98`); the old shape
-  described here — a `macdrv_functions` table plus a struct mimicking DXMT's 8.16-era
-  copy of `macdrv_win_data` — is **gone**. Current shape:
-  - two **scalar** exports, `macdrv_dxmt_create_metal_view(hwnd, device, *view, *layer)`
-    and `macdrv_dxmt_release_metal_view(view)`. Every field of the old table and struct
-    was pointer-sized, so a rename or reorder on either side compiled clean on both and
-    then called the wrong function pointer. Scalars have no layout to keep in step.
-    The DXMT side was `patches/dxmt/0005-winemetal-scalar-metal-view-entry-point.patch`
-    (additive — the old dlsym path stays as a fallback for 3Shain's fork).
-  - the view comes from `macdrv_client_surface_create()` (what winemac's own Vulkan
-    driver uses for MoltenVK), registered with win32u via `add_window_client_surface()`,
-    which the patch moves from `win32u_private.h` to `include/wine/gdi_driver.h` so a
-    driver can call it. Wine then owns repositioning (`update_client_surfaces`) and
-    teardown (`detach_client_surfaces`); the returned handle is the surface, so its
-    refcount is the whole lifetime rule.
-  - **the bug this fixed:** the old code hand-rolled a view with `macdrv_create_view()`
-    and only attached it when `data->cocoa_window` was set — true for a toplevel, never
-    for a child HWND. DXMT reads a NULL view as a broken Wine, logs *"your Wine has no
-    exported symbols needed by DXMT"* and `abort()`s. Browsers (Chromium/CEF, Qt
-    WebEngine) composite into child HWNDs, games do not — which is why only browsers
-    died, black window then gone. Covered by `tests/d3d11-child-swapchain-test.c`.
-  - still pairs with the **`RTLD_GLOBAL` dlopen for `winemac.so` only** in
-    `dlls/ntdll/unix/loader.c` (not every unixlib — that would put all their
-    default-visibility symbols in one namespace).
-  - a `scripts/check-dxmt-abi.sh` guard existed briefly (`21adee60`) to police the
-    struct ABI and was **deleted the same night** (`2744d49a`): with scalar arguments
-    there is nothing to police. It does not exist; ignore any reference to it.
+### macOS capability ports
+
+Patch 0009 (the private Metal-view shim) was removed after the move to DXVK.
+Wine's standard Vulkan client-surface path now handles all D3D windows. The
+exported shim, extra gdi_driver declaration, and RTLD_GLOBAL driver load are gone.
+`tests/d3d11-child-swapchain-test.c` still checks child-window presentation.
+
 - `0023-macos-snap-borderless-fullscreen-window` — `rcWork` and `rcMonitor` share an
   origin on Windows (taskbar at the bottom) but not on macOS (menu bar at the top);
   measured in a bottle: `rcMonitor 0,0 1470x956` vs `rcWork 0,33 1470x923`. An app that
@@ -260,22 +234,15 @@ conformance work above: msync-only failures went **6 → 2**.
   (The number previously held `macos-kernelbase-ifeo-debugger`, deleted when `0020`
   retired the Steam webhelper wrapper that was its only consumer, along with
   `Steam.configure`'s per-bottle IFEO cleanup.)
-- `0011-macos-nx-compat-env` — DEP stays on for legacy images by default (fixes DXMT
-  Tahoe slowness); `WINE_NX_COMPAT=0` restores upstream, per program.
+- `0011-macos-nx-compat-env` — DEP stays on for legacy images by default; `WINE_NX_COMPAT=0` restores upstream, per program.
 - `0012-macos-coreaudio-hide-virtual-devices` — hide virtual audio devices from games
   (`winecoreaudio.drv` + `mmdevapi`) — fixes device enum-loop hangs.
 - `0013-macos-server-fsync-delinux` — de-linux the `server/fsync.c` stubs for the macOS
   build.
 
-Provenance — these were ported from the now-removed Whisky-Wine `patches/wine/` set:
-`0009`≈old `0002`+`0005`+`0006` (macdrv export + Metal view position + borderless
-fullscreen-snap) — the fullscreen-snap has since been **split out into `0023`**, so
-`0009` is now the Metal-view entry points only; old `0010`≈`0003` (removed; the number
-was later reused for the MRING tracer), `0011`≈`0004`,
-`0012`≈`0007`. The old rundll32
-WS_VISIBLE patch was obsolete (dropped above). `0008`/`0013` (msync + fsync) and
-`0001`–`0006` are Proton-specific (WineHQ 11.13 already had msync-free sync and none of
-Proton's extra unixlibs).
+These ports originated in the removed Whisky-Wine patch set. The fullscreen
+window fix remains in 0023; removing the private Metal interface does not remove
+Wine's ordinary Vulkan surface support or the existing DEP policy.
 
 ### Mixed waits (folded into 0008)
 msync (like esync) cannot natively wait on a set mixing fast msync objects
@@ -425,7 +392,7 @@ on `STATUS_PENDING` was tried and **reverted** — the cost is a wake storm (rea
 right layer, not a fast-path code patch.
 
 Note the spin was blamed for the invisible Steam login window; that turned out to be an
-unrelated DXMT/winemac bug (see `0009` above and `docs/steam-webhelper.md` §0). The spin
+unrelated child-window graphics bug (see `docs/steam-webhelper.md` §0). The spin
 was real and the fix is real, but it was not that bug's cause.
 
 **msync enablement scope + gating code** (all in `dlls/ntdll/unix/msync_obj.c`, code is the
@@ -468,16 +435,11 @@ source of truth):
   (`http_proxy=http://127.0.0.1:9910`) because geph registers a macOS system proxy; that
   HTTP proxy **breaks Steam's CM** (WSS → 403) and the CM is directly reachable anyway.
   (The bottle's internal `ProxyEnable` registry is separate; keep both off.)
-- **msync-only (no eventfd on macOS → esync can't exist).** Resolved: nothing on the
-  stack reads WINEESYNC (no `esync.c` in the wine tree; DXMT doesn't read it — verified
-  by binary scan). msync defaults ON in `do_msync()`, so `BottleSettings` sets **no**
-  `WINEMSYNC` at all for the default `.msync` mode (only `.none` sets `WINEMSYNC=0`), and
-  leaves WINEESYNC unset (the env dict fully replaces the parent, so unset ≡ 0). (There is no "DXMT esync-detection
-  lie" — that was a myth; no such `lid3dshared.dylib` exists.)
+- **msync-only.** msync defaults ON in `do_msync()`, so `BottleSettings` sets no
+  `WINEMSYNC` for `.msync`; `.none` sets `WINEMSYNC=0`. No esync backend is shipped.
 - **lsteamclient disabled by default** (patch `0031`; `PROTON_DISABLE_LSTEAMCLIENT=0`
   restores it).
-- The Steam webhelper wrapper is applied automatically on launch — from the GUI or via
-  `whisky run`, both through `Wine.prepareForLaunch` → `Steam.configure`.
+- Proton patch 0020 appends `--no-sandbox --in-process-gpu` to steamwebhelper; no wrapper is installed.
 
 ## scripts/build-proton-x86.sh (was install-proton.sh + build-wine-x86.sh)
 `make proton` runs `scripts/build-proton-x86.sh`, the single Proton build: it resets
