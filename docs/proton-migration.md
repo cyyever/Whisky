@@ -1,8 +1,8 @@
 # Proton migration — Valve Proton_11.0 on Apple Silicon (Rosetta 2)
 
 Goal: replace Whisky's x86_64 Wine 11.13 with **Valve's `proton-wine` 11.0** so Proton
-inherits all of Whisky's macOS capabilities — msync fast-sync, DXMT (D3D11/10/DXGI),
-KosmicKrisp Vulkan, DXVK (D3D9), Steam webhelper CEF flags, CoreAudio
+inherits all of Whisky's macOS capabilities — msync fast-sync, DXMT (D3D11/10/DXGI;
+since replaced by DXVK's), KosmicKrisp Vulkan, DXVK (D3D9), Steam webhelper CEF flags, CoreAudio
 virtual-device hiding, `WINE_NX_COMPAT` — while keeping D3D9/10/11 all working. Motivation:
 Proton ships Valve's game fixes, media-converter, `amd_ags`, fsync, and a maintained
 tree that plain WineHQ 11.13 lacks.
@@ -11,7 +11,8 @@ tree that plain WineHQ 11.13 lacks.
 - Proton is laid **directly over** `Libraries/Wine` — the single shipped backend. The
   `WineBackend` enum and the side-by-side `Libraries/WineProton` plumbing that existed
   during bring-up are gone; legacy Whisky-Wine 11.13 (`vendor/wine`) is removed entirely.
-- Built x86_64, runs under Rosetta 2; DXMT installed on top of the Proton build.
+- Built x86_64, runs under Rosetta 2; DXVK (D3D9 and D3D11) installed on top of the
+  Proton build. D3D11 was DXMT until KosmicKrisp exposed geometryShader.
   Reports `wine-11.0`.
 - **Steam logs in fully.** With the minimal-msync config Steam boots → CEF webhelper →
   full CM logon: `RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, login window
@@ -25,8 +26,7 @@ tree that plain WineHQ 11.13 lacks.
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
   in main: `patches/proton-wine/` (**39-patch series**, base `7fc704ef49c` on Valve's
   `bleeding-edge`) + `scripts/build-proton-x86.sh`
-  (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`);
-  `scripts/build-dxmt.sh` defaults `DXMT_WINE_BUILD` to `vendor/proton-wine/build`.
+  (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`).
 - **App wiring**: single backend, no selector. `BottleSettings` has no `WineBackend`;
   `Wine.wineBinary(for:)`/`binFolder(for:)` resolve to `WhiskyWineInstaller.binFolder`
   (`Libraries/Wine/bin`). `PROTON_DISABLE_LSTEAMCLIENT=1` is wired into `Wine.swift`.
@@ -210,7 +210,10 @@ conformance work above: msync-only failures went **6 → 2**.
   reads as "zero failures".
 
 ### 0009–0013 — macOS capability ports
-- `0009-macos-dxmt-winemac-support` — the winemac side DXMT needs: a Metal view for an
+- `0009-macos-dxmt-winemac-support` — the winemac side DXMT needed: a Metal view for an
+  HWND. **Dormant since D3D11 moved to DXVK** (nothing loads winemetal any more); kept
+  until it is worth a rebase to drop, along with 0017's `winemetal` entry. The rest is
+  history: a Metal view for an
   HWND. **Rewritten 2026-08-06** (`fc088f9e` → `845bd4d4` → `77a47e98`); the old shape
   described here — a `macdrv_functions` table plus a struct mimicking DXMT's 8.16-era
   copy of `macdrv_win_data` — is **gone**. Current shape:
@@ -218,7 +221,7 @@ conformance work above: msync-only failures went **6 → 2**.
     and `macdrv_dxmt_release_metal_view(view)`. Every field of the old table and struct
     was pointer-sized, so a rename or reorder on either side compiled clean on both and
     then called the wrong function pointer. Scalars have no layout to keep in step.
-    The DXMT side is `patches/dxmt/0005-winemetal-scalar-metal-view-entry-point.patch`
+    The DXMT side was `patches/dxmt/0005-winemetal-scalar-metal-view-entry-point.patch`
     (additive — the old dlsym path stays as a fallback for 3Shain's fork).
   - the view comes from `macdrv_client_surface_create()` (what winemac's own Vulkan
     driver uses for MoltenVK), registered with win32u via `add_window_client_surface()`,
@@ -231,7 +234,7 @@ conformance work above: msync-only failures went **6 → 2**.
     for a child HWND. DXMT reads a NULL view as a broken Wine, logs *"your Wine has no
     exported symbols needed by DXMT"* and `abort()`s. Browsers (Chromium/CEF, Qt
     WebEngine) composite into child HWNDs, games do not — which is why only browsers
-    died, black window then gone. Covered by `tests/dxmt-child-swapchain-test.c`.
+    died, black window then gone. Covered by `tests/d3d11-child-swapchain-test.c`.
   - still pairs with the **`RTLD_GLOBAL` dlopen for `winemac.so` only** in
     `dlls/ntdll/unix/loader.c` (not every unixlib — that would put all their
     default-visibility symbols in one namespace).
@@ -484,17 +487,18 @@ source of truth):
 - `make install DESTDIR=` into a tmp tree under `arch -x86_64`, drop `.a` import libs
   and `share/man`, PE-strip in release (`WHISKY_WINE_BUILD=debug` keeps debug info),
   copy `bin`/`lib`/`share`.
-- Bundle x86_64 dylibs (freetype, sdl2, molten-vk, gnutls, gettext, our
-  `vendor/ffmpeg-x86` libs), materializing brew link-farm symlinks.
+- Bundle the x86_64 dylibs from `vendor/x86-deps` (freetype, SDL2, gnutls + nettle/gmp,
+  the Vulkan loader) and `vendor/ffmpeg-x86`; their install names are rewritten to
+  `@rpath`.
 - **KosmicKrisp loader swap**: install the Khronos Vulkan loader as BOTH
   `Wine/lib/libMoltenVK.dylib` and `Wine/lib/libvulkan.1.dylib`; drop the ICD manifest
   to `~/.local/share/vulkan/icd.d/`.
-- **DXMT restore over wined3d**: `make install` writes Wine's builtin `d3d11.dll`
-  (wined3d — FL 9_3 → GLES2 only), clobbering any prior DXMT install. The script
-  restores the DXMT Metal builds (d3d11/d3d10core/dxgi/winemetal, x86_64 + i386)
-  over them so `make proton` is order-independent — skipped when DXMT artifacts
-  are absent (run `make dxmt`). Mirrors the KosmicKrisp swap; see
-  `docs/steam-webhelper.md` for why the webhelper needs DXMT (GLES3 /
+- **DXVK restore over wined3d**: `make install` writes Wine's builtin d3d9/d3d8/
+  d3d11/d3d10core/dxgi (wined3d — D3D9 broken, D3D11 at FL 9_3 → GLES2 only),
+  clobbering any prior DXVK install. The script restores DXVK's builds (x86_64 +
+  i386, re-stamped as builtins) over them so `make proton` is order-independent —
+  skipped when the DXVK build trees are absent (run `make dxvk`). See
+  `docs/steam-webhelper.md` for why the webhelper needs FL 10+ (GLES3 /
   SharedImageStub).
 - `install_name_tool -add_rpath '@loader_path/../..'` on every `x86_64-unix/*.so`.
 - Append `[Drivers] Graphics=mac` to `share/wine/wine.inf`; symlink `wine64 → wine`;
@@ -503,22 +507,6 @@ source of truth):
 (The old `install-proton.sh` — which assumed a pre-built tree and had an
 `INSTALL_TO_WHISKY=1` side-by-side `Libraries/WineProton` option — was folded into
 `build-proton-x86.sh` and removed. Proton now installs straight over `Libraries/Wine`.)
-
-## DXMT against Proton — scripts/build-dxmt.sh parameterization
-`build-dxmt.sh` reads two env vars, both **defaulting to the Proton build** (the
-shipped backend):
-- `DXMT_WINE_BUILD` — Wine build tree for headers (default `vendor/proton-wine/build`).
-- `DXMT_WINE_LIB` — install target (default `…/Libraries/Wine/lib/wine`).
-
-The defaults are correct for the normal `make dxmt`; override only to build DXMT
-against a *different* Wine tree:
-```
-DXMT_WINE_BUILD=<other>/build \
-DXMT_WINE_LIB=<OtherInstall>/Wine/lib/wine \
-scripts/build-dxmt.sh
-```
-Everything else (LLVM 15 pin, zstd link fix, win64+win32 PE dlls, `winemetal.so`
-unixlib) is unchanged.
 
 ## Mono
 Proton hardcodes `wine-mono-10.4.1` (`MONO_VERSION` in

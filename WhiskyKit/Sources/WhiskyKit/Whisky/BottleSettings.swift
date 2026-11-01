@@ -294,7 +294,7 @@ public struct BottleSettings: Codable, Equatable {
     public func environmentVariables(wineEnv: inout [String: String]) {
         // No WINEDLLOVERRIDES for the D3D/Vulkan stack: proton-wine's load order
         // (patches/proton-wine 0017) resolves d3d9/d3d8/d3d11/d3d10core/dxgi/vulkan-1
-        // (+ winemetal on macOS) to builtin — DXVK / DXMT / winevulkan. Nothing to
+        // (+ winemetal on macOS) to builtin — DXVK / winevulkan. Nothing to
         // set here.
         //
         // This used to say an env override "cannot" catch an app-directory load,

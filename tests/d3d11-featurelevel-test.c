@@ -1,4 +1,4 @@
-/* d3d11-featurelevel-test.c — print the feature level DXMT gives for a HW
+/* d3d11-featurelevel-test.c — print the feature level D3D11 (DXVK) gives for a HW
  * device. ANGLE's D3D11 backend derives GLES version from this: FL9_3 caps at
  * GLES2 (SharedImageStub death-loop); FL10_0+ gives GLES3 (no loop, UI paints).
  *

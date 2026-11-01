@@ -117,35 +117,16 @@ cp -R "$WINE_INSTALL_ROOT/bin" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/lib" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/share" "$INSTALL_DIR/Wine/"
 
-# --- DXMT (Metal D3D11) restore over wined3d --------------------------------
-# Wine's builtin d3d11/d3d10core/dxgi are wined3d-backed (GL 2.1 -> feature
-# level 9_3 -> GLES2 only). DXMT replaces them with Metal builds (FL 11_1 ->
-# GLES3), which ANGLE's D3D11 backend (Steam webhelper SharedImageStub) and
-# D3D11 games require. The cp -R of lib/ above just wrote wined3d's copies,
-# clobbering any prior DXMT install — restore DXMT over them so `make proton`
-# is order-independent (no need to re-run `make dxmt` after every proton
-# rebuild). Mirrors the KosmicKrisp loader swap below: skipped entirely when
-# the DXMT artifacts are absent (wined3d stays; run `make dxmt` to build them).
-DXMT_B64="$PROJECT_DIR/vendor/dxmt/build/src"
-DXMT_B32="$PROJECT_DIR/vendor/dxmt/build32/src"
-if [ -f "$DXMT_B64/d3d11/d3d11.dll" ]; then
-    echo "=== Restoring DXMT builtins over wined3d (proton install clobbered them) ==="
-    for p in d3d11/d3d11.dll d3d10/d3d10core.dll dxgi/dxgi.dll winemetal/winemetal.dll; do
-        cp "$DXMT_B64/$p" "$INSTALL_DIR/Wine/lib/wine/x86_64-windows/${p##*/}"
-        [ -f "$DXMT_B32/$p" ] && cp "$DXMT_B32/$p" "$INSTALL_DIR/Wine/lib/wine/i386-windows/${p##*/}"
-    done
-    cp "$DXMT_B64/winemetal/unix/winemetal.so" "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/winemetal.so"
-    echo "DXMT restored: d3d11/d3d10core/dxgi/winemetal (x86_64 + i386)"
-fi
-
-# --- DXVK (D3D9/D3D8) restore over wined3d ----------------------------------
-# The same clobber, for the other graphics backend. build-dxvk.sh installs DXVK
-# AS the builtin d3d9/d3d8 (patch 0017 defaults them to builtin, so no bottle
-# needs a WINEDLLOVERRIDES), and the cp -R of lib/ above just wrote wined3d's
-# copies back over them. Without this every `make proton` silently drops D3D9
-# games back to wined3d, which on macOS paints a black window and burns a core
-# in a SIGSEGV loop -- a failure that looks nothing like "your graphics backend
-# was replaced". Skipped when the DXVK build trees are absent (run `make dxvk`).
+# --- DXVK (D3D9/D3D8/D3D11/D3D10/DXGI) restore over wined3d -----------------
+# build-dxvk.sh installs DXVK AS the builtin d3d9/d3d8/d3d11/d3d10core/dxgi
+# (patch 0017 defaults them to builtin, so no bottle needs a WINEDLLOVERRIDES),
+# and the cp -R of lib/ above just wrote wined3d's copies back over them.
+# Without this every `make proton` silently drops games back to wined3d: D3D9
+# paints a black window and burns a core in a SIGSEGV loop, and D3D11 caps at
+# feature level 9_3, which ANGLE (Steam's webhelper) turns into GLES2 and a
+# SharedImageStub death-loop -- failures that look nothing like "your graphics
+# backend was replaced". Skipped when the DXVK build trees are absent (run
+# `make dxvk`).
 #
 # The builtin signature is re-stamped rather than copied: build-dxvk.sh applies
 # it to the INSTALLED file, so the build tree's copy does not carry it, and
@@ -155,14 +136,15 @@ if [ -f "$DXVK_SRC_DIR/build.w64/src/d3d9/d3d9.dll" ]; then
     echo "=== Restoring DXVK builtins over wined3d (proton install clobbered them) ==="
     for dxvk_pair in "build.w64:x86_64-windows" "build.w32:i386-windows"; do
         dxvk_bdir="${dxvk_pair%%:*}"; dxvk_arch="${dxvk_pair##*:}"
-        for dxvk_dll in d3d9 d3d8; do
-            dxvk_src="$DXVK_SRC_DIR/$dxvk_bdir/src/$dxvk_dll/$dxvk_dll.dll"
+        # Same list as DXVK_DLLS in build-dxvk.sh.
+        for dxvk_dll in d3d9/d3d9.dll d3d8/d3d8.dll d3d11/d3d11.dll d3d10/d3d10core.dll dxgi/dxgi.dll; do
+            dxvk_src="$DXVK_SRC_DIR/$dxvk_bdir/src/$dxvk_dll"
             [ -f "$dxvk_src" ] || continue
-            cp "$dxvk_src" "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/$dxvk_dll.dll"
-            mark_wine_builtin "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/$dxvk_dll.dll"
+            cp "$dxvk_src" "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/${dxvk_dll##*/}"
+            mark_wine_builtin "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/${dxvk_dll##*/}"
         done
     done
-    echo "DXVK restored: d3d9/d3d8 (x86_64 + i386)"
+    echo "DXVK restored: d3d9/d3d8/d3d11/d3d10core/dxgi (x86_64 + i386)"
 fi
 
 # --- vkd3d-proton (D3D12) restore over Wine's own vkd3d ----------------------
@@ -239,7 +221,7 @@ if [ -d "$GST_PREFIX/lib" ]; then
         # name while dependents record the real one.
         [ -L "$f" ] && continue
         # Only what came from a bundled build-tree prefix (see bundled_prefixes).
-        # Not `grep "$PROJECT_DIR/"`: DXMT's LLVM is under PROJECT_DIR too.
+        # Not `grep "$PROJECT_DIR/"`: that is too wide (see bundled_prefixes).
         has_bundled_ref "$f" || continue
         case "$f" in
         */lib/gstreamer-1.0/*)     rp='@loader_path/..' ;;

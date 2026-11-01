@@ -41,7 +41,7 @@ then nothing, which is what Steam and GOG showed.
 Pairs with the RTLD_GLOBAL driver dlopen in dlls/ntdll/unix/loader.c, without
 which dlsym cannot see driver symbols at all.
 
-Covered by tests/dxmt-child-swapchain-test.c.
+Covered by tests/d3d11-child-swapchain-test.c.
 
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 index 7c827ee2542..34f2d9c0a56 100644

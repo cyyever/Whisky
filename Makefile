@@ -28,13 +28,13 @@ export DEVELOPER_DIR
 XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
 CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
-# proton, dxmt and dxvk all install into the same Libraries/Wine tree, and
+# proton, dxvk and vkd3d all install into the same Libraries/Wine tree, and
 # install-app replaces a live /Applications/Whisky.app. None of that is safe to
 # interleave, and none of it is the slow part -- the scripts parallelise inside.
 .NOTPARALLEL:
 
 .PHONY: all help x86-deps proton proton-debug clean-proton \
-        gstreamer dxmt dxvk vkd3d proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
+        gstreamer dxvk vkd3d proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -80,7 +80,7 @@ $(GST_STAMP): $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh
 proton: $(WINE_STAMP)  ## Build Proton x86_64 and install to Libraries/Wine
 
 # build-proton-x86.sh does two jobs: it builds Wine, and it assembles what ships
-# beside it -- DXMT and DXVK copied over wined3d's builtins, and KosmicKrisp's
+# beside it -- DXVK and vkd3d-proton copied over Wine's builtins, and KosmicKrisp's
 # ICD manifest copied to ~/.local/share/vulkan/icd.d. Each is an input, and a
 # missing one leaves the stamp newer than everything make knows about, so
 # `make proton` prints nothing and exits 0 having installed none of the change.
@@ -92,8 +92,8 @@ WINE_INPUTS := $(SCRIPTS_DIR)/build-proton-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
                $(wildcard $(CURDIR)/patches/proton-wine/*.patch) \
                $(wildcard $(CURDIR)/vendor/gstreamer-x86/lib/gstreamer-1.0/*.dylib) \
                $(wildcard $(CURDIR)/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib) \
-               $(wildcard $(CURDIR)/vendor/dxmt/build/src/d3d11/d3d11.dll) \
                $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d9/d3d9.dll) \
+               $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d11/d3d11.dll) \
                $(wildcard $(CURDIR)/vendor/vkd3d-proton/build.w64/libs/d3d12/d3d12.dll)
 
 $(WINE_STAMP): $(X86_DEPS_STAMP) $(GST_STAMP) $(WINE_INPUTS) | check-proton-src
@@ -120,14 +120,9 @@ clean-proton:  ## Remove Proton build artifacts (keeps installed Wine)
 	rm -rf $(WINE_SRC)/build
 	rm -f $(WINE_STAMP)
 
-# === DXMT (Metal D3D11) ===
+# === DXVK (D3D9/D3D11 on KosmicKrisp) ===
 
-dxmt: proton  ## Build DXMT from source and install into Wine (needs full Xcode + llvm@15)
-	$(SCRIPTS_DIR)/build-dxmt.sh
-
-# === DXVK (D3D9 on KosmicKrisp) ===
-
-dxvk: proton  ## Build DXVK d3d9.dll (win32 + win64) and install into Libraries/DXVK
+dxvk: proton  ## Build DXVK d3d9/d3d8/d3d11/d3d10core/dxgi (win32 + win64) as Wine builtins
 	$(SCRIPTS_DIR)/build-dxvk.sh
 
 # === vkd3d-proton (D3D12 on KosmicKrisp) ===
@@ -212,5 +207,5 @@ run: app  ## Build, install and run Whisky
 submodule:  ## Init/update git submodules
 	git submodule update --init --recursive
 
-clean: clean-proton  ## Remove Proton and Xcode build artifacts (not DXMT/DXVK/x86-deps)
+clean: clean-proton  ## Remove Proton and Xcode build artifacts (not DXVK/x86-deps)
 	$(XCODEBUILD) clean 2>/dev/null || true

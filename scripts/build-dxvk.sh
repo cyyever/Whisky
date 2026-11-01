@@ -1,20 +1,22 @@
 #!/bin/bash
 set -e
 
-# Build DXVK's d3d9.dll + d3d8.dll (32- and 64-bit PE, cross-compiled with
-# mingw-w64) and install them as the Wine *builtin* d3d9/d3d8, overwriting
-# wined3d's (broken for D3D9 on macOS) — the same layer DXMT uses for d3d11.
-# proton-wine patch 0017 then defaults d3d9/d3d8 to builtin in the load order, so
-# no bottle needs a WINEDLLOVERRIDES.
+# Build DXVK -- d3d9, d3d8, d3d11, d3d10core and dxgi, 32- and 64-bit PE,
+# cross-compiled with mingw-w64 -- and install them as the Wine *builtin* DLLs,
+# overwriting wined3d's (broken for D3D9 on macOS, and capped at feature level 9_3
+# for D3D11 on its GL 2.1). proton-wine patch 0017 then defaults all of them to
+# builtin in the load order, so no bottle needs a WINEDLLOVERRIDES. DXVK renders
+# through winevulkan on KosmicKrisp.
 #
 # d3d8 is a thin wrapper over DXVK's d3d9 (it calls Direct3DCreate9 from d3d9.dll),
-# so it ships alongside d3d9. D3D11/D3D10/DXGI are NOT built here: DXMT owns them on
-# macOS. KosmicKrisp now exposes geometryShader, which was the original blocker, but
-# it still has no transform feedback, so DXVK's d3d11 would fail every stream-output
-# shader (DXGI_ERROR_INVALID_CALL) where DXMT emulates the vertex-shader case --
-# switching wants an A/B against real games first.
-# Must run AFTER `make proton`, which rebuilds Wine/lib and would otherwise clobber
-# these builtins — same lifecycle as `make dxmt`.
+# and d3d10core over its d3d11, so each ships with the DLL it wraps. D3D11 used to
+# be DXMT's (Metal directly); it moved here once KosmicKrisp exposed geometryShader.
+# Known gap: KosmicKrisp has no transform feedback, so a stream-output shader gets
+# DXGI_ERROR_INVALID_CALL -- DXMT emulated the vertex-shader case of that, DXVK
+# does not.
+# Must run AFTER `make proton`, which rebuilds Wine/lib; build-proton-x86.sh
+# restores these builtins from the build trees, so the order only matters on the
+# first build.
 #
 # Requires: ARM brew mingw-w64 + meson + ninja. The ~/.local/bin meson has a
 # broken interpreter — keep it off PATH.
@@ -27,21 +29,25 @@ export PATH="/opt/homebrew/bin:/usr/bin:/bin"
 
 require_tools meson ninja i686-w64-mingw32-gcc x86_64-w64-mingw32-gcc
 
-echo "=== Building DXVK d3d9 from $DXVK_SRC ==="
+echo "=== Building DXVK from $DXVK_SRC ==="
 
 # Apply out-of-tree DXVK patches (MoltenVK adaptations), kept as files so the
 # submodule stays clean. Idempotent: skip a patch that is already applied,
 # fail loudly on conflicts.
 apply_patches "$DXVK_SRC" "$PROJECT_DIR/patches/dxvk" DXVK
 
-# d3d9 + d3d8 (its wrapper); everything else is off (DXMT owns D3D11/D3D10/DXGI).
 MESON_OPTS=(
     -Denable_d3d9=true
     -Denable_d3d8=true
-    -Denable_d3d10=false
-    -Denable_d3d11=false
-    -Denable_dxgi=false
+    -Denable_d3d10=true
+    -Denable_d3d11=true
+    -Denable_dxgi=true
 )
+
+# <build-tree path>, relative to src/ -- the DLLs this script installs, and the
+# ones build-proton-x86.sh restores after every Wine install (it keeps its own
+# copy of this list; keep the two in step).
+DXVK_DLLS=(d3d9/d3d9.dll d3d8/d3d8.dll d3d11/d3d11.dll d3d10/d3d10core.dll dxgi/dxgi.dll)
 
 # WHISKY_DXVK_DEBUG=1 keeps symbols. A stripped release build is the right
 # default, but it is also why a crash inside DXVK reads as a bare address: the
@@ -71,9 +77,8 @@ setup_arch() {  # <cross-file> <build-dir> <install-subdir>
     fi
 }
 
-# Install DXVK as the Wine *builtin* d3d9/d3d8 (overwriting wined3d's, which is
-# broken for D3D9 on macOS) — the same layer DXMT uses for d3d11. `patches/proton-wine`
-# 0017 then defaults d3d9/d3d8 to builtin in the load order, so no bottle needs a
+# Install DXVK as the Wine *builtin* DLLs (overwriting wined3d's). `patches/proton-wine`
+# 0017 defaults them to builtin in the load order, so no bottle needs a
 # WINEDLLOVERRIDES. win64 -> x86_64-windows, win32 -> i386-windows.
 WINE_LIB="$INSTALL_DIR/Wine/lib/wine"
 [ -d "$WINE_LIB/x86_64-windows" ] || {
@@ -82,13 +87,19 @@ WINE_LIB="$INSTALL_DIR/Wine/lib/wine"
 build_arch() {  # <build-dir> <wine-arch-dir>
     local build_dir="$1" wine_arch="$2"
     echo "=== Building DXVK ($wine_arch) ==="
-    ninja -C "$DXVK_SRC/$build_dir" src/d3d9/d3d9.dll src/d3d8/d3d8.dll
-    echo "=== Installing DXVK d3d9/d3d8 as Wine builtins ($wine_arch) ==="
-    cp "$DXVK_SRC/$build_dir/src/d3d9/d3d9.dll" "$WINE_LIB/$wine_arch/d3d9.dll"
-    cp "$DXVK_SRC/$build_dir/src/d3d8/d3d8.dll" "$WINE_LIB/$wine_arch/d3d8.dll"
-    mark_wine_builtin "$WINE_LIB/$wine_arch/d3d9.dll"
-    mark_wine_builtin "$WINE_LIB/$wine_arch/d3d8.dll"
+    local dll
+    ninja -C "$DXVK_SRC/$build_dir" "${DXVK_DLLS[@]/#/src/}"
+    echo "=== Installing DXVK as Wine builtins ($wine_arch) ==="
+    for dll in "${DXVK_DLLS[@]}"; do
+        cp "$DXVK_SRC/$build_dir/src/$dll" "$WINE_LIB/$wine_arch/${dll##*/}"
+        mark_wine_builtin "$WINE_LIB/$wine_arch/${dll##*/}"
+    done
 }
+
+# DXMT's Metal interface, left behind by an install from before D3D11 moved to
+# DXVK. Nothing loads it any more; remove it so a bottle does not pick it up.
+rm -f "$WINE_LIB/x86_64-windows/winemetal.dll" "$WINE_LIB/i386-windows/winemetal.dll" \
+      "$WINE_LIB/x86_64-unix/winemetal.so"
 
 setup_arch build-win32.txt build.w32 win32
 setup_arch build-win64.txt build.w64 win64
@@ -110,5 +121,6 @@ wait "$pid_w64" || build_failed=1
 # driver to (re-)assert it.
 
 echo "=== Done! ==="
-file "$WINE_LIB/i386-windows/d3d9.dll" "$WINE_LIB/x86_64-windows/d3d9.dll" \
-     "$WINE_LIB/i386-windows/d3d8.dll" "$WINE_LIB/x86_64-windows/d3d8.dll"
+for dll in "${DXVK_DLLS[@]}"; do
+    file "$WINE_LIB/i386-windows/${dll##*/}" "$WINE_LIB/x86_64-windows/${dll##*/}"
+done

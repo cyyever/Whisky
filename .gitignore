@@ -91,7 +91,6 @@ fastlane/test_output
 
 iOSInjectionProject/
 vendor/x86-deps/
-vendor/llvm15-x86/
 vendor/wine/build*/
 vendor/.wine-installed
 vendor/ffmpeg/

@@ -3,13 +3,13 @@ set -e
 
 # Build vkd3d-proton's d3d12.dll + d3d12core.dll (64-bit PE, cross-compiled with
 # mingw-w64) and install them as the Wine *builtin* d3d12, the same lifecycle as
-# DXVK's d3d9 and DXMT's d3d11.
+# DXVK's d3d9/d3d11.
 #
 # 64-bit only: no D3D12 title ships a 32-bit build, and vkd3d-proton does not
 # support one.
 #
 # Must run AFTER `make proton`, which rebuilds Wine/lib and would otherwise
-# clobber these builtins -- the same ordering `make dxvk` and `make dxmt` need.
+# clobber these builtins -- the same ordering `make dxvk` needs.
 #
 # STATUS. Device creation, compute and basic graphics have all been measured
 # working on KosmicKrisp under Rosetta with patches/vkd3d-proton applied: a DXBC

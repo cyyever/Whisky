@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# clang-tidy-scan.sh <dxvk|dxmt|mesa> [file-regex]
+# clang-tidy-scan.sh <dxvk|mesa> [file-regex]
 #
 # Runs the repo's curated clang-tidy check set (see .clang-tidy at the root)
 # against one vendored backend, using the compile_commands.json that its meson
@@ -8,8 +8,7 @@
 # never builds, never applies fixes.
 #
 # Backends and their compile DBs (meson auto-emits compile_commands.json):
-#   dxvk        vendor/dxvk/build.w64   — D3D9, C++, mingw cross (UPSTREAM, low-pri)
-#   dxmt        vendor/dxmt/build       — D3D11/Metal, C++ (actively developed here)
+#   dxvk        vendor/dxvk/build.w64   — D3D9/D3D11, C++, mingw cross (UPSTREAM)
 #   mesa        vendor/mesa/build-x86_64 — KosmicKrisp Vulkan driver, C (UPSTREAM)
 #
 # The optional second arg is a file regex passed to run-clang-tidy. It defaults
@@ -36,7 +35,7 @@ mkdir -p "$SCRATCH"
 report="$SCRATCH/clang-tidy-${backend}.txt"
 
 usage() {
-    echo "usage: clang-tidy-scan.sh <dxvk|dxmt|mesa> [file-regex]" >&2
+    echo "usage: clang-tidy-scan.sh <dxvk|mesa> [file-regex]" >&2
     exit 2
 }
 
@@ -48,17 +47,14 @@ usage() {
 #
 # Why it's needed: the compile_commands.json was emitted for a *different*
 # compiler than clang-tidy's clang — x86_64-w64-mingw32-g++ for the PE code
-# (DXVK/DXMT), Apple clang (`-arch x86_64`) for the macOS-native unix TUs
-# (winemetal/unix) and Mesa. clang doesn't know those compilers' builtin
+# (DXVK), Apple clang (`-arch x86_64`) for Mesa. clang doesn't know those compilers' builtin
 # `-isystem` dirs or their implied target, so <cstdint>/<dlfcn.h>/<windows.h>
 # all vanish. We ask the *real* compiler for its search dirs and target, then
 # feed them back to clang-tidy.
 #
 # The profile (mingw cross vs macOS native) is auto-detected from the first DB
 # entry matching the scan regex — backend subtrees are single-toolchain, so one
-# profile fits a scoped scan. (A broad dxmt regex spanning both the PE tree and
-# winemetal/unix picks whichever matches first; scan the native unix subtree
-# separately, e.g. `clang-tidy-scan.sh dxmt vendor/dxmt/src/winemetal/unix/`.)
+# profile fits a scoped scan.
 compute_toolchain_args() {
     local build_dir="$1" regex="$2"
     local db="$build_dir/compile_commands.json"
@@ -141,11 +137,7 @@ PY
 case "$backend" in
     dxvk)
         builddir="vendor/dxvk/build.w64"
-        default_regex="vendor/dxvk/src/d3d9/"
-        ;;
-    dxmt)
-        builddir="vendor/dxmt/build"
-        default_regex="vendor/dxmt/src/"
+        default_regex="vendor/dxvk/src/"
         ;;
     mesa)
         builddir="vendor/mesa/build-x86_64"

@@ -3,8 +3,9 @@
 # graphics-loadorder-test — assert nothing in a bottle can displace the graphics
 # builtins we ship.
 #
-# This tree provides d3d9/d3d8 (DXVK), d3d11/d3d10core/dxgi (DXMT), vulkan-1
-# (winevulkan) and winemetal as Wine *builtins*, and patch 0017 resolves those
+# This tree provides d3d9/d3d8/d3d11/d3d10core/dxgi (DXVK) and vulkan-1
+# (winevulkan) as Wine *builtins* (winemetal is DXMT's, no longer shipped, but
+# patch 0017 still lists it), and patch 0017 resolves those
 # basenames to LO_BUILTIN ahead of the DllOverrides registry. Two kinds of
 # leftover state used to defeat that, and both were written by the same retired
 # feature -- Whisky's old per-game DXVK install, which dropped a copy of

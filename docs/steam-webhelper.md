@@ -20,7 +20,7 @@ composite into child HWNDs; games render into their toplevel. Hence "only browse
 Fixed by rewriting `0009` (`fc088f9e` → `845bd4d4` → `77a47e98`) onto
 `macdrv_client_surface_create()` + `add_window_client_surface()`, exporting two scalar
 functions instead of a struct-shaped ABI — details in `docs/proton-migration.md` under
-`0009`. Regression test: `tests/dxmt-child-swapchain-test.c`.
+`0009`. Regression test: `tests/d3d11-child-swapchain-test.c`.
 
 **Diagnosing this one:** the DXMT log line above is the tell. If you instead see feature
 level 9_3 in `tests/d3d11-featurelevel-test.c`, that is the *other* DXMT bug — `make proton`
@@ -87,6 +87,14 @@ and the host exits. `--no-sandbox` is the universal Wine/Proton workaround
 (Valve's own Linux Steam passes `-no-cef-sandbox`); there is no realistic root
 fix, so the flag is permanent.
 
+> **D3D11 is DXVK now, not DXMT** (2026-11-01). Everything below about DXMT is the
+> history that got the webhelper working. What carries over: the webhelper needs a
+> D3D11 at feature level 10+ (DXVK reports 11_1 on KosmicKrisp), and DXVK must stay
+> restored over wined3d after every `make proton`. What is **unverified**: DXVK's
+> D3D11 presents through KosmicKrisp's WSI -- the same WSI the shelved ANGLE-Vulkan
+> experiment below found flickering with CEF's ~10 interleaved swapchains. Check the
+> Steam UI for flicker first if it looks wrong.
+
 **GPU rendering and the GLES3 requirement (DXMT on the D3D11 path).** CEF's GPU
 process needs a shared **GLES3** context for its `SharedImageStub` (GPU
 virtualization); without it CEF hits `kFatalFailure` and retries forever — the
@@ -120,10 +128,10 @@ Wine's `make install` rewrites the builtin `d3d11.dll` (wined3d) **over** the DX
 copy that `make dxmt` had installed, silently dropping the webhelper (and D3D11
 games) back to FL_9_3 → GLES2 → death-loop. The patch-0017 load order is correct
 (it routes `d3d11` to the builtin); the bug was the builtin being wined3d. Fix:
-`scripts/build-proton-x86.sh` now restores DXMT (d3d11/d3d10core/dxgi/winemetal)
-over wined3d after `make install`, mirroring the KosmicKrisp loader swap — so
-`make proton` is order-independent (no need to re-run `make dxmt` after every
-rebuild). Skipped when DXMT artifacts are absent (wined3d stays; run `make dxmt`).
+`scripts/build-proton-x86.sh` restores the D3D11 provider over wined3d after
+`make install` -- DXMT then, DXVK's d3d11/d3d10core/dxgi now -- so `make proton` is
+order-independent. Skipped when the artifacts are absent (wined3d stays; run
+`make dxvk`).
 
 **Experimental ANGLE-Vulkan ES3 (shelved).** `--use-angle=vulkan --use-cmd-decoder=passthrough`
 routes ANGLE → `vulkan-1.dll` (winevulkan) → KosmicKrisp → Metal, giving real **GLES 3.0**
@@ -162,8 +170,8 @@ with the override a real launch cleared **all** `VK_KHR_surface`/`gl_factory_win
 CPU dropped from ~160% to ~0.5%, and the log flood stopped. (The login window then still
 needs network connectivity — a separate proxy/network matter, see §2.)
 
-Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXMT_LOG_PATH` is honored
-in the webhelper (d3d11 is DXMT). Always launch Steam with the **full bottle env**
+Diagnostics: `WINEDEBUG=+d3d` (feature level / GL version); `DXVK_LOG_LEVEL=info` /
+`DXVK_LOG_PATH` for the webhelper's D3D11 (DXVK; `DXMT_LOG_PATH` while it was DXMT). Always launch Steam with the **full bottle env**
 (the app builds it in `Wine.runProgram`) — a minimal env missing `winemetal=b` /
 `DYLD_FALLBACK_LIBRARY_PATH` makes steam.exe spin at ~100% with no window.
 

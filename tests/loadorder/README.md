@@ -4,7 +4,7 @@ Regression test for `patches/proton-wine/0017-macos-metal-builtin-dll-loadorder.
 
 That patch extends Wine's `get_load_order()` so `d3d9`, `d3d8`, `d3d11`,
 `d3d10core`, `dxgi`, `vulkan-1` (+ `winemetal` on macOS) default to **builtin** —
-DXVK / DXMT / winevulkan — with no per-bottle `WINEDLLOVERRIDES`. It matches on the
+DXVK / winevulkan (and, while it shipped, DXMT's winemetal) — with no per-bottle `WINEDLLOVERRIDES`. It matches on the
 basename, so it also catches app-directory loads (notably Steam CEF's own bundled
 `vulkan-1.dll`) that an env override cannot.
 
@@ -31,8 +31,8 @@ which is what happened when all seven ~90 MB DXVK+DXMT builtins shared one proce
 
 `get_load_order()` only runs once the loader has *found* a file for the name. All
 seven modules are Wine builtins carrying the `Wine builtin DLL` DOS-stub signature —
-`d3d11`/`d3d10core`/`dxgi`/`vulkan-1`/`winemetal` from winebuild/DXMT, and DXVK's
-`d3d9`/`d3d8` stamped by `build-dxvk.sh`'s `mark_wine_builtin` — so wineboot mirrors
+`vulkan-1` from winebuild, DXVK's `d3d9`/`d3d8`/`d3d11`/`d3d10core`/`dxgi` stamped by
+`build-dxvk.sh`'s `mark_wine_builtin` (and `winemetal` from DXMT, while it shipped) — so wineboot mirrors
 each into the prefix's `system32` and the loader finds it. (An unsigned DXVK d3d9
 would fail `LoadLibraryA` with `STATUS_DLL_NOT_FOUND` *before* `get_load_order()`
 runs — that fresh-bottle regression is what the stamping fixes.)

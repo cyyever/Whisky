@@ -1,19 +1,16 @@
 /*
- * dxmt-child-swapchain-test — assert DXMT can build a swapchain on a child HWND.
+ * d3d11-child-swapchain-test — assert D3D11 can build a swapchain on a child HWND.
  *
- * This is the regression that made Steam, GOG and a plain upstream Chromium all
- * show a black window for a few seconds and then vanish. DXMT gets its Metal
- * view from winemac.drv; the shim in patches/proton-wine/0009 only produced one
- * for a toplevel window, so a child HWND yielded NULL. DXMT does not treat that
- * as a recoverable error -- d3d11_swapchain.cpp logs
+ * A browser composites into a child HWND; a game does not. That difference hid
+ * a regression once, under DXMT (D3D11's provider until it moved to DXVK): its
+ * Metal view came from winemac.drv, the shim in patches/proton-wine/0009 only
+ * produced one for a toplevel window, and DXMT abort()ed on the NULL -- Steam,
+ * GOG and a plain upstream Chromium all showed a black window for a few seconds
+ * and then vanished, while games ran fine and it looked like a graphics bug.
+ * DXVK reaches the window through winevulkan's surface instead, which is a
+ * different path to the same requirement, so the test stays.
  *
- *     Failed to create metal view, it seems like your Wine has no exported
- *     symbols needed by DXMT.
- *
- * and calls abort(). A browser composites into a child HWND; a game does not,
- * which is why games were unaffected and this looked like a graphics bug.
- *
- * Because the failure is abort() rather than a bad HRESULT, "the test process
+ * Because that failure was abort() rather than a bad HRESULT, "the test process
  * exited normally" is itself an assertion here -- a regression kills this
  * program outright, and the exit code says so.
  *
@@ -21,10 +18,10 @@
  * failure points at the driver rather than at a browser's GL layer.
  *
  * Build:
- *   x86_64-w64-mingw32-gcc -O1 -o dxmt-child-swapchain-test.exe \
- *       dxmt-child-swapchain-test.c -ld3d11 -ldxgi -luser32
+ *   x86_64-w64-mingw32-gcc -O1 -o d3d11-child-swapchain-test.exe \
+ *       d3d11-child-swapchain-test.c -ld3d11 -ldxgi -luser32
  * Run:
- *   wine dxmt-child-swapchain-test.exe     # exit 0 = all cases pass
+ *   wine d3d11-child-swapchain-test.exe    # exit 0 = all cases pass
  */
 
 #define COBJMACROS   /* C-style IFace_Method() wrappers */
@@ -104,7 +101,7 @@ int main(void)
         return 2;
     }
     printf("feature level 0x%04x%s\n", level,
-           level >= 0xb000 ? "  (DXMT)" : "  (wined3d -- DXMT is not installed, results are not meaningful)");
+           level >= 0xb000 ? "  (DXVK)" : "  (wined3d -- DXVK's d3d11 is not installed, results are not meaningful)");
 
     if (FAILED(ID3D11Device_QueryInterface(device, &IID_IDXGIDevice, (void **)&dxgi_device)) ||
         FAILED(IDXGIDevice_GetAdapter(dxgi_device, &adapter)) ||
@@ -116,13 +113,13 @@ int main(void)
 
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = GetModuleHandleA(NULL);
-    wc.lpszClassName = "DxmtChildSwapchainTest";
+    wc.lpszClassName = "D3d11ChildSwapchainTest";
     RegisterClassA(&wc);
 
-#define WIN(style, parent) CreateWindowExA(0, "DxmtChildSwapchainTest", "sc", (style), \
+#define WIN(style, parent) CreateWindowExA(0, "D3d11ChildSwapchainTest", "sc", (style), \
                                            0, 0, 320, 240, (parent), NULL, wc.hInstance, NULL)
 
-    /* Baseline: a toplevel. This is what games hand DXMT, and it always worked. */
+    /* Baseline: a toplevel. This is what games hand D3D11, and it always worked. */
     toplevel = WIN(WS_OVERLAPPEDWINDOW, NULL);
     ShowWindow(toplevel, SW_SHOW);
     check_swapchain("toplevel", toplevel);
@@ -144,7 +141,7 @@ int main(void)
 
     /* Two swapchains alive at once on different children of one toplevel: a
      * browser holds one per composited widget, and a shim that tracks a single
-     * surface releases the first while DXMT is still rendering into it. */
+     * surface releases the first while D3D11 is still rendering into it. */
     {
         DXGI_SWAP_CHAIN_DESC1 desc = {0};
         IDXGISwapChain1 *a = NULL, *b = NULL;
@@ -172,7 +169,7 @@ int main(void)
     }
 
     /* Destroying the window must not take the process with it: the surface is
-     * detached by win32u while DXMT still holds its view. */
+     * detached by win32u while D3D11 still holds its surface. */
     DestroyWindow(child);
     printf("PASS %-34s survived window destruction\n", "child destroy");
 

@@ -14,7 +14,7 @@
 # Reliable regardless of the caller's cwd or how it was invoked.
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# Where the build payloads land (Wine, DXVK, DXMT, ProxyChains, version plist).
+# Where the build payloads land (Wine, DXVK, ProxyChains, version plist).
 INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries"
 
 # The x86_64 libraries linked into x86_64 Wine (freetype, gnutls, SDL2, the
@@ -52,7 +52,7 @@ export DEVELOPER_DIR
 # builtin. wineboot only mirrors a lib/wine PE into a bottle's system32 — making it
 # findable by LoadLibrary — if the 17 bytes right after the 64-byte DOS header are
 # that signature (dlls/setupapi/fakedll.c read_file/install_lib_dir). winebuild
-# stamps Wine's own builtins (and DXMT's); DXVK is built by mingw and lacks it, so
+# stamps Wine's own builtins; DXVK is built by mingw and lacks it, so
 # on a fresh bottle LoadLibraryA("d3d9.dll") would fail with STATUS_DLL_NOT_FOUND
 # *before* patch 0017's load order (which forces builtin) ever runs. We overwrite
 # only the DOS stub at offset 64 — never executed by the PE loader; e_lfanew (128)
@@ -174,7 +174,7 @@ require_tools() {
     done
 }
 
-# ccache policy. Enabled by DEFAULT — the x86_64 Wine/DXMT builds run gcc/clang
+# ccache policy. Enabled by DEFAULT — the x86_64 Wine build runs gcc/clang
 # under Rosetta (slow), so caching turns an incremental rebuild from tens of
 # minutes into seconds. Disable per-build with `WHISKY_CCACHE=0` for the two
 # scenarios where a fresh, cache-independent compile matters:
@@ -328,18 +328,18 @@ wine_configure() {
 }
 
 # The build-tree prefixes whose libraries get copied into Wine/lib. Scope for
-# relocate_to_rpath below, and it must stay this narrow: the LLVM that DXMT
-# builds against is under PROJECT_DIR too (vendor/llvm15-x86), so matching on
-# "$PROJECT_DIR/" rewrites references into it as well. That broke DXMT once,
-# with the x86 brew's llvm@15 -- winemetal.so linked its libunwind.1.dylib,
-# nothing bundles that, and the rewritten @rpath/libunwind.1.dylib resolved
-# nowhere. The module failed to load and took D3D11 with it, silently.
+# relocate_to_rpath below, and it must stay this narrow: rewriting a reference
+# into anything else under PROJECT_DIR to @rpath/<leaf> points it at a library
+# nothing bundles. That happened once, with the x86 brew (then under vendor/)
+# and DXMT's winemetal.so, which linked brew llvm@15's libunwind.1.dylib: the
+# rewritten @rpath/libunwind.1.dylib resolved nowhere, and the module failed to
+# load and took D3D11 with it, silently.
 # One per line, and every reader consumes it with `while IFS= read -r`: joined
 # with spaces and word-split by $(...) it breaks on a checkout path containing a
 # space -- "/Users/me/My Code/Whisky/vendor/..." becomes the tokens
 # "/Users/me/My" and "Code/Whisky/vendor/...", and the first one prefix-matches
 # everything under the home directory, including the brew keg this scope exists
-# to exclude. That is the DXMT breakage above, reintroduced by a quoting bug.
+# to exclude. That is the breakage above, reintroduced by a quoting bug.
 bundled_prefixes() {
     printf '%s\n' "$PROJECT_DIR/vendor/gstreamer-x86/" "$PROJECT_DIR/vendor/ffmpeg-x86/" "$X86_DEPS/"
 }

@@ -10,7 +10,7 @@ set -e
 # GTK, X11 and an image stack, and its transitive netpbm and subversion have no
 # x86_64 bottle for macOS 27, so brew wants to build them from source and refuses
 # because Xcode 26.5 is older than the macOS it expects. That check is Homebrew
-# policy, not a compiler limit -- the same toolchain builds Wine, DXVK, DXMT and
+# policy, not a compiler limit -- the same toolchain builds Wine, DXVK and
 # KosmicKrisp here every day.
 #
 # Only what decoding a WMV needs, via -Dauto_features=disabled plus an explicit
