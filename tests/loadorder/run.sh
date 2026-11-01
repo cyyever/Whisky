@@ -62,7 +62,8 @@ cleanup() {
 }
 trap cleanup EXIT
 echo "=== creating scratch prefix ==="
-if ! WINEDEBUG=-all timeout 180 "$WINE" wineboot --init > "$WORK/wineboot.log" 2>&1; then
+# Skip the Mono/Gecko prompts, which block wineboot when no one is at the display.
+if ! WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" timeout 180 "$WINE" wineboot --init > "$WORK/wineboot.log" 2>&1; then
     cat "$WORK/wineboot.log"
     exit 1
 fi

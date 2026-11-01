@@ -50,7 +50,8 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$WINEPREFIX"
 echo "Logs: $RUN"
-if ! timeout 180 "$WINE" wineboot --init > "$RUN/wineboot.log" 2>&1; then
+# Skip the Mono/Gecko prompts, which block wineboot when no one is at the display.
+if ! WINEDLLOVERRIDES="mscoree,mshtml=" timeout 180 "$WINE" wineboot --init > "$RUN/wineboot.log" 2>&1; then
     cat "$RUN/wineboot.log"
     exit 1
 fi

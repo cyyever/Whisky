@@ -24,7 +24,7 @@ Download the latest build from this fork's
 make x86-deps        # one-time: cross-build Wine's x86_64 libraries
 make proton          # build proton-wine
 make dxvk            # build DXVK (D3D9 + D3D11), install as Wine builtins
-make vkd3d           # optional D3D12 (vkd3d-proton; real games unverified)
+make vkd3d           # optional D3D12 (vkd3d-proton; blocked: KosmicKrisp lacks transform feedback)
 make test-d3d12      # test the installed D3D12 provider
 make app             # build the Whisky app (or: make run)
 ```

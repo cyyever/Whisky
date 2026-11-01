@@ -11,7 +11,10 @@ tree that plain WineHQ 11.13 lacks.
   `WineBackend` enum and the side-by-side `Libraries/WineProton` plumbing that existed
   during bring-up are gone; legacy Whisky-Wine 11.13 (`vendor/wine`) is removed entirely.
 - Built x86_64, runs under Rosetta 2; DXVK (D3D9 and D3D11) installed on top of the
-  Proton build. Optional vkd3d-proton provides D3D12 via the same Vulkan path.
+  Proton build. Optional vkd3d-proton provides D3D12 via the same Vulkan path, but
+  it cannot create a device yet: KosmicKrisp lacks `VK_EXT_transform_feedback`, which
+  vkd3d-proton requires (`D3D12CreateDevice` returns `E_INVALIDARG`, so `make test-d3d12`
+  fails 0/6).
   Reports `wine-11.0`.
 - **Steam logs in fully.** With the minimal-msync config Steam boots → CEF webhelper →
   full CM logon: `RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, login window
