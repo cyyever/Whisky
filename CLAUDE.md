@@ -7,7 +7,7 @@ Keep this file high-level. Details live in `docs/`, the build scripts, `patches/
 ## Architecture
 - **Whisky** — SwiftUI app (Xcode project). **WhiskyKit** — Swift package (Wine/bottle/process logic); `PlatformMacOS/` holds the macOS-specific files.
 - **Wine** — x86_64 Proton-wine 11.0, built from source, runs under Rosetta 2. Source `vendor/proton-wine` (gitignored) + `patches/proton-wine/`.
-- **DXVK** — D3D9/8 and D3D11/10/DXGI (`vendor/dxvk`), over winevulkan. **KosmicKrisp** — Vulkan-on-Metal (`vendor/mesa`). Stream output remains a known gap (no transform feedback). Optional **vkd3d-proton** provides D3D12 through the same Vulkan path; see `tests/d3d12/README.md`.
+- **DXVK** — D3D9/8 and D3D11/10/DXGI (`vendor/dxvk`), over winevulkan. **KosmicKrisp** — Vulkan-on-Metal (`vendor/mesa`). Transform feedback (stream output) is a backport of an unmerged MR (`patches/mesa/0004`). Optional **vkd3d-proton** provides D3D12 through the same Vulkan path; see `tests/d3d12/README.md`.
 - Steam CEF (`steamwebhelper.exe`) gets `--no-sandbox` appended in Proton itself (`hack_append_command_line`, patches/proton-wine 0020) — no launcher shim.
 
 ## Build

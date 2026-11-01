@@ -32,10 +32,11 @@ The prefix is removed after its wineserver stops; user bottles are untouched.
 | mrt | Two simultaneous render targets, green and blue pixel readbacks |
 | depth | Green draw writes depth; equal-depth red draw must fail LESS |
 | stencil | Matching reference draws green; mismatched red draw must fail EQUAL |
+| streamout | VS-only stream output of 6 vertices, `BufferFilledSize`, SO statistics query |
 
 Shaders are compiled with Wine's `d3dcompiler_47` to DXBC. This does not test
-DXIL/SM6, bindless resources, geometry/tessellation shaders, stream output,
-presentation, or real games. The texel-buffer alignment relaxation in the local
+DXIL/SM6, bindless resources, geometry/tessellation shaders, stream output from a
+geometry shader, presentation, or real games. The texel-buffer alignment relaxation in the local
 patch remains experimental; passing these probes does not validate that path.
 
 Historical smoke/compute/triangle results predate the current checkout. Current
@@ -43,11 +44,9 @@ results should be taken from a fresh run, not inferred from those old records.
 
 ## Validation on 2026-11-01
 
-The pinned vkd3d-proton build and the Wine rebuild/install completed. All twelve
-DXVK/vkd3d-proton DLLs still matched their stamped build artifacts after Wine's
-reinstall. The D3D12 probes compiled with `-Wall -Werror`.
-
-Runtime execution was blocked before the first probe: wineserver could not bind
-its local IPC socket in the execution sandbox (`Operation not permitted`). No
-current GPU pass result is claimed for the six cases. Run `make test-d3d12` and
-`tests/loadorder/run.sh` from a normal macOS terminal to complete runtime validation.
+Before the KosmicKrisp transform feedback backport (`patches/mesa/0004`, mesa!44928),
+every probe failed in `D3D12CreateDevice` with `E_INVALIDARG`: vkd3d-proton
+requires `VK_EXT_transform_feedback`. With the backport, on an M2, all seven
+probes pass, `tests/loadorder/run.sh` passes 14/14, and the KosmicKrisp bump
+checks (`tests/vulkan/strip-cull-test.sh`, `tests/vulkan/feature-gate-test.sh`)
+report no failures.

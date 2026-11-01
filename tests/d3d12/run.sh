@@ -57,7 +57,7 @@ if ! WINEDLLOVERRIDES="mscoree,mshtml=" timeout 180 "$WINE" wineboot --init > "$
 fi
 
 pass=0 fail=0
-for test in smoke compute triangle mrt depth stencil; do
+for test in smoke compute triangle mrt depth stencil streamout; do
     source_test="$test"
     case "$test" in mrt|depth|stencil) source_test=triangle ;; esac
     exe="$RUN/d3d12_$test.exe"

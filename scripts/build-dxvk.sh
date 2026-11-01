@@ -10,8 +10,8 @@ set -e
 #
 # d3d8 is a thin wrapper over DXVK's d3d9 (it calls Direct3DCreate9 from d3d9.dll),
 # and d3d10core over its d3d11, so each ships with the DLL it wraps.
-# Known gap: KosmicKrisp has no transform feedback, so stream-output shaders
-# cannot use that Vulkan extension.
+# Transform feedback (stream output) comes from patches/mesa/0004, a backport of
+# mesa!44928; drop that patch once the MR lands upstream.
 # Must run AFTER `make proton`, which rebuilds Wine/lib; build-proton-x86.sh
 # restores these builtins from the build trees, so the order only matters on the
 # first build.
