@@ -23,7 +23,7 @@ tests/gstreamer/dshow-render-test.sh reproduces the hang in both bitnesses
 without Steam or a game.
 
 diff --git a/dlls/winegstreamer/unixlib.c b/dlls/winegstreamer/unixlib.c
-index b259388026b..30fecd57ba5 100644
+index b259388..30fecd5 100644
 --- a/dlls/winegstreamer/unixlib.c
 +++ b/dlls/winegstreamer/unixlib.c
 @@ -323,8 +323,22 @@ NTSTATUS wg_init_gstreamer(void *arg)

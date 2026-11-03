@@ -38,10 +38,10 @@ commits, not working-tree edits, and patches/proton-wine/ is all a fresh clone
 gets -- vendor/proton-wine is gitignored.
 
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
-index 34f2d9c0a56..cf3e3238baa 100644
+index 2eabf94..f90fcf1 100644
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -1758,7 +1758,48 @@ done:
+@@ -1631,7 +1631,48 @@ done:
   * Load the builtin dll if specified by load order configuration.
   * Return STATUS_IMAGE_ALREADY_LOADED if we should keep the native one that we have found.
   */
@@ -91,7 +91,7 @@ index 34f2d9c0a56..cf3e3238baa 100644
                         ANSI_STRING *exp_name, USHORT machine, SECTION_IMAGE_INFORMATION *info,
                         void **module, SIZE_T *size, ULONG_PTR limit_low, ULONG_PTR limit_high,
                         off_t offset )
-@@ -1686,6 +1727,17 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
+@@ -1674,6 +1715,17 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
      }
  }
  
@@ -110,10 +110,18 @@ index 34f2d9c0a56..cf3e3238baa 100644
  /***********************************************************************
   *           load_unixlib_by_name
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
-index dc5f4796cdf..72e57494e8f 100644
+index 0786dba..b4235b8 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -2689,6 +2689,64 @@ static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
+@@ -34,6 +34,7 @@
+ #include <stdio.h>
+ #include <sys/types.h>
+ #include <sys/mman.h>
++#include <fcntl.h>
+ #include <unistd.h>
+ #ifdef HAVE_LINK_H
+ # include <link.h>
+@@ -2516,6 +2517,64 @@ static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
   *
   * Handler for SIGSEGV and related errors.
   */
@@ -178,7 +186,7 @@ index dc5f4796cdf..72e57494e8f 100644
  static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  {
      ucontext_t *ucontext = sigcontext;
-@@ -2699,6 +2757,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -2534,6 +2593,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
      rec.ExceptionAddress = (void *)RIP_sig(ucontext);
      save_context( &context, ucontext );
  
@@ -191,7 +199,7 @@ index dc5f4796cdf..72e57494e8f 100644
      switch(TRAP_sig(ucontext))
      {
      case TRAP_x86_OFLOW:   /* Overflow exception */
-@@ -3140,6 +3204,8 @@ void signal_init_process(void)
+@@ -3022,6 +3087,8 @@ void signal_init_process(void)
      struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
      void *ptr, *kernel_stack = (char *)thread_data->kernel_stack + kernel_stack_size;
  
@@ -201,10 +209,10 @@ index dc5f4796cdf..72e57494e8f 100644
      frame_size = offsetof( struct syscall_frame, xstate ) + xstate_size;
  
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index c66b96ed592..74a4eea4000 100644
+index 23cf236..4e2a8c7 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -5841,6 +5841,52 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+@@ -5838,6 +5838,52 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
  }
  
  
@@ -257,7 +265,7 @@ index c66b96ed592..74a4eea4000 100644
  /***********************************************************************
   *             NtProtectVirtualMemory   (NTDLL.@)
   *             ZwProtectVirtualMemory   (NTDLL.@)
-@@ -5943,6 +5989,10 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T
+@@ -5940,6 +5986,10 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T
          *old_prot = old;
      }
      else *old_prot = PAGE_NOACCESS;

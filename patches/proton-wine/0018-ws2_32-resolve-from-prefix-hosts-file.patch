@@ -16,7 +16,7 @@ failure it falls through to the normal resolver, so behaviour is unchanged when
 the hosts file has no matching entry (the default).
 
 diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
-index 3e91ab80c3e..915758be886 100644
+index 3e91ab8..915758b 100644
 --- a/dlls/ws2_32/protocol.c
 +++ b/dlls/ws2_32/protocol.c
 @@ -167,6 +167,91 @@ static BOOL eac_download_hack(void)

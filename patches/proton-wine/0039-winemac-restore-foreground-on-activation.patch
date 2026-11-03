@@ -27,10 +27,12 @@ The deactivation guard is replaced for a separate reason: it compared
 get_active_window(), which is GUITHREADINFO for the CALLING thread, against the
 global foreground window. APP_DEACTIVATED is handled by whichever thread pumps
 events first, so the two matched only by luck.
----
+
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index 4f19100..eb86636 100644
 --- a/dlls/winemac.drv/window.c
 +++ b/dlls/winemac.drv/window.c
-@@ -1799,10 +1799,46 @@
+@@ -1793,10 +1793,46 @@ void macdrv_window_lost_focus(HWND hwnd, const macdrv_event *event)
   *
   * Handler for APP_ACTIVATED events.
   */
@@ -77,7 +79,7 @@ events first, so the two matched only by luck.
  }
  
  
-@@ -1813,10 +1849,20 @@
+@@ -1807,10 +1843,20 @@ void macdrv_app_activated(void)
   */
  void macdrv_app_deactivated(void)
  {

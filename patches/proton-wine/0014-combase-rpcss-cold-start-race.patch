@@ -23,7 +23,7 @@ created its endpoint.
 Signed-off-by: cyy <cyyever@gmail.com>
 
 diff --git a/dlls/combase/rpc.c b/dlls/combase/rpc.c
-index c51b59de4bf..c5baab84f16 100644
+index c51b59d..c5baab8 100644
 --- a/dlls/combase/rpc.c
 +++ b/dlls/combase/rpc.c
 @@ -184,53 +184,57 @@ static LONG WINAPI rpc_filter(EXCEPTION_POINTERS *eptr)

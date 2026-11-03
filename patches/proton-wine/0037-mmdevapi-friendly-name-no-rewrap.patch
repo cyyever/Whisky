@@ -27,9 +27,11 @@ enumeration.  Names already decorated stay as they are; nothing rewrites them
 until the device is seen again, at which point it is created from the real
 driver id and the name comes out correct.
 
+diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
+index 7fd518d..7004d13 100644
 --- a/dlls/mmdevapi/devenum.c
 +++ b/dlls/mmdevapi/devenum.c
-@@ -664,6 +664,12 @@
+@@ -664,6 +664,12 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
      {
          HKEY keyprop;
          RegSetValueExW(key, L"DeviceState", 0, REG_DWORD, (const BYTE*)&state, sizeof(DWORD));
@@ -42,17 +44,17 @@ driver id and the name comes out correct.
          if (!RegCreateKeyExW(key, L"Properties", 0, NULL, 0, KEY_WRITE|KEY_READ|KEY_WOW64_64KEY, NULL, &keyprop, NULL))
          {
              PROPVARIANT pv;
-@@ -706,10 +712,20 @@
+@@ -706,10 +712,20 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
  
              if (FAILED(set_driver_prop_value(id, flow, &PKEY_AudioEndpoint_FormFactor)))
              {
 -                pv.vt = VT_UI4;
 -                pv.ulVal = (flow == eCapture) ? Microphone : Speakers;
 +                PROPVARIANT pv2;
++
++                PropVariantInit(&pv2);
  
 -                MMDevice_SetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv);
-+                PropVariantInit(&pv2);
-+
 +                /* make read-write by not overwriting if already set: a device
 +                 * that is no longer present has no driver to ask, and the
 +                 * generic value would replace whatever it was stored as */
@@ -66,7 +68,7 @@ driver id and the name comes out correct.
              }
  
              if (flow != eCapture)
-@@ -791,13 +807,36 @@
+@@ -791,13 +807,36 @@ HRESULT load_devices_from_reg(void)
          }
          if (ret != ERROR_SUCCESS)
              continue;

@@ -17,7 +17,7 @@ program, because a game that genuinely needs the DEP-off legacy handling must
 have some way to ask for it.
 
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index bbb448cc69d..c06e82b4e84 100644
+index 52b6e70..d8a19fe 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
 @@ -1680,9 +1680,22 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Shared source pin and DLL installation contract for vkd3d-proton.
-VKD3D_REVISION=ec6d0434deb392c6c9901b9912fbb934ce28c515
+VKD3D_REVISION=15dd1ee7864ef83c4ef835c72720effe60a10899
 VKD3D_SOURCE_URL=https://github.com/HansKristian-Work/vkd3d-proton.git
 VKD3D_DLLS=(d3d12 d3d12core)
 

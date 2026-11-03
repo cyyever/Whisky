@@ -24,10 +24,12 @@ decided later, in virtual_map_builtin_module.
 
 On this bottle it names the three that are shadowed -- xaudio2_7, x3daudio1_7 and
 xactengine3_7, all from the same DXSETUP run.
----
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 6fc79c6..baf46d1 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -4091,6 +4091,43 @@
+@@ -4088,6 +4088,43 @@ NTSTATUS virtual_map_builtin_module( HANDLE mapping, void **module, SIZE_T *size
      }
      else if (prefer_native && (image_info->dll_charact & IMAGE_DLLCHARACTERISTICS_PREFER_NATIVE))
      {

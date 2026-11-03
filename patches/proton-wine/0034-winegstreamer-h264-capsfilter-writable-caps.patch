@@ -12,7 +12,7 @@ dying at the "caps event accepted" gate. Seen as Steam's CEF video failing
 with two CRITICALs and "Failed to create winegstreamer transform".
 
 diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
-index e93e69d113f..24a36856a9a 100644
+index 1f06a46..1c5a32a 100644
 --- a/dlls/winegstreamer/wg_transform.c
 +++ b/dlls/winegstreamer/wg_transform.c
 @@ -621,6 +621,7 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,

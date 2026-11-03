@@ -16,7 +16,7 @@ already missing a different one. The default belongs in the code that reads it.
 PROTON_DISABLE_LSTEAMCLIENT=0 restores upstream behaviour.
 
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index c06e82b4e84..ea1c254c294 100644
+index d8a19fe..24a741c 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
 @@ -1156,7 +1156,12 @@ static int use_lsteamclient(void)

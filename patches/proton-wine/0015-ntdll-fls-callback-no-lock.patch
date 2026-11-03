@@ -16,7 +16,7 @@ twice), drop fls_section around the callback, then re-acquire and rescan from
 the start since the thread list / registry may have changed while unlocked.
 
 diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
-index 0869b3b4f64..437dca6670c 100644
+index 0869b3b..437dca6 100644
 --- a/dlls/ntdll/thread.c
 +++ b/dlls/ntdll/thread.c
 @@ -621,20 +621,29 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH RtlFlsFree( ULONG index )

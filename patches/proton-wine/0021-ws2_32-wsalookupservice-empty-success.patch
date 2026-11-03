@@ -9,7 +9,7 @@ better than the hard failure). Upstream Wine gap. Verified live: cef_log NLA
 errors 6/launch -> 0.
 
 diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
-index 915758be886..2fd275ca864 100644
+index 915758b..2fd275c 100644
 --- a/dlls/ws2_32/protocol.c
 +++ b/dlls/ws2_32/protocol.c
 @@ -2232,9 +2232,9 @@ int WINAPI WSAGetServiceClassNameByClassIdW( GUID *class, WCHAR *service, DWORD

@@ -13,7 +13,7 @@ moved down in this series, and expressed in SDL's own mechanism rather than by
 writing to the process environment behind SDL's back.
 
 diff --git a/dlls/winebus.sys/bus_sdl.c b/dlls/winebus.sys/bus_sdl.c
-index fbea0cb00b9..cbc29006ab4 100644
+index fbea0cb..cbc2900 100644
 --- a/dlls/winebus.sys/bus_sdl.c
 +++ b/dlls/winebus.sys/bus_sdl.c
 @@ -1181,6 +1181,13 @@ NTSTATUS sdl_bus_init(void *args)

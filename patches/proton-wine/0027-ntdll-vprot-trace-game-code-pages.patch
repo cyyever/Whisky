@@ -33,10 +33,10 @@ open bug, so it destroys the very thing it was meant to observe.
 Refines the tracer from the fault-diagnostics patch and drops with it.
 
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index 74a4eea4000..b1cdccf68ab 100644
+index 4e2a8c7..abd6c25 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -5841,7 +5841,7 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+@@ -5838,7 +5838,7 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
  }
  
  
@@ -45,7 +45,7 @@ index 74a4eea4000..b1cdccf68ab 100644
   * Something writes into user32's GetAsyncKeyState thunk (confirmed: base
   * 0x7b8e0000 + 0xa430) on a page Wine keeps r-x, and the resulting
   * EXC_BAD_ACCESS is swallowed by Rosetta's exception server and retried
-@@ -5853,18 +5853,44 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
+@@ -5850,18 +5850,44 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
   *   - no call at all means the writer never asked, and would have faulted on
   *     Windows too -- so the difference is elsewhere.
   *

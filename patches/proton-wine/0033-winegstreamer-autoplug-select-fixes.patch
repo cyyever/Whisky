@@ -16,7 +16,7 @@ MEDIACONV_AUDIO_DUMP_FILE -- the audio branch never linked and Open() blocked
 forever.
 
 diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
-index 074f3f14872..25b64ecf3f5 100644
+index 074f3f1..25b64ec 100644
 --- a/dlls/winegstreamer/wg_parser.c
 +++ b/dlls/winegstreamer/wg_parser.c
 @@ -581,9 +581,18 @@ static GstAutoplugSelectResult autoplug_select_cb(GstElement *bin, GstPad *pad,

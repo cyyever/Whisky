@@ -36,7 +36,7 @@ file's own history warns about for the "*d3d9=n" spelling.
 Found in review.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
-index 3a5b69081f9..a455f15435c 100644
+index 429a6cf..e4f6f09 100644
 --- a/dlls/ntdll/unix/loadorder.c
 +++ b/dlls/ntdll/unix/loadorder.c
 @@ -317,8 +317,14 @@ static enum loadorder forced_load_order( const UNICODE_STRING *nt_name, const WC
@@ -55,7 +55,7 @@ index 3a5b69081f9..a455f15435c 100644
      }
      return ret;
  }
-@@ -488,9 +494,23 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -481,9 +487,23 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
       * "never exits, 100% CPU, one segv record" to "no segv records at all".
       *
       * Not a game bug and not fixable in the game: the writer is Steam's DLL and
@@ -83,10 +83,10 @@ index 3a5b69081f9..a455f15435c 100644
       * macOS-only because Rosetta is what turns the write into an endless loop; the
       * same hooks are fine natively. */
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index b20020e9bd5..e5d2a2e93aa 100644
+index 8200b0f..a89b0c2 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -5927,7 +5927,13 @@ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old
+@@ -5924,7 +5924,13 @@ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old
       * decrypt-in-place takes -- would match neither filter and vanish. That is
       * the one outcome this must never lose, because the silence would read as
       * "the DRM never asked", which is the exact misreading that cost a week
@@ -101,7 +101,7 @@ index b20020e9bd5..e5d2a2e93aa 100644
      if (status == STATUS_SUCCESS &&
          ((a + size) < 0x7b000000 || a >= 0x7c000000) &&
          !(new_prot & VPROT_TRACE_EXEC) && !(old & VPROT_TRACE_EXEC))
-@@ -5945,8 +5951,19 @@ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old
+@@ -5942,8 +5948,19 @@ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old
              fd = open( path, O_WRONLY | O_CREAT | O_APPEND, 0644 );
          }
      }

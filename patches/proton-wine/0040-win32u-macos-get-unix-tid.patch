@@ -10,7 +10,7 @@ truncated to int serves the same purpose. Wrapping it in one helper keeps
 the single call site free of the ifdef.
 
 diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
-index b397641592a..755b2dfaf17 100644
+index 5401c56..71fcda2 100644
 --- a/dlls/win32u/vulkan.c
 +++ b/dlls/win32u/vulkan.c
 @@ -642,11 +642,28 @@ signal_op_complete:

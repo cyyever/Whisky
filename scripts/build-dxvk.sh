@@ -85,8 +85,14 @@ WINE_LIB="$INSTALL_DIR/Wine/lib/wine"
 build_arch() {  # <build-dir> <wine-arch-dir>
     local build_dir="$1" wine_arch="$2"
     echo "=== Building DXVK ($wine_arch) ==="
-    local dll
-    ninja -C "$DXVK_SRC/$build_dir" "${DXVK_DLLS[@]/#/src/}"
+    local dll jobs=()
+    # Both arches build at once, so WHISKY_BUILD_JOBS is split between them.
+    # Unset, ninja keeps its own default.
+    if [ -n "${WHISKY_BUILD_JOBS:-}" ]; then
+        local total; total=$(whisky_ncpu) || return 1
+        jobs=(-j "$(( total / 2 > 0 ? total / 2 : 1 ))")
+    fi
+    ninja -C "$DXVK_SRC/$build_dir" "${jobs[@]}" "${DXVK_DLLS[@]/#/src/}"
     echo "=== Installing DXVK as Wine builtins ($wine_arch) ==="
     for dll in "${DXVK_DLLS[@]}"; do
         cp "$DXVK_SRC/$build_dir/src/$dll" "$WINE_LIB/$wine_arch/${dll##*/}"

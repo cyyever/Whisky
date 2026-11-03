@@ -52,7 +52,7 @@ other. The TRACE wording is preserved verbatim, redundant "fork builtin builtin"
 included, so existing logs still match.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
-index 45d7a3f7466..3a5b69081f9 100644
+index 0f31a53..429a6cf 100644
 --- a/dlls/ntdll/unix/loadorder.c
 +++ b/dlls/ntdll/unix/loadorder.c
 @@ -270,6 +270,60 @@ static inline enum loadorder get_env_load_order( const WCHAR *module )
@@ -116,7 +116,7 @@ index 45d7a3f7466..3a5b69081f9 100644
  /***************************************************************************
   *	open_app_key
   *
-@@ -420,6 +474,36 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -413,6 +467,36 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
          d3d12W, d3d12coreW,
      };
  
@@ -153,7 +153,7 @@ index 45d7a3f7466..3a5b69081f9 100644
      static const WCHAR prefixW[] = {'\\','?','?','\\'};
      enum loadorder ret = LO_INVALID;
      const WCHAR *path = nt_name->Buffer;
-@@ -511,33 +595,15 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -504,33 +588,15 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
       * the app dies on STATUS_DLL_NOT_FOUND with the DLL sitting right there.
       * WINEDLLOVERRIDES still wins: it is set per run, so it cannot go stale, and
       * it is the lever for A/B-ing a provider (e.g. wined3d vs DXVK). */

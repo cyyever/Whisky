@@ -25,10 +25,10 @@ case fails in ~20s with an error instead of hanging forever; with 0035 in
 place the full suite is unchanged (dshow both bitnesses, gstreamer-test 3/3).
 
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
-index 72e57494e8f..516c58d24ae 100644
+index b4235b8..e9416be 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -2684,6 +2684,42 @@ static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
+@@ -2512,6 +2512,42 @@ static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
  }
  
  
@@ -71,11 +71,7 @@ index 72e57494e8f..516c58d24ae 100644
  /**********************************************************************
   *		segv_handler
   *
-@@ -2749,8 +2785,13 @@ static void segv_trace( const void *addr, ULONG_PTR rip, ULONG_PTR rsp, unsigned
- static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
- {
-     ucontext_t *ucontext = sigcontext;
-     EXCEPTION_RECORD rec = { 0 };
+@@ -2582,6 +2618,11 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
      struct xcontext context;
      void *steamclient_addr = NULL;
  
@@ -85,7 +81,9 @@ index 72e57494e8f..516c58d24ae 100644
 +    if (handle_foreign_thread_fault( signal )) return;
 +#endif
      /* cpuid fault may happen in native thread. */
-@@ -2852,7 +2893,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     if (TRAP_sig(ucontext) == TRAP_x86_PROTFLT && siginfo->si_code == 0x80 && !ERROR_sig(ucontext)
+         && handle_cpuid_fault( (ULONG_PTR *)&RIP_sig(ucontext), (ULONG_PTR *)&RAX_sig(ucontext),
+@@ -2688,7 +2729,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
   */
  static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  {
@@ -99,7 +97,7 @@ index 72e57494e8f..516c58d24ae 100644
      EXCEPTION_RECORD rec = { 0 };
      struct xcontext context;
  
-@@ -2886,7 +2932,12 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -2722,7 +2768,12 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
   */
  static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  {

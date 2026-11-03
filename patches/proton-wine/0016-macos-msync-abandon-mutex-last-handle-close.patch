@@ -40,7 +40,7 @@ the sync suites drops from 2 (sync.c:393, :397) to 0, with no other location
 regressing across repeated runs.
 
 diff --git a/dlls/ntdll/unix/msync_select.c b/dlls/ntdll/unix/msync_select.c
-index 051fae69ed1..b57a1c54dc4 100644
+index 051fae6..b57a1c5 100644
 --- a/dlls/ntdll/unix/msync_select.c
 +++ b/dlls/ntdll/unix/msync_select.c
 @@ -497,6 +497,8 @@ static NTSTATUS __msync_wait_objects( DWORD count, const HANDLE *handles,
@@ -84,7 +84,7 @@ index 051fae69ed1..b57a1c54dc4 100644
      {
          /* A wait set mixing msync and server objects cannot be handled by
 diff --git a/server/msync.c b/server/msync.c
-index de6c03050b6..15f8ff21773 100644
+index de6c030..15f8ff2 100644
 --- a/server/msync.c
 +++ b/server/msync.c
 @@ -658,11 +658,17 @@ struct msync

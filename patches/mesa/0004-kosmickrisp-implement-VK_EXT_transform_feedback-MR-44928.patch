@@ -2,7 +2,8 @@ From: Willie Abrams <willie@pobox.com>
 Subject: [PATCH] kk: Implement VK_EXT_transform_feedback (mesa!44928)
 
 Squash of https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44928
-at head a4b904d1, cherry-picked onto cc5680bb. Drop once the MR lands upstream.
+at head a4b904d1, cherry-picked onto 08e7afcd. The MR's docs/ hunks are
+left out (they conflict on every relnotes change). Drop once the MR lands upstream.
 
   10a66fde poly: Compute the room left in an XFB buffer in 64 bits
   54581b68 kk: Keep GS metadata with the pipeline's VS
@@ -13,28 +14,6 @@ at head a4b904d1, cherry-picked onto cc5680bb. Drop once the MR lands upstream.
   d2181140 kk: Implement vkCmdDrawIndirectByteCount2EXT
   a4b904d1 kk: Advertise VK_EXT_transform_feedback
 ---
-diff --git a/docs/features.txt b/docs/features.txt
-index 0cf546c8..7db1e35c 100644
---- a/docs/features.txt
-+++ b/docs/features.txt
-@@ -710,7 +710,7 @@ Khronos extensions that are not part of any Vulkan version:
-   VK_EXT_surface_maintenance1                           DONE (anv, hk, kk, lvp, nvk, panvk, pvr, radv, tu, v3dv, vn)
-   VK_EXT_swapchain_colorspace                           DONE (anv, hk, kk, lvp, nvk, panvk, pvr, radv, tu, v3dv, vn)
-   VK_EXT_swapchain_maintenance1                         DONE (anv, hk, kk, lvp, nvk, panvk, pvr, radv, tu, v3dv, vn)
--  VK_EXT_transform_feedback                             DONE (anv, hasvk, hk, lvp, nvk, pvr, radv, tu, vn)
-+  VK_EXT_transform_feedback                             DONE (anv, hasvk, hk, kk, lvp, nvk, pvr, radv, tu, vn)
-   VK_EXT_vertex_attribute_divisor                       DONE (anv, dzn, hasvk, hk, kk, lvp, nvk, panvk, pvr, radv, tu, v3dv, vn)
-   VK_EXT_vertex_attribute_robustness                    DONE (kk, panvk, vn)
-   VK_EXT_vertex_input_dynamic_state                     DONE (anv, hk, lvp, nvk, panvk, radv, tu, vn)
-diff --git a/docs/relnotes/new_features.txt b/docs/relnotes/new_features.txt
-index e246f3e9..75d175e9 100644
---- a/docs/relnotes/new_features.txt
-+++ b/docs/relnotes/new_features.txt
-@@ -11,3 +11,4 @@ cl_khr_external_semaphore on asahi
- cl_khr_external_semaphore_sync_fd on asahi
- VK_KHR_maintenance7 on v3dv
- VK_KHR_maintenance8 on v3dv
-+VK_EXT_transform_feedback on kk
 diff --git a/src/kosmickrisp/libkk/kk_draws.cl b/src/kosmickrisp/libkk/kk_draws.cl
 index 15ac3a5a..413596b7 100644
 --- a/src/kosmickrisp/libkk/kk_draws.cl

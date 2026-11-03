@@ -3,7 +3,7 @@ Subject: server: Clear connection failure events in IOCTL_AFD_WINE_CONNECT.
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=53574
 
 diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
-index 639bcf3768d..e9e26770c37 100644
+index 639bcf3..e9e2677 100644
 --- a/dlls/ws2_32/tests/sock.c
 +++ b/dlls/ws2_32/tests/sock.c
 @@ -6797,6 +6797,7 @@ static void test_connect_events(struct event_test_ctx *ctx)
@@ -137,7 +137,7 @@ index 639bcf3768d..e9e26770c37 100644
  
  static void test_ipv6only(void)
 diff --git a/server/sock.c b/server/sock.c
-index 7a7d3af1771..5f9b15a9325 100644
+index 7a7d3af..5f9b15a 100644
 --- a/server/sock.c
 +++ b/server/sock.c
 @@ -2744,6 +2744,11 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )

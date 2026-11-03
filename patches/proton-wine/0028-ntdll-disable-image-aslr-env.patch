@@ -28,10 +28,10 @@ Environment-gated, so an A/B costs a relaunch instead of a rebuild and the
 default is untouched. Drops with the other diagnostics.
 
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index b1cdccf68ab..b20020e9bd5 100644
+index abd6c25..8200b0f 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -3618,6 +3618,47 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
+@@ -3615,6 +3615,47 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
   *
   * Map a PE image section into memory.
   */
@@ -79,7 +79,7 @@ index b1cdccf68ab..b20020e9bd5 100644
  static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size_ptr, HANDLE shared_file,
                                     ULONG_PTR limit_low, ULONG_PTR limit_high, ULONG alloc_type,
                                     USHORT machine, struct pe_image_info *image_info,
-@@ -3643,7 +3684,7 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
+@@ -3640,7 +3681,7 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
          return status;
      }
  

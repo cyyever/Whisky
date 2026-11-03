@@ -22,7 +22,7 @@ Two smaller ones from the same review:
 Found in review.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
-index a455f15435c..6b547838710 100644
+index e4f6f09..220073c 100644
 --- a/dlls/ntdll/unix/loadorder.c
 +++ b/dlls/ntdll/unix/loadorder.c
 @@ -314,7 +314,14 @@ static enum loadorder forced_load_order( const UNICODE_STRING *nt_name, const WC
@@ -42,10 +42,10 @@ index a455f15435c..6b547838710 100644
      {
          /* debugstr_loadorder(LO_DISABLED) is the empty string, so the disable
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index e5d2a2e93aa..6e574e5ea69 100644
+index a89b0c2..6fc79c6 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -3642,6 +3642,13 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
+@@ -3639,6 +3639,13 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
   *     scatter to their preferred bases fragments the 2 GB a 32-bit game has to
   *     work in, and an allocation failure caused that way looks nothing like its
   *     cause.
@@ -59,7 +59,7 @@ index e5d2a2e93aa..6e574e5ea69 100644
   *
   * Environment-gated rather than compiled in so an A/B costs a relaunch instead
   * of a rebuild, and so the default behaviour is untouched.
-@@ -5959,16 +5966,18 @@ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old
+@@ -5956,16 +5963,18 @@ static void vprot_note( const void *addr, SIZE_T size, ULONG new_prot, ULONG old
       * exact misreading this tracer exists to prevent. Widening the filter to
       * every EXECUTE protection made the cap easy to reach: relocating one module
       * alone costs two matching calls per executable section. */

@@ -24,7 +24,7 @@ records would be a wrong answer rather than a narrowed one — addresses it cann
 use, or EAI_* for an IPv6 literal, with nothing explaining why.
 
 diff --git a/dlls/ws2_32/unixlib.c b/dlls/ws2_32/unixlib.c
-index e0e1263e025..4b71d560e54 100644
+index e0e1263..4b71d56 100644
 --- a/dlls/ws2_32/unixlib.c
 +++ b/dlls/ws2_32/unixlib.c
 @@ -704,7 +704,7 @@ static NTSTATUS unix_getaddrinfo( void *args )

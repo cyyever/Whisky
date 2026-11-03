@@ -34,7 +34,7 @@ reports the constrained position faithfully, which is correct and not something
 this patch should fight.
 
 diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
-index 7d6d704436c..c2568f54276 100644
+index 7d6d704..c2568f5 100644
 --- a/dlls/winemac.drv/cocoa_window.m
 +++ b/dlls/winemac.drv/cocoa_window.m
 @@ -1956,6 +1956,38 @@ - (void) setFrameFromWine:(NSRect)contentRect

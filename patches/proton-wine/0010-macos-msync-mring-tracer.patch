@@ -12,7 +12,7 @@ Kept as its own patch rather than folded into 0008 so it can be dropped in one
 move when the investigation it serves is finished.
 
 diff --git a/dlls/ntdll/unix/msync_obj.c b/dlls/ntdll/unix/msync_obj.c
-index e98f50178b9..4ab85c72a33 100644
+index e98f501..4ab85c7 100644
 --- a/dlls/ntdll/unix/msync_obj.c
 +++ b/dlls/ntdll/unix/msync_obj.c
 @@ -151,7 +151,11 @@ NTSTATUS msync_get_object( HANDLE handle, struct msync **obj )
@@ -50,7 +50,7 @@ index e98f50178b9..4ab85c72a33 100644
          signal_all( obj );
  
 diff --git a/dlls/ntdll/unix/msync_private.h b/dlls/ntdll/unix/msync_private.h
-index ac78e2b2804..5578881bcaf 100644
+index ac78e2b..5578881 100644
 --- a/dlls/ntdll/unix/msync_private.h
 +++ b/dlls/ntdll/unix/msync_private.h
 @@ -371,6 +371,24 @@ extern semaphore_t *msync_semaphore_pool_alloc(void);
@@ -79,7 +79,7 @@ index ac78e2b2804..5578881bcaf 100644
  extern NTSTATUS msync_get_object( HANDLE handle, struct msync **obj );
  /* Unprefixed, unlike its neighbours: SERVER_START_REQ( create_msync ) builds the
 diff --git a/dlls/ntdll/unix/msync_select.c b/dlls/ntdll/unix/msync_select.c
-index bbcdbb4b804..051fae69ed1 100644
+index bbcdbb4..051fae6 100644
 --- a/dlls/ntdll/unix/msync_select.c
 +++ b/dlls/ntdll/unix/msync_select.c
 @@ -356,8 +356,19 @@ static NTSTATUS msync_wait_any(
@@ -123,7 +123,7 @@ index bbcdbb4b804..051fae69ed1 100644
      return ret;
  }
 diff --git a/dlls/ntdll/unix/msync_shm.c b/dlls/ntdll/unix/msync_shm.c
-index 0dcd8aad189..20005241d9b 100644
+index 0dcd8aa..2000524 100644
 --- a/dlls/ntdll/unix/msync_shm.c
 +++ b/dlls/ntdll/unix/msync_shm.c
 @@ -234,6 +234,86 @@ void *msync_get_shm( unsigned int idx )
@@ -231,7 +231,7 @@ index 0dcd8aad189..20005241d9b 100644
 +    }
  }
 diff --git a/dlls/ntdll/unix/msync_wait.c b/dlls/ntdll/unix/msync_wait.c
-index 2db166b8dec..1be5951838a 100644
+index 2db166b..1be5951 100644
 --- a/dlls/ntdll/unix/msync_wait.c
 +++ b/dlls/ntdll/unix/msync_wait.c
 @@ -384,6 +384,9 @@ NTSTATUS msync_do_single_wait( struct msync *obj, ULONGLONG *end, BOOLEAN alerta
@@ -245,7 +245,7 @@ index 2db166b8dec..1be5951838a 100644
      {
          struct msync apc_obj;
 diff --git a/server/msync.c b/server/msync.c
-index e63c6e32c5e..de6c03050b6 100644
+index e63c6e3..de6c030 100644
 --- a/server/msync.c
 +++ b/server/msync.c
 @@ -157,6 +157,8 @@ static struct sem_list mach_semaphore_map[MAX_INDEX];
@@ -354,7 +354,7 @@ index e63c6e32c5e..de6c03050b6 100644
                   * sender is parked on `sem` and would never hear about an entry
                   * we dropped silently, and the send right would leak with it. */
 diff --git a/server/msync.h b/server/msync.h
-index 186b85d7af9..58dea67897b 100644
+index 186b85d..58dea67 100644
 --- a/server/msync.h
 +++ b/server/msync.h
 @@ -26,6 +26,11 @@ extern void msync_signal_all( unsigned int shm_idx );
@@ -370,10 +370,10 @@ index 186b85d7af9..58dea67897b 100644
  extern int is_msg_queue( struct object *obj );
  
 diff --git a/server/queue.c b/server/queue.c
-index 754dc7f3e4c..7b25ba040cf 100644
+index 9e22a4a..953c5b5 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -4416,8 +4416,22 @@ DECL_HANDLER(msync_msgwait)
+@@ -4400,8 +4400,22 @@ DECL_HANDLER(msync_msgwait)
       * be signaled or the client blocks on a stale 0 forever -- a wake-before-wait
       * race the slower server-sync path can't hit (it re-checks under the server
       * lock). Mirror the set_queue_mask parity fix: re-assert the wake on entry. */
