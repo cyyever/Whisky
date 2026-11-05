@@ -596,22 +596,6 @@
         }
       }
     },
-    "config.winVersion": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Windows Version"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Windows 版本"
-          }
-        }
-      }
-    },
     "configDpi.dpi": {
       "localizations": {
         "en": {
@@ -768,22 +752,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "创建新的容器"
-          }
-        }
-      }
-    },
-    "create.win": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Windows version:"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Windows 版本："
           }
         }
       }
@@ -993,22 +961,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "打开日志文件夹"
-          }
-        }
-      }
-    },
-    "open.setup": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Setup..."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "安装..."
           }
         }
       }
@@ -1617,22 +1569,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "容器配置"
-          }
-        }
-      }
-    },
-    "wine.clearShaderCaches": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Clear Shader Caches"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "清空 Shader 缓存"
           }
         }
       }

@@ -37,7 +37,6 @@ struct ConfigView: View {
     @State private var buildVersion: Int = 0
     @State private var retinaMode: Bool = false
     @State private var dpiConfig: Int = 96
-    @State private var winVersionLoadingState: LoadingState = .loading
     @State private var buildVersionLoadingState: LoadingState = .loading
     @State private var retinaModeLoadingState: LoadingState = .loading
     @State private var dpiConfigLoadingState: LoadingState = .loading
@@ -49,16 +48,7 @@ struct ConfigView: View {
     var body: some View {
         Form {
             Section("config.title.wine", isExpanded: $wineSectionExpanded) {
-                // Backend is locked to Proton (proton-wine 11.0) — the shipped
-                // default. No selector: the legacy Whisky-Wine 11.13 path stays in
-                // the enum for fallback but is no longer user-selectable.
-                SettingItemView(title: "config.winVersion", loadingState: winVersionLoadingState) {
-                    Picker("config.winVersion", selection: $bottle.settings.windowsVersion) {
-                        ForEach(WinVersion.selectable.reversed(), id: \.self) {
-                            Text($0.pretty())
-                        }
-                    }
-                }
+                // The Wine backend and Windows 11 mode are fixed for every bottle.
                 SettingItemView(title: "config.buildVersion", loadingState: buildVersionLoadingState) {
                     TextField("config.buildVersion", value: $buildVersion, formatter: NumberFormatter())
                         .multilineTextAlignment(.trailing)
@@ -154,8 +144,6 @@ struct ConfigView: View {
         .animation(.whiskyDefault, value: advancedSectionExpanded)
         .navigationTitle("tab.config")
         .onAppear {
-            winVersionLoadingState = .success
-
             loadBuildName()
 
             Task(priority: .userInitiated) {
@@ -175,23 +163,6 @@ struct ConfigView: View {
                     print(error)
                     // If DPI has not yet been edited, there will be no registry entry
                     dpiConfigLoadingState = .success
-                }
-            }
-        }
-        .onChange(of: bottle.settings.windowsVersion) { _, newValue in
-            if winVersionLoadingState == .success {
-                winVersionLoadingState = .loading
-                buildVersionLoadingState = .loading
-                Task(priority: .userInitiated) {
-                    do {
-                        try await Wine.changeWinVersion(bottle: bottle, win: newValue)
-                        winVersionLoadingState = .success
-                        bottle.settings.windowsVersion = newValue
-                        loadBuildName()
-                    } catch {
-                        print(error)
-                        winVersionLoadingState = .failed
-                    }
                 }
             }
         }

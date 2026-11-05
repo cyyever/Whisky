@@ -41,12 +41,6 @@ struct WhiskyApp: App {
         // Don't ask me how this works, it just does
         .handlesExternalEvents(matching: ["{same path of URL?}"])
         .commands {
-            CommandGroup(before: .systemServices) {
-                Divider()
-                Button("open.setup") {
-                    showSetup = true
-                }
-            }
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .newItem) {
                 Button("open.bottle") {
@@ -75,10 +69,6 @@ struct WhiskyApp: App {
                     Self.killBottles()
                 }
                 .keyboardShortcut("K", modifiers: [.command, .shift])
-                Button("wine.clearShaderCaches") {
-                    Self.killBottles()  // Better not make things more complicated for ourselves
-                    Self.wipeShaderCaches()
-                }
             }
             CommandGroup(replacing: .help) {
                 Button("help.github") {
@@ -138,39 +128,6 @@ struct WhiskyApp: App {
             } catch {
                 print("Failed to delete log: \(error)")
             }
-        }
-    }
-
-    static func wipeShaderCaches() {
-        let getconf = Process()
-        getconf.executableURL = URL(fileURLWithPath: "/usr/bin/getconf")
-        getconf.arguments = ["DARWIN_USER_CACHE_DIR"]
-        let pipe = Pipe()
-        getconf.standardOutput = pipe
-        do {
-            try getconf.run()
-        } catch {
-            return
-        }
-        getconf.waitUntilExit()
-        let getconfOutput = { () -> Data in
-            if #available(macOS 10.15, *) {
-                do {
-                    return try pipe.fileHandleForReading.readToEnd() ?? Data()
-                } catch {
-                    return Data()
-                }
-            } else {
-                return pipe.fileHandleForReading.readDataToEndOfFile()
-            }
-        }()
-        guard let getconfOutputString = String(data: getconfOutput, encoding: .utf8) else { return }
-        let d3dmPath = URL(fileURLWithPath: getconfOutputString.trimmingCharacters(in: .whitespacesAndNewlines))
-            .appending(path: "d3dm").path
-        do {
-            try FileManager.default.removeItem(atPath: d3dmPath)
-        } catch {
-            return
         }
     }
 }

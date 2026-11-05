@@ -8,7 +8,7 @@ Whisky requires a Swift 6.4 toolchain and uses Swift 6 language mode, targeting 
 
 # Code style
 
-Every Whisky commit is automatically linted using SwiftLint. You can run these checks locally simply by building in Xcode, violations will appear as errors or warnings. For your pull request to be merged, you must meet all the requirements outlined by SwiftLint and have no violations.
+CI runs SwiftLint 0.65.1 with strict checks. Install that version and run `make lint-swiftlint` to check locally; building in Xcode does not run the linter. The command fails on any violation. Multiline collection literals use trailing commas, matching the swift-format configuration.
 
 Generally, it is not advised to disable a SwiftLint rule, but there are certain situations where it is necessary. Please use your discretion when disabling rules temporarily.
 

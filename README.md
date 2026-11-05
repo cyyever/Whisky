@@ -13,6 +13,9 @@ live in [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs).
 - Apple Silicon (M-series)
 - macOS 26.0 or later
 
+New bottles use Windows 11 mode. Older bottles are migrated to Windows 11 before
+their next program launch; the GUI does not offer a Windows version selector.
+
 ## Install
 
 Download the latest build from this fork's

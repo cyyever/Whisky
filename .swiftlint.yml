@@ -45,6 +45,9 @@ file_length:
   warning: 500
   error: 600
 
+trailing_comma:
+  mandatory_comma: true
+
 file_header:
     severity: error
     required_pattern: |

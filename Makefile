@@ -27,6 +27,7 @@ export DEVELOPER_DIR
 
 XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
 CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+SWIFTLINT ?= swiftlint
 
 # proton, dxvk and vkd3d all install into the same Libraries/Wine tree, and
 # install-app replaces a live /Applications/Whisky.app. None of that is safe to
@@ -190,20 +191,15 @@ install-app:
 # crashed (sourcekitd fails to load under a Command Line Tools developer dir) it
 # failed a build whose compile had succeeded -- taking install-app down with it.
 # A static check should not be able to veto a working build.
-#
-# SwiftLint rather than swift-format: swift-format's noisiest diagnostics
-# (Indentation, AddLines, LineLength) come from its pretty-printer, not from its
-# rule set, so they cannot be switched off -- it reports ~280 layout diffs
-# against this hand-formatted tree. It is a formatter first; adopting it means
-# reformatting the whole tree, which is a separate decision.
+# `lint` checks formatting; `lint-swiftlint` runs the strict checks used by CI.
 lint:  ## Lint the Swift sources with swift-format (never runs during a build)
 	@swift format lint --strict -r Whisky WhiskyKit && echo "swift-format: clean"
 
 format:  ## Reformat the Swift sources in place (swift-format)
 	@swift format --in-place -r Whisky WhiskyKit && echo "swift-format: reformatted"
 
-lint-swiftlint:  ## Optional deeper pass; SwiftLint is unstable here (sourcekitd)
-	@swiftlint --strict || echo "NOTE: swiftlint failed or crashed -- not a build gate"
+lint-swiftlint:  ## Run the strict SwiftLint checks used by CI (SwiftLint 0.65.1)
+	@$(SWIFTLINT) lint --strict
 
 
 run: app  ## Build, install and run Whisky

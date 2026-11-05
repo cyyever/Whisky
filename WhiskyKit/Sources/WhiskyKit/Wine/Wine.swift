@@ -131,6 +131,14 @@ public class Wine {
         at url: URL, args: [String] = [], bottle: Bottle,
         environment: [String: String] = [:], waitForExit: Bool = false
     ) async throws {
+        // Windows 11 is the fixed target. Migrate older prefixes before their
+        // first launch, and only record it after winecfg has completed.
+        if bottle.settings.windowsVersion != .win11 {
+            try await changeWinVersion(bottle: bottle, win: .win11)
+            await MainActor.run {
+                bottle.settings.windowsVersion = .win11
+            }
+        }
         let allArgs =
             (waitForExit ? ["start", "/wait", "/unix"] : ["start", "/unix"])
             + [url.path(percentEncoded: false)] + args
@@ -435,6 +443,26 @@ extension Wine {
     public static func changeWinVersion(
         bottle: Bottle, win: WinVersion, environment: [String: String] = [:]
     ) async throws -> String {
-        return try await Self.runWine(["winecfg", "-v", win.rawValue], bottle: bottle, environment: environment)
+        var result = ""
+        for await output in try runWineProcess(
+            args: ["winecfg", "-v", win.rawValue], bottle: bottle, environment: environment
+        ) {
+            switch output {
+            case .started:
+                break
+            case .message(let message), .error(let message):
+                result += message
+            case .terminated(let process):
+                guard process.terminationStatus == 0 else {
+                    throw NSError(
+                        domain: "WhiskyKit.Wine", code: Int(process.terminationStatus),
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "winecfg failed with exit code \(process.terminationStatus)."
+                        ]
+                    )
+                }
+            }
+        }
+        return result
     }
 }

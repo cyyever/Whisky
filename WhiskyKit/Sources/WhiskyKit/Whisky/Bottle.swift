@@ -31,18 +31,19 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
     @Published public var inFlight: Bool = false
     @Published public var isAvailable: Bool = false
 
+    public struct PinnedProgramEntry: Identifiable {
+        public let pin: PinnedProgram
+        public let program: Program
+        public let id: String
+    }
+
     /// All pins, each with a `Program` built for its pinned executable.
-    public var pinnedPrograms:
-        [(
-            pin: PinnedProgram, program: Program,  // swiftlint:disable:this large_tuple
-            id: String
-        )]
-    {
+    public var pinnedPrograms: [PinnedProgramEntry] {
         return settings.pins.compactMap { pin in
             guard let url = pin.url,
                 FileManager.default.fileExists(atPath: url.path(percentEncoded: false))
             else { return nil }
-            return (pin, Program(url: url, bottle: self), "\(pin.name)//\(url)")
+            return PinnedProgramEntry(pin: pin, program: Program(url: url, bottle: self), id: "\(pin.name)//\(url)")
         }
     }
 
