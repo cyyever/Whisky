@@ -3,6 +3,34 @@
 Steam's D3D11 renderer uses DXVK → winevulkan → KosmicKrisp. Always validate
 Steam from the Whisky GUI; a bare CLI launch is not equivalent.
 
+## Startup and Retina validation (2026-11-05)
+
+Steam build 1792618285 reached the login UI through Whisky on M2/macOS 27.2
+after repairing stale font registrations. The NT Fonts key named `tahoma.ttf`,
+absent from the prefix's Windows Fonts directory, while Wine's external-font
+cache retained the correct absolute macOS path. DirectWrite omitted Tahoma;
+CEF recursively initialized its default font until exhausting its stack.
+Patch 0039 verifies both public registrations before skipping a cached face.
+A test recreated stale entries, confirmed the original runtime omitted the
+family, and verified that the patched runtime repaired it automatically.
+
+Patch 0036 now identifies Wine threads through their alternate signal stack.
+Its previous pthread TLS lookup ran before Unix GS was restored and could
+hang on a recoverable hardware exception. `tests/signal-thread-guard-test.c`
+passed on initial and worker threads in both 32-bit and 64-bit builds.
+
+Retina mode is paired with DPI from the primary macOS display's backing scale
+at launch: 96 at 1x, 192 at 2x. On this 2x display, the Steam login window changed
+from 350x220 to 700x440 macOS points with a 1400x880 pixel swapchain.
+`tests/system-font-test.cpp` checks the default DirectWrite font and optional
+DPI for a DPI-aware process. Unaware processes legitimately see virtualized
+96 DPI. Live migration between monitors is not covered by this launch policy.
+
+**Still unresolved:** the user reported flickering after startup. Logs show
+repeated FIFO/Immediate swapchain recreation, but this is not a proven cause.
+Steam was stopped after the report. These fixes do not resolve or establish
+the cause of the presentation issue.
+
 ## 0. Child-window presentation
 
 CEF and Qt WebEngine render into child HWNDs. The former private Metal-view shim

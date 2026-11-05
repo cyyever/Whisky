@@ -16,6 +16,7 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
+import AppKit
 import Foundation
 import os.log
 
@@ -343,22 +344,32 @@ extension Wine {
 }
 
 extension Wine {
-    /// Retina rendering is fixed on for new and existing bottles before launch.
+    /// Keep Retina pixels and the primary display's logical UI size in sync.
     public static func enableRetinaMode(bottle: Bottle) async throws {
-        for await output in try runWineProcess(
-            args: [
-                "reg", "add", #"HKCU\Software\Wine\Mac Driver"#, "-v", "RetinaMode",
-                "-t", "REG_SZ", "-d", "y", "-f",
-            ], bottle: bottle
-        ) {
-            if case .terminated(let process) = output, process.terminationStatus != 0 {
-                throw NSError(
-                    domain: "WhiskyKit.Wine", code: Int(process.terminationStatus),
-                    userInfo: [
-                        NSLocalizedDescriptionKey:
-                            "Enabling Retina mode failed with exit code \(process.terminationStatus).",
-                    ]
-                )
+        let dpi = await MainActor.run {
+            Int((96 * (NSScreen.screens.first?.backingScaleFactor ?? 1)).rounded())
+        }
+        let commands = [
+            [
+                "reg", "add", #"HKCU\Software\Wine\Mac Driver"#, "/v", "RetinaMode",
+                "/t", "REG_SZ", "/d", "y", "/f",
+            ],
+            [
+                "reg", "add", #"HKCU\Control Panel\Desktop"#, "/v", "LogPixels",
+                "/t", "REG_DWORD", "/d", String(dpi), "/f",
+            ],
+        ]
+        for command in commands {
+            for await output in try runWineProcess(args: command, bottle: bottle) {
+                if case .terminated(let process) = output, process.terminationStatus != 0 {
+                    throw NSError(
+                        domain: "WhiskyKit.Wine", code: Int(process.terminationStatus),
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Configuring Retina scaling failed with exit code \(process.terminationStatus).",
+                        ]
+                    )
+                }
             }
         }
     }
