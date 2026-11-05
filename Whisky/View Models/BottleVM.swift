@@ -70,6 +70,11 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
                 // Add record
                 await MainActor.run {
                     self.bottlesList.paths.append(newBottleDir)
+                    // Update the instance already observed by the bottle view
+                    // before reloading. SwiftUI can retain it when the new
+                    // instance compares equal (same URL).
+                    bottle.isAvailable = true
+                    bottle.inFlight = false
                     self.loadBottles()
                 }
             } catch {

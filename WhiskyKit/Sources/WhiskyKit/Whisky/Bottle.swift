@@ -29,7 +29,7 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
         didSet { saveSettings() }
     }
     @Published public var inFlight: Bool = false
-    public var isAvailable: Bool = false
+    @Published public var isAvailable: Bool = false
 
     /// All pins, each with a `Program` built for its pinned executable.
     public var pinnedPrograms:
