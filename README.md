@@ -20,6 +20,8 @@ Download the latest build from this fork's
 
 ## Build
 
+Use a Swift 6.4 toolchain (validated with Swift 6.4.2 / Xcode 27.2).
+
 ```bash
 make x86-deps        # one-time: cross-build Wine's x86_64 libraries
 make proton          # build proton-wine

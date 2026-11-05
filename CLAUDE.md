@@ -40,7 +40,7 @@ Fresh-machine order: ARM brew deps (`autoconf automake bison cmake meson ninja n
 - Rebuild Wine → restart Whisky/Steam (wineserver version mismatch).
 
 ## Conventions
-- Swift 6.3, macOS 26 target, SwiftLint strict, GPL v3. `vendor/` excluded from lint.
+- Swift 6.4 toolchain (validated with Swift 6.4.2 / Xcode 27.2), Swift 6 language mode, macOS 26 target, SwiftLint strict, GPL v3. `vendor/` excluded from lint.
 - Deps: SemanticVersion, swift-argument-parser, SwiftyTextTable.
 
 ## Distribution
