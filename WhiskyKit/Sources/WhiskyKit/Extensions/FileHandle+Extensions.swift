@@ -99,8 +99,6 @@ extension FileHandle {
         header += "Windows Version: \(bottle.settings.windowsVersion)\n"
         header += "Enhanced Sync: \(bottle.settings.enhancedSync)\n\n"
 
-        header += "Metal HUD: \(bottle.settings.metalHud)\n\n"
-
         write(line: header)
     }
 }
