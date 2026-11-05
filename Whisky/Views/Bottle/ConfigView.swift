@@ -40,10 +40,6 @@ struct ConfigView: View {
                     Text("config.followSystemProxy")
                     Text("config.followSystemProxy.info")
                 }
-                Toggle(isOn: $bottle.settings.hideVirtualAudioDevices) {
-                    Text("config.hideVirtualAudioDevices")
-                    Text("config.hideVirtualAudioDevices.info")
-                }
             }
             if Self.supportsRaytracing {
                 Section("config.title.advanced", isExpanded: $advancedSectionExpanded) {

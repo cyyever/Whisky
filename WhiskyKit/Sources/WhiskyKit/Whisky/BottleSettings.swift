@@ -125,17 +125,12 @@ public struct BottleWineConfig: Codable, Equatable {
 
 public struct BottleMetalConfig: Codable, Equatable {
     var dxrEnabled: Bool = false
-    /// Hide virtual audio devices (Steam Streaming, Teams, loopback) from games.
-    /// On by default — some games hang while enumerating them.
-    var hideVirtualAudioDevices: Bool = true
 
     public init() {}
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.dxrEnabled = container.decodeResilient(Bool.self, forKey: .dxrEnabled, default: false)
-        self.hideVirtualAudioDevices = container.decodeResilient(
-            Bool.self, forKey: .hideVirtualAudioDevices, default: true)
     }
 }
 
@@ -211,12 +206,6 @@ public struct BottleSettings: Codable, Equatable {
         set { metalConfig.dxrEnabled = newValue }
     }
 
-    /// Hide virtual audio devices from games. On by default.
-    public var hideVirtualAudioDevices: Bool {
-        get { return metalConfig.hideVirtualAudioDevices }
-        set { metalConfig.hideVirtualAudioDevices = newValue }
-    }
-
     @discardableResult
     public static func decode(from metadataURL: URL) throws -> Self {
         guard FileManager.default.fileExists(atPath: metadataURL.path(percentEncoded: false)) else {
@@ -284,9 +273,8 @@ public struct BottleSettings: Codable, Equatable {
             wineEnv.updateValue("1", forKey: "D3DM_SUPPORT_DXR")
         }
 
-        if hideVirtualAudioDevices {
-            wineEnv.updateValue("1", forKey: "WHISKY_HIDE_VIRTUAL_AUDIO")
-        }
+        // Keep virtual audio devices hidden to avoid game enumeration hangs.
+        wineEnv.updateValue("1", forKey: "WHISKY_HIDE_VIRTUAL_AUDIO")
 
         if followSystemProxy {
             for (key, value) in SystemProxy.environmentVariables() {
