@@ -111,50 +111,52 @@ struct BottleView: View {
     /// "choose a local file" escape hatch. Sized to match `PinView` so it reads
     /// as the last item in the program grid.
     private var addProgramMenu: some View {
-        VStack {
-            Menu {
-                Section("menu.installPlatform") {
-                    ForEach(GamingPlatform.all) { platform in
-                        Button {
-                            install(platform)
-                        } label: {
-                            Label {
-                                Text(verbatim: platform.name)
-                            } icon: {
-                                Image(systemName: platform.symbol)
-                            }
+        Menu {
+            Section("menu.installPlatform") {
+                ForEach(GamingPlatform.all) { platform in
+                    Button {
+                        install(platform)
+                    } label: {
+                        Label {
+                            Text(verbatim: platform.name)
+                        } icon: {
+                            Image(systemName: platform.symbol)
                         }
-                        .accessibilityIdentifier("install." + platform.name)
                     }
+                    .accessibilityIdentifier("install." + platform.name)
                 }
-                Divider()
-                Button {
-                    runFileFromPanel()
-                } label: {
-                    Label("menu.chooseFile", systemImage: "folder")
-                }
-                .accessibilityIdentifier("bottle.chooseFile")
+            }
+            Divider()
+            Button {
+                runFileFromPanel()
             } label: {
+                Label("menu.chooseFile", systemImage: "folder")
+            }
+            .accessibilityIdentifier("bottle.chooseFile")
+        } label: {
+            VStack {
                 Image(systemName: "plus.circle")
                     .resizable()
                     .foregroundStyle(.secondary)
+                    .frame(width: 45, height: 45)
+                Spacer()
+                Text("button.addProgram")
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2, reservesSpace: true)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            // .fixedSize keeps the borderless menu from stretching the tile's
-            // width, which would pull the glyph off-centre from its caption.
-            .fixedSize()
-            .frame(width: 45, height: 45)
-            .accessibilityLabel("button.addProgram")
-            .accessibilityIdentifier("bottle.installRun")
-            .disabled(programLoading)
-            Spacer()
-            Text("button.addProgram")
-                .multilineTextAlignment(.center)
-                .lineLimit(2, reservesSpace: true)
+            .frame(width: 90, height: 90)
+            .padding(10)
+            .contentShape(Rectangle())
         }
-        .frame(width: 90, height: 90)
-        .padding(10)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        // Give the label its size before sizing the native menu control. A
+        // resizable image alone has no useful ideal size for fixedSize().
+        .fixedSize()
+        .accessibilityLabel("button.addProgram")
+        .accessibilityIdentifier("bottle.installRun")
+        .disabled(programLoading)
     }
 
     /// Download the platform's official installer into the bottle and launch it.
