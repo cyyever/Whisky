@@ -45,7 +45,7 @@ C++ core never has to carry.
 | PE **architecture** (win32/win64) | `winedump -f`, or host `file` | one field |
 | Registry read/write | `wine reg query` / `add` | **already forwarded** ✓ |
 | Windows↔Unix paths | `winepath -u/-w` | the plan for prefix paths |
-| Win version / DPI / retina | `winecfg` / `wine reg` | **already forwarded** ✓ |
+| Retina mode | `wine reg` | **already forwarded** ✓ |
 
 The one thing wine tools can't hand back cleanly is a rendered **icon** for the
 program list (`PEFile.bestIcon()` → `NSImage`). That keeps a PE/RSRC resource parser

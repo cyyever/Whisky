@@ -35,10 +35,7 @@ struct ConfigView: View {
 
     @ObservedObject var bottle: Bottle
     @State private var retinaMode: Bool = false
-    @State private var dpiConfig: Int = 96
-    @State private var currentDpiConfig: Int = 96
     @State private var retinaModeLoadingState: LoadingState = .loading
-    @State private var dpiConfigLoadingState: LoadingState = .loading
     @AppStorage("wineSectionExpanded") private var wineSectionExpanded: Bool = true
     @AppStorage("metalSectionExpanded") private var metalSectionExpanded: Bool = true
     @AppStorage("advancedSectionExpanded") private var advancedSectionExpanded: Bool = false
@@ -67,37 +64,9 @@ struct ConfigView: View {
                 // Enhanced Sync selector removed: the backend is locked to msync on
                 // this stack (macOS has no eventfd for esync). `enhancedSync` stays in
                 // the model at its `.msync` default for decode compat.
-                SettingItemView(title: "config.dpi", loadingState: dpiConfigLoadingState) {
-                    TextField("config.dpi", value: $dpiConfig, format: .number)
-                        .multilineTextAlignment(.trailing)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 72)
-                        .accessibilityIdentifier("config.dpi")
-                        .onSubmit {
-                            saveDpiConfig()
-                        }
-                    Text("configDpi.dpi")
-                }
                 Toggle(isOn: $bottle.settings.followSystemProxy) {
                     Text("config.followSystemProxy")
                     Text("config.followSystemProxy.info")
-                }
-                if #available(macOS 15, *) {
-                    Toggle(isOn: $bottle.settings.avxEnabled) {
-                        VStack(alignment: .leading) {
-                            Text("config.avx")
-                            if bottle.settings.avxEnabled {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .symbolRenderingMode(.multicolor)
-                                        .font(.subheadline)
-                                    Text("config.avx.warning")
-                                        .fontWeight(.light)
-                                        .font(.subheadline)
-                                }
-                            }
-                        }
-                    }
                 }
             }
             Section("config.title.metal", isExpanded: $metalSectionExpanded) {
@@ -133,42 +102,9 @@ struct ConfigView: View {
                     retinaModeLoadingState = .failed
                 }
             }
-            Task(priority: .userInitiated) {
-                do {
-                    let dpi = try await Wine.dpiResolution(bottle: bottle) ?? 96
-                    dpiConfig = dpi > 0 ? dpi : 96
-                    currentDpiConfig = dpiConfig
-                    dpiConfigLoadingState = .success
-                } catch {
-                    print(error)
-                    // If DPI has not yet been edited, there will be no registry entry
-                    dpiConfigLoadingState = .success
-                }
-            }
         }
     }
 
-    private func saveDpiConfig() {
-        guard dpiConfigLoadingState == .success else { return }
-        guard dpiConfig > 0 else {
-            dpiConfig = currentDpiConfig
-            return
-        }
-        guard dpiConfig != currentDpiConfig else { return }
-        let dpi = dpiConfig
-        dpiConfigLoadingState = .modifying
-        Task(priority: .userInitiated) {
-            do {
-                try await Wine.changeDpiResolution(bottle: bottle, dpi: dpi)
-                currentDpiConfig = dpi
-                dpiConfigLoadingState = .success
-            } catch {
-                print(error)
-                dpiConfig = currentDpiConfig
-                dpiConfigLoadingState = .failed
-            }
-        }
-    }
 }
 
 struct SettingItemView<Content: View>: View {

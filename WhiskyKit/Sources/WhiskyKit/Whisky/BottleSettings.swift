@@ -103,7 +103,6 @@ public struct BottleWineConfig: Codable, Equatable {
     var wineVersion: SemanticVersion = Self.defaultWineVersion
     var windowsVersion: WinVersion = .win11
     var enhancedSync: EnhancedSync = .msync
-    var avxEnabled: Bool = false
     var followSystemProxy: Bool = true
 
     public init() {}
@@ -120,7 +119,6 @@ public struct BottleWineConfig: Codable, Equatable {
         // Keeps the Picker (which only offers none/msync) able to represent every bottle.
         let sync = container.decodeResilient(EnhancedSync.self, forKey: .enhancedSync, default: .msync)
         self.enhancedSync = sync == .esync ? .msync : sync
-        self.avxEnabled = container.decodeResilient(Bool.self, forKey: .avxEnabled, default: false)
         self.followSystemProxy = container.decodeResilient(Bool.self, forKey: .followSystemProxy, default: true)
     }
 }
@@ -184,11 +182,6 @@ public struct BottleSettings: Codable, Equatable {
     public var windowsVersion: WinVersion {
         get { return wineConfig.windowsVersion }
         set { wineConfig.windowsVersion = newValue }
-    }
-
-    public var avxEnabled: Bool {
-        get { return wineConfig.avxEnabled }
-        set { wineConfig.avxEnabled = newValue }
     }
 
     /// When enabled, the bottle inherits macOS's system proxy configuration so
@@ -296,10 +289,6 @@ public struct BottleSettings: Codable, Equatable {
 
         if metalHud {
             wineEnv.updateValue("1", forKey: "MTL_HUD_ENABLED")
-        }
-
-        if avxEnabled {
-            wineEnv.updateValue("1", forKey: "ROSETTA_ADVERTISE_AVX")
         }
 
         if dxrEnabled {

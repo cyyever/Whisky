@@ -305,54 +305,6 @@
         }
       }
     },
-    "config.avx": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Advertise AVX Support"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "查看 AVX 支持"
-          }
-        }
-      }
-    },
-    "config.avx.warning": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "May negatively impact performance"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "可能会对性能产生负面影响"
-          }
-        }
-      }
-    },
-    "config.dpi": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI Scaling"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI 缩放"
-          }
-        }
-      }
-    },
     "config.dxr": {
       "extractionState": "manual",
       "localizations": {
@@ -544,22 +496,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Wine"
-          }
-        }
-      }
-    },
-    "configDpi.dpi": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI"
           }
         }
       }

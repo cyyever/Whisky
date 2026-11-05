@@ -32,14 +32,23 @@ struct BottleWineConfigTests {
         let json = #"{"windowsVersion":"\#(version)","avxEnabled":true,"followSystemProxy":false}"#
         let config = try JSONDecoder().decode(BottleWineConfig.self, from: Data(json.utf8))
         #expect(config.windowsVersion.rawValue == version)
-        #expect(config.avxEnabled)
         #expect(!config.followSystemProxy)
     }
 
-    @Test(arguments: [#"{"avxEnabled":true}"#, #"{"windowsVersion":"invalid","avxEnabled":true}"#])
+    @Test(arguments: [#"{"followSystemProxy":false}"#, #"{"windowsVersion":"invalid","followSystemProxy":false}"#])
     func missingOrInvalidVersionUsesWindows11(_ json: String) throws {
         let config = try JSONDecoder().decode(BottleWineConfig.self, from: Data(json.utf8))
         #expect(config.windowsVersion == .win11)
-        #expect(config.avxEnabled)
+        #expect(!config.followSystemProxy)
+    }
+
+    @Test(arguments: [true, false])
+    func legacyAvxPreferenceIsIgnored(_ enabled: Bool) throws {
+        let json = #"{"avxEnabled":\#(enabled),"followSystemProxy":false}"#
+        let config = try JSONDecoder().decode(BottleWineConfig.self, from: Data(json.utf8))
+        #expect(!config.followSystemProxy)
+        let encoded = try JSONEncoder().encode(config)
+        let fields = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(fields["avxEnabled"] == nil)
     }
 }

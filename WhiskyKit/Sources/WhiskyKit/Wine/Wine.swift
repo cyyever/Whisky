@@ -279,6 +279,10 @@ public class Wine {
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-all",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
+            // Rosetta reads this before Wine starts. All supported macOS
+            // versions translate AVX/AVX2; advertise it so games can detect
+            // those instructions without a per-bottle preference.
+            "ROSETTA_ADVERTISE_AVX": "1",
             // No GST_PLUGIN_PATH / GST_PLUGIN_SCANNER: GStreamer locates both
             // relative to libgstreamer-1.0.dylib's own load address (dladdr, see
             // priv_gst_get_relocated_libgstreamer), which lands in Wine/lib once
@@ -302,6 +306,7 @@ public class Wine {
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-all",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
+            "ROSETTA_ADVERTISE_AVX": "1",
             "GST_DEBUG": "1",
         ]
         // The same bottle settings the clients get. WINEMSYNC is the one that
@@ -320,7 +325,6 @@ public class Wine {
 }
 
 enum RegistryType: String {
-    case dword = "REG_DWORD"
     case string = "REG_SZ"
 }
 
@@ -344,7 +348,6 @@ extension Wine {
 extension Wine {
     private enum RegistryKey: String {
         case macDriver = #"HKCU\Software\Wine\Mac Driver"#
-        case desktop = #"HKCU\Control Panel\Desktop"#
     }
 
     static func addRegistryKey(
@@ -385,27 +388,6 @@ extension Wine {
         try await Self.addRegistryKey(
             bottle: bottle, key: RegistryKey.macDriver.rawValue, name: "RetinaMode", data: retinaMode ? "y" : "n",
             type: .string
-        )
-    }
-
-    public static func dpiResolution(bottle: Bottle) async throws -> Int? {
-        guard
-            let output = try await Self.queryRegistryKey(
-                bottle: bottle, key: RegistryKey.desktop.rawValue,
-                name: "LogPixels", type: .dword
-            )
-        else { return nil }
-
-        let noPrefix = output.replacingOccurrences(of: "0x", with: "")
-        let int = Int(noPrefix, radix: 16)
-        guard let int else { return nil }
-        return int
-    }
-
-    public static func changeDpiResolution(bottle: Bottle, dpi: Int) async throws {
-        try await Self.addRegistryKey(
-            bottle: bottle, key: RegistryKey.desktop.rawValue, name: "LogPixels", data: String(dpi),
-            type: .dword
         )
     }
 
