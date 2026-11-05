@@ -19,13 +19,6 @@
 import SwiftUI
 import WhiskyKit
 
-enum LoadingState {
-    case loading
-    case modifying
-    case success
-    case failed
-}
-
 struct ConfigView: View {
     /// Apple family 9 GPUs (A17, M3, M4) support hardware ray tracing. The
     /// capability is fixed for the machine, so resolve it once instead of
@@ -34,32 +27,12 @@ struct ConfigView: View {
         MTLCreateSystemDefaultDevice()?.supportsFamily(.apple9) ?? false
 
     @ObservedObject var bottle: Bottle
-    @State private var retinaMode: Bool = false
-    @State private var retinaModeLoadingState: LoadingState = .loading
     @AppStorage("wineSectionExpanded") private var wineSectionExpanded: Bool = true
     @AppStorage("advancedSectionExpanded") private var advancedSectionExpanded: Bool = false
 
     var body: some View {
         Form {
             Section("config.title.wine", isExpanded: $wineSectionExpanded) {
-                // The Wine backend and Windows 11 mode are fixed for every bottle.
-                SettingItemView(title: "config.retinaMode", loadingState: retinaModeLoadingState) {
-                    Toggle("config.retinaMode", isOn: $retinaMode)
-                        .onChange(
-                            of: retinaMode,
-                            { _, newValue in
-                                Task(priority: .userInitiated) {
-                                    retinaModeLoadingState = .modifying
-                                    do {
-                                        try await Wine.changeRetinaMode(bottle: bottle, retinaMode: newValue)
-                                        retinaModeLoadingState = .success
-                                    } catch {
-                                        print("Failed to change Retina mode: \(error)")
-                                        retinaModeLoadingState = .failed
-                                    }
-                                }
-                            })
-                }
                 // Enhanced Sync selector removed: the backend is locked to msync on
                 // this stack (macOS has no eventfd for esync). `enhancedSync` stays in
                 // the model at its `.msync` default for decode compat.
@@ -85,52 +58,5 @@ struct ConfigView: View {
         .animation(.whiskyDefault, value: wineSectionExpanded)
         .animation(.whiskyDefault, value: advancedSectionExpanded)
         .navigationTitle("tab.config")
-        .onAppear {
-            Task(priority: .userInitiated) {
-                do {
-                    retinaMode = try await Wine.retinaMode(bottle: bottle)
-                    retinaModeLoadingState = .success
-                } catch {
-                    print(error)
-                    retinaModeLoadingState = .failed
-                }
-            }
-        }
-    }
-
-}
-
-struct SettingItemView<Content: View>: View {
-    let title: String.LocalizationValue
-    let loadingState: LoadingState
-    @ViewBuilder var content: () -> Content
-
-    @Namespace private var viewId
-    @Namespace private var progressViewId
-
-    var body: some View {
-        HStack {
-            Text(String(localized: title))
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack {
-                switch loadingState {
-                case .loading, .modifying:
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .controlSize(.small)
-                        .matchedGeometryEffect(id: progressViewId, in: viewId)
-                case .success:
-                    content()
-                        .labelsHidden()
-                        .disabled(loadingState != .success)
-                case .failed:
-                    Text("config.notAvailable")
-                        .font(.caption).foregroundStyle(.red)
-                        .multilineTextAlignment(.trailing)
-                }
-            }.animation(.default, value: loadingState)
-        }
     }
 }

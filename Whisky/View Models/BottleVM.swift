@@ -60,6 +60,7 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
                 // the dropped patch 0007). Re-add the environment override if a fresh
                 // GUI bottle creation hangs.
                 try await Wine.changeWinVersion(bottle: bottle, win: .win11)
+                try await Wine.enableRetinaMode(bottle: bottle)
                 // Read the installed version from the version plist instead of spawning
                 // `wine --version` (bottle: nil): that global wine call can hang when a
                 // wineserver is churning, which would leave the bottle `inFlight` forever
