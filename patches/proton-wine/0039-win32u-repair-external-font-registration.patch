@@ -1,0 +1,45 @@
+Subject: win32u: repair external font registrations after wineboot updates
+
+The external-font cache can retain an absolute macOS font path while wine.inf
+resets the public NT Fonts entry to a filename absent from windows/Fonts.
+GDI still resolves the cached font, but DirectWrite omits it. Chromium then
+recurses while initializing its default system font and never opens Steam UI.
+
+Before marking a cached face as already registered, check both public keys.
+Let the existing registration pass repair missing or changed values. This
+also repairs affected prefixes without deleting their font cache.
+
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -6614,6 +6614,18 @@
+     WCHAR       value[LF_FULLFACESIZE + 12];
+ };
+ 
++/* wineboot can overwrite the public registration while the external-font
++ * cache still names the correct file. Only skip registrations that agree. */
++static BOOL external_font_key_matches( HKEY key, const WCHAR *name, const WCHAR *file )
++{
++    char buffer[FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data[1024 * sizeof(WCHAR)])];
++    KEY_VALUE_PARTIAL_INFORMATION *info = (void *)buffer;
++
++    return key && query_reg_value( key, name, info, sizeof(buffer) ) && info->Type == REG_SZ &&
++           info->DataLength == (lstrlenW(file) + 1) * sizeof(WCHAR) &&
++           !wcsicmp( (WCHAR *)info->Data, file );
++}
++
+ static void update_external_font_keys(void)
+ {
+     struct list external_keys = LIST_INIT(external_keys);
+@@ -6646,7 +6658,11 @@
+         if ((tmp = wcsrchr( value, ' ' )) && !facename_compare( tmp, true_type_suffixW, -1 )) *tmp = 0;
+         if ((face = find_face_from_full_name( value )) && !wcsicmp( face->file, path ))
+         {
+-            face->flags |= ADDFONT_EXTERNAL_FOUND;
++            if (tmp && !*tmp) *tmp = ' ';
++            file = (WCHAR *)(buffer + info->DataOffset);
++            if (external_font_key_matches( winnt_key, value, file ) &&
++                external_font_key_matches( win9x_key, value, file ))
++                face->flags |= ADDFONT_EXTERNAL_FOUND;
+             free( path );
+             continue;
+         }

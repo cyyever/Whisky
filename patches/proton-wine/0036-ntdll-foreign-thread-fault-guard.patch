@@ -1,34 +1,22 @@
-Subject: ntdll: hand faults on foreign threads to the default action on macOS
+Subject: ntdll: classify macOS faulting threads without reading pthread TLS
 
-A fault on a thread Wine never created -- the Cocoa main thread, a GCD
-worker, CoreAudio -- must not run Wine's handler machinery. init_handler's
-__APPLE__ branch derives the TEB from pthread TLS and writes the result into
-the thread's TSD base; on a foreign thread pthread_getspecific() returns
-NULL, so it dereferences a near-zero pointer and poisons the thread's TSD
-before any handler logic runs. The thread freezes inside the handler, where
-further signals are never delivered. When that thread is the Cocoa main
-thread the whole process follows: the main dispatch queue stops draining,
-CFRunLoopWakeUp is a no-op, and every winemac.drv OnMainThread() caller
-deadlocks -- a hang with no crash report anywhere. That is how winegstreamer's
-GL context creation froze 32-bit DirectShow (patch 0035 removes that trigger;
-this removes the mechanism).
+Wine signal handlers may enter with GS pointing at the Windows TEB. Calling
+pthread_getspecific before init_handler restores Unix TLS can misclassify a
+Windows thread and hang while handling a recoverable access violation.
 
-There is nothing Wine can do with such a fault -- no TEB means no Windows
-exception to dispatch -- so restore the default action and re-raise: the
-process dies with a crash report naming the real culprit instead of freezing.
+Use sigaltstack to verify Wine's aligned signal-stack allocation and size
+without dereferencing an inferred TEB or accessing pthread TLS. Clear the
+alignment flag before entering libc, as init_handler normally does. Native
+threads still take the default signal action before any Wine TEB access.
 
-Upstream's check_invalid_gsbase (MR !7064) cannot catch this: it runs in
-segv_handler, after init_handler has already done the damage.
-
-Measured with the 0035 trigger temporarily re-opened: the 32-bit RenderFile
-case fails in ~20s with an error instead of hanging forever; with 0035 in
-place the full suite is unchanged (dshow both bitnesses, gstreamer-test 3/3).
+Regression: tests/signal-thread-guard-test.c recovers a PAGE_NOACCESS fault
+on the initial thread and a CreateThread worker. The original guard hangs
+before the first recovery; the stack-based guard completes both cases.
 
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
-index b4235b8..e9416be 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -2512,6 +2512,42 @@ static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
+@@ -2512,6 +2512,38 @@
  }
  
  
@@ -36,28 +24,24 @@ index b4235b8..e9416be 100644
 +/***********************************************************************
 + *           handle_foreign_thread_fault
 + *
-+ * A fault on a thread Wine never created -- the Cocoa main thread, a GCD
-+ * worker, CoreAudio -- must not run Wine's handler machinery. init_handler's
-+ * __APPLE__ branch derives the TEB from pthread TLS and writes the result
-+ * into the thread's TSD base; on a foreign thread pthread_getspecific()
-+ * returns NULL, so it dereferences a near-zero pointer and poisons the
-+ * thread's TSD before any handler logic runs. The thread then freezes inside
-+ * the handler where further signals are never delivered. When that thread is
-+ * the Cocoa main thread, the process's main dispatch queue stops draining and
-+ * every winemac.drv OnMainThread() caller deadlocks -- a whole-process hang
-+ * with no crash report (seen via winegstreamer's GL context creation, patch
-+ * 0035). There is nothing Wine can do with such a fault: no TEB means no
-+ * Windows exception to dispatch. Restore the default action and let the
-+ * fault terminate the process with a crash report naming the real culprit.
-+ *
-+ * Upstream's check_invalid_gsbase (segv_handler) cannot catch this: it runs
-+ * after init_handler has already done the damage.
++ * Wine's signal stack shares an aligned allocation with the TEB. A native
++ * thread has no such stack, so init_handler() cannot safely derive its TEB.
++ * Check the kernel's alternate-stack description without touching pthread
++ * TLS: GS may still point at the Windows TEB until init_handler() restores it.
++ * Native faults retain the default action instead of entering Wine handlers.
 + */
 +static BOOL handle_foreign_thread_fault( int signal )
 +{
 +    struct sigaction sa;
++    stack_t stack;
 +
-+    if (pthread_getspecific( teb_key )) return FALSE;
++    clear_alignment_flag();
++    /* GS can still point at the Windows TEB here. Do not use pthread TLS
++     * until init_handler() has restored the Unix thread environment. */
++    if (!sigaltstack( NULL, &stack ) && (stack.ss_flags & SS_ONSTACK) &&
++        stack.ss_sp == (char *)get_current_teb() + teb_size &&
++        stack.ss_size == signal_stack_size)
++        return FALSE;
 +
 +    sa.sa_handler = SIG_DFL;
 +    sa.sa_flags = 0;
@@ -71,7 +55,7 @@ index b4235b8..e9416be 100644
  /**********************************************************************
   *		segv_handler
   *
-@@ -2582,6 +2618,11 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -2582,6 +2614,11 @@
      struct xcontext context;
      void *steamclient_addr = NULL;
  
@@ -83,7 +67,7 @@ index b4235b8..e9416be 100644
      /* cpuid fault may happen in native thread. */
      if (TRAP_sig(ucontext) == TRAP_x86_PROTFLT && siginfo->si_code == 0x80 && !ERROR_sig(ucontext)
          && handle_cpuid_fault( (ULONG_PTR *)&RIP_sig(ucontext), (ULONG_PTR *)&RAX_sig(ucontext),
-@@ -2688,7 +2729,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -2688,7 +2725,12 @@
   */
  static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  {
@@ -97,7 +81,7 @@ index b4235b8..e9416be 100644
      EXCEPTION_RECORD rec = { 0 };
      struct xcontext context;
  
-@@ -2722,7 +2768,12 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -2722,7 +2764,12 @@
   */
  static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  {
