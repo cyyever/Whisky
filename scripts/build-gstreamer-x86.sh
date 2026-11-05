@@ -13,7 +13,7 @@ set -e
 # policy, not a compiler limit -- the same toolchain builds Wine, DXVK and
 # KosmicKrisp here every day.
 #
-# Only what decoding a WMV needs, via -Dauto_features=disabled plus an explicit
+# The Wine video paths, via -Dauto_features=disabled plus an explicit
 # enable list: core, the base plugins wg_parser drives (app for appsrc/appsink,
 # playback for decodebin, the converters), asfdemux for the container, and libav
 # for the codec, plus the handful of good/bad plugins winegstreamer creates by
@@ -149,6 +149,13 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     -Dgst-plugins-good:videofilter=enabled
     -Dgst-plugins-good:deinterlace=enabled
     -Dgst-plugins-good:debugutils=enabled
+    # MP4 containers and the native VideoToolbox decoder. Keep libav above
+    # for codecs the macOS media engine does not support (including WMV).
+    -Dgst-plugins-good:isomp4=enabled
+    -Dgst-plugins-bad:applemedia=enabled
+    # applemedia references GstGL even when the output is system memory.
+    # Enabling only the base GL library leaves these symbols unresolved.
+    -Dgst-plugins-bad:gl=enabled
     -Dgst-plugins-bad:audiobuffersplit=enabled
     # h264parse. wg_transform's decoder chain looks for a parser first and only
     # falls back to feeding the decoder the raw input caps; without it Steam's
@@ -207,9 +214,10 @@ meson install -C "$BUILD_DIR"
 echo "=== Done ==="
 echo "Installed to: $OUT_DIR"
 file "$OUT_DIR/lib/libgstreamer-1.0.dylib" 2>/dev/null | head -1
-echo "Plugins that matter for WMV:"
+echo "Plugins required for Wine video playback:"
 missing=0
-for p in libgstapp libgstplayback libgstasf libgstlibav libgsttypefindfunctions; do
+for p in libgstapp libgstplayback libgstasf libgstlibav libgsttypefindfunctions \
+         libgstvideoparsersbad libgstapplemedia libgstisomp4; do
     printf '  %-26s ' "$p"
     if [ -f "$OUT_DIR/lib/gstreamer-1.0/$p.dylib" ]; then
         echo "ok"

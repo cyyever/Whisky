@@ -1,5 +1,25 @@
 # DirectShow / winegstreamer probes
 
+## Native VideoToolbox regression
+
+`bash tests/gstreamer/videotoolbox-test.sh` checks the installed x86_64
+GStreamer used by the build. Set `WHISKY_GSTREAMER_PREFIX` to test a staged
+installation. It does not modify Wine bottles.
+
+The probe encodes twelve synthetic red frames, checks every decoded RGBA
+pixel, and requires the expected autoplugged decoder in three cases:
+VideoToolbox hardware H.264, FFmpeg software H.264 with VideoToolbox decoder
+ranks disabled, and MP4 mux/demux followed by hardware H.264 decoding. Each
+process has a 30-second deadline. This requires Rosetta and a working H.264
+VideoToolbox encoder/decoder; unavailable hardware fails the test.
+
+Validated on the local Apple Silicon host: 12 frames and zero pixel failures
+in each case. This validates the native dependency path, not every Windows
+media API or real-game playback. Software decoding remains available for
+codecs outside VideoToolbox's capabilities, such as WMV3/VC-1 on this host.
+
+## Wine playback probes
+
 Wine plays WMV through quartz's filter graph, whose splitter and decoder are
 both winegstreamer. When a game shows a black screen or hangs on a movie, the
 question is *which half* broke — and these probes split it three ways so an

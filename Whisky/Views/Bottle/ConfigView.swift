@@ -37,7 +37,6 @@ struct ConfigView: View {
     @State private var retinaMode: Bool = false
     @State private var retinaModeLoadingState: LoadingState = .loading
     @AppStorage("wineSectionExpanded") private var wineSectionExpanded: Bool = true
-    @AppStorage("metalSectionExpanded") private var metalSectionExpanded: Bool = true
     @AppStorage("advancedSectionExpanded") private var advancedSectionExpanded: Bool = false
 
     var body: some View {
@@ -68,11 +67,6 @@ struct ConfigView: View {
                     Text("config.followSystemProxy")
                     Text("config.followSystemProxy.info")
                 }
-            }
-            Section("config.title.metal", isExpanded: $metalSectionExpanded) {
-                Toggle(isOn: $bottle.settings.metalHud) {
-                    Text("config.metalHud")
-                }
                 Toggle(isOn: $bottle.settings.hideVirtualAudioDevices) {
                     Text("config.hideVirtualAudioDevices")
                     Text("config.hideVirtualAudioDevices.info")
@@ -89,7 +83,6 @@ struct ConfigView: View {
         }
         .formStyle(.grouped)
         .animation(.whiskyDefault, value: wineSectionExpanded)
-        .animation(.whiskyDefault, value: metalSectionExpanded)
         .animation(.whiskyDefault, value: advancedSectionExpanded)
         .navigationTitle("tab.config")
         .onAppear {

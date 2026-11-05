@@ -403,22 +403,6 @@
         }
       }
     },
-    "config.metalHud": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Metal HUD"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Metal HUD"
-          }
-        }
-      }
-    },
     "config.notAvailable": {
       "localizations": {
         "en": {
@@ -464,22 +448,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "高级"
-          }
-        }
-      }
-    },
-    "config.title.metal": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Metal"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Metal"
           }
         }
       }

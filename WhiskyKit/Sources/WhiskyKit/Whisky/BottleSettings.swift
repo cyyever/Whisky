@@ -124,7 +124,6 @@ public struct BottleWineConfig: Codable, Equatable {
 }
 
 public struct BottleMetalConfig: Codable, Equatable {
-    var metalHud: Bool = false
     var dxrEnabled: Bool = false
     /// Hide virtual audio devices (Steam Streaming, Teams, loopback) from games.
     /// On by default — some games hang while enumerating them.
@@ -134,7 +133,6 @@ public struct BottleMetalConfig: Codable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.metalHud = container.decodeResilient(Bool.self, forKey: .metalHud, default: false)
         self.dxrEnabled = container.decodeResilient(Bool.self, forKey: .dxrEnabled, default: false)
         self.hideVirtualAudioDevices = container.decodeResilient(
             Bool.self, forKey: .hideVirtualAudioDevices, default: true)
@@ -206,11 +204,6 @@ public struct BottleSettings: Codable, Equatable {
     public var enhancedSync: EnhancedSync {
         get { return wineConfig.enhancedSync }
         set { wineConfig.enhancedSync = newValue }
-    }
-
-    public var metalHud: Bool {
-        get { return metalConfig.metalHud }
-        set { metalConfig.metalHud = newValue }
     }
 
     public var dxrEnabled: Bool {
@@ -285,10 +278,6 @@ public struct BottleSettings: Codable, Equatable {
             // (`.esync` is decode-migrated to `.msync` — no eventfd on macOS; and
             // WINEESYNC is dead on this stack, so we never touch it either.)
             break
-        }
-
-        if metalHud {
-            wineEnv.updateValue("1", forKey: "MTL_HUD_ENABLED")
         }
 
         if dxrEnabled {
