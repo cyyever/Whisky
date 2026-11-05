@@ -17,14 +17,14 @@
 //
 
 import Foundation
-import SemanticVersion
 import os.log
+import SemanticVersion
 
 /// Decode-time resilience for the bottle-settings structs below.
 ///
 /// Every settings field has a sensible default, and the loader is meant to fall
 /// back to it when a value can't be read — the migration comments throughout
-/// (`esync → msync`, `win7 → win10`) depend on that. But `decodeIfPresent` only
+/// (`esync → msync`) depend on that. But `decodeIfPresent` only
 /// tolerates an *absent* key: a key that is *present but malformed* — a stale
 /// on-disk format, a removed enum case, a truncated write, a hand-edit — makes
 /// it throw. One field throwing fails the entire `init(from:)`, and the bottle
@@ -84,6 +84,7 @@ public struct BottleInfo: Codable, Equatable {
     }
 }
 
+/// Legacy cases remain readable so old prefixes can be migrated at launch.
 public enum WinVersion: String, CaseIterable, Codable, Sendable {
     case winXP = "winxp64"
     case win7 = "win7"
@@ -91,28 +92,6 @@ public enum WinVersion: String, CaseIterable, Codable, Sendable {
     case win81 = "win81"
     case win10 = "win10"
     case win11 = "win11"
-
-    /// Versions offered in the UI. Steam requires Windows 10+ (dropped 7/8/8.1 in
-    /// Jan 2024) — older versions break the Steam client, so only these are
-    /// user-selectable. The other cases stay in the enum for decode compat.
-    public static let selectable: [Self] = [.win10, .win11]
-
-    public func pretty() -> String {
-        switch self {
-        case .winXP:
-            return "Windows XP"
-        case .win7:
-            return "Windows 7"
-        case .win8:
-            return "Windows 8"
-        case .win81:
-            return "Windows 8.1"
-        case .win10:
-            return "Windows 10"
-        case .win11:
-            return "Windows 11"
-        }
-    }
 }
 
 public enum EnhancedSync: Codable, Equatable {
@@ -122,7 +101,7 @@ public enum EnhancedSync: Codable, Equatable {
 public struct BottleWineConfig: Codable, Equatable {
     static let defaultWineVersion = SemanticVersion(11, 11, 0)
     var wineVersion: SemanticVersion = Self.defaultWineVersion
-    var windowsVersion: WinVersion = .win10
+    var windowsVersion: WinVersion = .win11
     var enhancedSync: EnhancedSync = .msync
     var avxEnabled: Bool = false
     var followSystemProxy: Bool = true
@@ -133,12 +112,9 @@ public struct BottleWineConfig: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.wineVersion = container.decodeResilient(
             SemanticVersion.self, forKey: .wineVersion, default: Self.defaultWineVersion)
-        // Steam requires Windows 10+ (dropped 7/8/8.1 in Jan 2024); an old bottle
-        // pinned to XP/7/8/8.1 would break the Steam client, so migrate it to win10
-        // — the same decode-migration shape as the `.esync → .msync` fix below.
-        // Keeps the Picker (which only offers win10/win11) able to represent every bottle.
-        let winVersion = container.decodeResilient(WinVersion.self, forKey: .windowsVersion, default: .win10)
-        self.windowsVersion = WinVersion.selectable.contains(winVersion) ? winVersion : .win10
+        // Keep the stored version until runProgram updates Wine's registry.
+        // Changing metadata alone would leave it out of sync with the prefix.
+        self.windowsVersion = container.decodeResilient(WinVersion.self, forKey: .windowsVersion, default: .win11)
         // esync can't exist on macOS (no eventfd); an old `.esync` selection meant
         // "fast-sync wanted", so migrate it to msync — the working macOS backend.
         // Keeps the Picker (which only offers none/msync) able to represent every bottle.

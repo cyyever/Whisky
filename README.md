@@ -13,12 +13,17 @@ live in [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs).
 - Apple Silicon (M-series)
 - macOS 26.0 or later
 
+New bottles use Windows 11 mode. Older bottles are migrated to Windows 11 before
+their next program launch; the GUI does not offer a Windows version selector.
+
 ## Install
 
 Download the latest build from this fork's
 [Releases](https://github.com/cyyever/Whisky/releases), or build from source.
 
 ## Build
+
+Use a Swift 6.4 toolchain (validated with Swift 6.4.2 / Xcode 27.2).
 
 ```bash
 make x86-deps        # one-time: cross-build Wine's x86_64 libraries

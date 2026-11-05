@@ -67,19 +67,23 @@ class ProgramShortcut {
                 atomically: false,
                 encoding: .utf8)
 
-            let request = QLThumbnailGenerator.Request(
-                fileAt: program.url,
-                size: CGSize(width: 512, height: 512),
-                scale: 2.0,
-                representationTypes: .thumbnail)
-            let thumbnail = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
-            NSWorkspace.shared.setIcon(
-                thumbnail.nsImage,
-                forFile: app.path(percentEncoded: false),
-                options: NSWorkspace.IconCreationOptions())
+            try await setIcon(for: program, app: app)
             NSWorkspace.shared.activateFileViewerSelecting([app])
         } catch {
             print(error)
         }
+    }
+
+    private static func setIcon(for program: Program, app: URL) async throws {
+        let request = QLThumbnailGenerator.Request(
+            fileAt: program.url,
+            size: CGSize(width: 512, height: 512),
+            scale: 2.0,
+            representationTypes: .thumbnail)
+        let thumbnail = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
+        NSWorkspace.shared.setIcon(
+            thumbnail.nsImage,
+            forFile: app.path(percentEncoded: false),
+            options: NSWorkspace.IconCreationOptions())
     }
 }

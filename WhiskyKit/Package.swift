@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.4
 //
 //  PortableExecutable.swift
 //  WhiskyKit
@@ -28,7 +28,7 @@ let package = Package(
         .library(
             name: "WhiskyKit",
             targets: ["WhiskyKit"]
-        )
+        ),
     ],
     dependencies: [
         .package(url: "git@github.com:SwiftPackageIndex/SemanticVersion.git", from: "0.4.0")
@@ -37,7 +37,8 @@ let package = Package(
         .target(
             name: "WhiskyKit",
             dependencies: ["SemanticVersion"]
-        )
+        ),
+        .testTarget(name: "WhiskyKitTests", dependencies: ["WhiskyKit"]),
     ],
     swiftLanguageModes: [.v6]
 )

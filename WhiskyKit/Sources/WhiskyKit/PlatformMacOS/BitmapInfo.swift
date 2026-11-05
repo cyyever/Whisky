@@ -185,8 +185,7 @@ public struct BitmapInfoHeader: Hashable {
             if let providerRef = CGDataProvider(
                 data: Data(
                     bytes: &pixels,
-                    count: pixels.count * quadStride) as CFData)
-            {
+                    count: pixels.count * quadStride) as CFData) {
                 if let cgImg = CGImage(
                     width: Int(width),
                     height: Int(height / 2),
@@ -198,8 +197,7 @@ public struct BitmapInfoHeader: Hashable {
                     provider: providerRef,
                     decode: nil,
                     shouldInterpolate: true,
-                    intent: .defaultIntent)
-                {
+                    intent: .defaultIntent) {
                     return NSImage(cgImage: cgImg, size: .zero)
                 }
             }

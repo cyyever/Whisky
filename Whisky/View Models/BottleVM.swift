@@ -37,7 +37,7 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
         return bottles.filter { $0.isAvailable == true }.count
     }
 
-    func createNewBottle(bottleName: String, winVersion: WinVersion, bottleURL: URL) -> URL {
+    func createNewBottle(bottleName: String, bottleURL: URL) -> URL {
         let newBottleDir = bottleURL.appending(path: UUID().uuidString)
 
         Task.detached {
@@ -53,14 +53,13 @@ final class BottleVM: ObservableObject, @unchecked Sendable {
                     self.bottles.append(bottle)
                 }
 
-                bottle.settings.windowsVersion = winVersion
                 bottle.settings.name = bottleName
                 // The winemac.drv=d init workaround (macOS-26 WM_TIMER wineboot hang)
                 // was dropped 2026-07-25: the hang is gone on proton-wine 11.0 —
                 // wineboot --init completes in ~14s with winemac.drv enabled (mirrors
                 // the dropped patch 0007). Re-add the environment override if a fresh
                 // GUI bottle creation hangs.
-                try await Wine.changeWinVersion(bottle: bottle, win: winVersion)
+                try await Wine.changeWinVersion(bottle: bottle, win: .win11)
                 // Read the installed version from the version plist instead of spawning
                 // `wine --version` (bottle: nil): that global wine call can hang when a
                 // wineserver is churning, which would leave the bottle `inFlight` forever

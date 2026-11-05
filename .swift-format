@@ -22,6 +22,7 @@
     ]
   },
   "orderedImports": {
+    "shouldGroupImports": false,
     "includeConditionalImports": false
   },
   "prioritizeKeepingFunctionOutputTogether": false,
