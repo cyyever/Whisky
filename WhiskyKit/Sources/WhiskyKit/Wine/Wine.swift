@@ -139,6 +139,7 @@ public class Wine {
                 bottle.settings.windowsVersion = .win11
             }
         }
+        try await enableRetinaMode(bottle: bottle)
         let allArgs =
             (waitForExit ? ["start", "/wait", "/unix"] : ["start", "/unix"])
             + [url.path(percentEncoded: false)] + args
@@ -324,10 +325,6 @@ public class Wine {
     }
 }
 
-enum RegistryType: String {
-    case string = "REG_SZ"
-}
-
 extension Wine {
     public static let logsFolder = FileManager.default.urls(
         for: .libraryDirectory, in: .userDomainMask
@@ -346,49 +343,24 @@ extension Wine {
 }
 
 extension Wine {
-    private enum RegistryKey: String {
-        case macDriver = #"HKCU\Software\Wine\Mac Driver"#
-    }
-
-    static func addRegistryKey(
-        bottle: Bottle, key: String, name: String, data: String, type: RegistryType
-    ) async throws {
-        try await runWine(
-            ["reg", "add", key, "-v", name, "-t", type.rawValue, "-d", data, "-f"],
-            bottle: bottle
-        )
-    }
-
-    private static func queryRegistryKey(
-        bottle: Bottle, key: String, name: String, type: RegistryType
-    ) async throws -> String? {
-        let output = try await runWine(["reg", "query", key, "-v", name], bottle: bottle)
-        let lines = output.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline)
-
-        guard let line = lines.first(where: { $0.contains(type.rawValue) }) else { return nil }
-        let array = line.split(omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
-        guard let value = array.last else { return nil }
-        return String(value)
-    }
-
-    public static func retinaMode(bottle: Bottle) async throws -> Bool {
-        let values: Set<String> = ["y", "n"]
-        guard
-            let output = try await Self.queryRegistryKey(
-                bottle: bottle, key: RegistryKey.macDriver.rawValue, name: "RetinaMode", type: .string
-            ), values.contains(output)
-        else {
-            try await changeRetinaMode(bottle: bottle, retinaMode: false)
-            return false
+    /// Retina rendering is fixed on for new and existing bottles before launch.
+    public static func enableRetinaMode(bottle: Bottle) async throws {
+        for await output in try runWineProcess(
+            args: [
+                "reg", "add", #"HKCU\Software\Wine\Mac Driver"#, "-v", "RetinaMode",
+                "-t", "REG_SZ", "-d", "y", "-f",
+            ], bottle: bottle
+        ) {
+            if case .terminated(let process) = output, process.terminationStatus != 0 {
+                throw NSError(
+                    domain: "WhiskyKit.Wine", code: Int(process.terminationStatus),
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Enabling Retina mode failed with exit code \(process.terminationStatus).",
+                    ]
+                )
+            }
         }
-        return output == "y"
-    }
-
-    public static func changeRetinaMode(bottle: Bottle, retinaMode: Bool) async throws {
-        try await Self.addRegistryKey(
-            bottle: bottle, key: RegistryKey.macDriver.rawValue, name: "RetinaMode", data: retinaMode ? "y" : "n",
-            type: .string
-        )
     }
 
     @discardableResult

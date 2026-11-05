@@ -403,38 +403,6 @@
         }
       }
     },
-    "config.notAvailable": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "N/A"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "不适用"
-          }
-        }
-      }
-    },
-    "config.retinaMode": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Retina Mode"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Retina 模式"
-          }
-        }
-      }
-    },
     "config.title.advanced": {
       "extractionState": "manual",
       "localizations": {
