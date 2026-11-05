@@ -18,25 +18,7 @@
 
 import Foundation
 
-extension String {
-    var esc: String {
-        let esc = [
-            "\\", "\"", "'", " ", "(", ")", "[", "]", "{", "}", "&", "|",
-            ";", "<", ">", "`", "$", "!", "*", "?", "#", "~", "=",
-        ]
-        var str = self
-        for char in esc {
-            str = str.replacingOccurrences(of: char, with: "\\" + char)
-        }
-        return str
-    }
-}
-
 extension URL {
-    public var esc: String {
-        path.esc
-    }
-
     public func prettyPath() -> String {
         var prettyPath = path(percentEncoded: false)
         prettyPath =

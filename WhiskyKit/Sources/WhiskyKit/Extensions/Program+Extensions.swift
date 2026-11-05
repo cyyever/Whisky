@@ -60,15 +60,6 @@ extension Program {
         }
     }
 
-    /// Renders the full `wine …` launch command (env + start line) as a shell
-    /// string. Used only to embed the launch in the standalone `.app` shortcut
-    /// (see `ProgramShortcut`), never to spawn a Terminal.
-    public func generateTerminalCommand() -> String {
-        return Wine.generateRunCommand(
-            at: self.url, bottle: bottle, args: settings.arguments, environment: generateEnvironment()
-        )
-    }
-
     @MainActor private func showRunError(message: String) {
         let alert = NSAlert()
         alert.messageText = String(localized: "alert.message")

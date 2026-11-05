@@ -172,8 +172,7 @@ public class Wine {
         process.executableURL = wineBinary(for: bottle)
         process.arguments = allArgs
         process.currentDirectoryURL = wineBinary(for: bottle).deletingLastPathComponent()
-        // As in `runProcess`. `constructWineEnvironment` returns only what Whisky
-        // sets, because `generateRunCommand` renders it as a shell prefix.
+        // As in `runProcess`, merge Whisky's environment with inherited values.
         let wineEnv = constructWineEnvironment(for: bottle, environment: environment)
         process.environment = ProcessInfo.processInfo.environment
             .filter { !$0.key.hasPrefix("DYLD_") }
@@ -208,18 +207,6 @@ public class Wine {
             Logger.wineKit.warning("`wine start` did not exit within ~30s; abandoning the launcher")
             process.terminate()
         }
-    }
-
-    public static func generateRunCommand(
-        at url: URL, bottle: Bottle, args: String, environment: [String: String]
-    ) -> String {
-        var wineCmd = "\(wineBinary(for: bottle).esc) start /unix \(url.esc) \(args)"
-        let env = constructWineEnvironment(for: bottle, environment: environment)
-        for environment in env {
-            wineCmd = "\(environment.key)=\"\(environment.value)\" " + wineCmd
-        }
-
-        return wineCmd
     }
 
     /// Run a `wineserver` command with the given arguments and return the output result
@@ -292,6 +279,10 @@ public class Wine {
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-all",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
+            // Rosetta reads this before Wine starts. All supported macOS
+            // versions translate AVX/AVX2; advertise it so games can detect
+            // those instructions without a per-bottle preference.
+            "ROSETTA_ADVERTISE_AVX": "1",
             // No GST_PLUGIN_PATH / GST_PLUGIN_SCANNER: GStreamer locates both
             // relative to libgstreamer-1.0.dylib's own load address (dladdr, see
             // priv_gst_get_relocated_libgstreamer), which lands in Wine/lib once
@@ -315,6 +306,7 @@ public class Wine {
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-all",
             "DYLD_FALLBACK_LIBRARY_PATH": wineLibPath,
+            "ROSETTA_ADVERTISE_AVX": "1",
             "GST_DEBUG": "1",
         ]
         // The same bottle settings the clients get. WINEMSYNC is the one that
@@ -333,7 +325,6 @@ public class Wine {
 }
 
 enum RegistryType: String {
-    case dword = "REG_DWORD"
     case string = "REG_SZ"
 }
 
@@ -356,9 +347,7 @@ extension Wine {
 
 extension Wine {
     private enum RegistryKey: String {
-        case currentVersion = #"HKLM\Software\Microsoft\Windows NT\CurrentVersion"#
         case macDriver = #"HKCU\Software\Wine\Mac Driver"#
-        case desktop = #"HKCU\Control Panel\Desktop"#
     }
 
     static func addRegistryKey(
@@ -382,22 +371,6 @@ extension Wine {
         return String(value)
     }
 
-    public static func changeBuildVersion(bottle: Bottle, version: Int) async throws {
-        try await addRegistryKey(
-            bottle: bottle, key: RegistryKey.currentVersion.rawValue,
-            name: "CurrentBuild", data: "\(version)", type: .string)
-        try await addRegistryKey(
-            bottle: bottle, key: RegistryKey.currentVersion.rawValue,
-            name: "CurrentBuildNumber", data: "\(version)", type: .string)
-    }
-
-    public static func buildVersion(bottle: Bottle) async throws -> String? {
-        return try await Self.queryRegistryKey(
-            bottle: bottle, key: RegistryKey.currentVersion.rawValue,
-            name: "CurrentBuild", type: .string
-        )
-    }
-
     public static func retinaMode(bottle: Bottle) async throws -> Bool {
         let values: Set<String> = ["y", "n"]
         guard
@@ -415,27 +388,6 @@ extension Wine {
         try await Self.addRegistryKey(
             bottle: bottle, key: RegistryKey.macDriver.rawValue, name: "RetinaMode", data: retinaMode ? "y" : "n",
             type: .string
-        )
-    }
-
-    public static func dpiResolution(bottle: Bottle) async throws -> Int? {
-        guard
-            let output = try await Self.queryRegistryKey(
-                bottle: bottle, key: RegistryKey.desktop.rawValue,
-                name: "LogPixels", type: .dword
-            )
-        else { return nil }
-
-        let noPrefix = output.replacingOccurrences(of: "0x", with: "")
-        let int = Int(noPrefix, radix: 16)
-        guard let int else { return nil }
-        return int
-    }
-
-    public static func changeDpiResolution(bottle: Bottle, dpi: Int) async throws {
-        try await Self.addRegistryKey(
-            bottle: bottle, key: RegistryKey.desktop.rawValue, name: "LogPixels", data: String(dpi),
-            type: .dword
         )
     }
 

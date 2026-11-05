@@ -18,17 +18,18 @@
 # never happens. This is the only place it shows up.
 #
 # Run: tests/env-contract-test.sh      # exit 0 = every variable has a reader
+# Set WHISKY_WINE_SOURCE to reuse a source tree outside this checkout.
 set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WINE_SRC="$PROJECT_DIR/vendor/proton-wine"
+WINE_SRC="${WHISKY_WINE_SOURCE:-$PROJECT_DIR/vendor/proton-wine}"
 SWIFT="$PROJECT_DIR/WhiskyKit/Sources/WhiskyKit/Wine/Wine.swift"
 
 [ -f "$SWIFT" ]     || { echo "ERROR: $SWIFT missing" >&2; exit 1; }
 [ -d "$WINE_SRC" ]  || { echo "ERROR: proton-wine tree missing; run 'make proton' first" >&2; exit 1; }
 
 # Variables Whisky puts in a bottle's environment, as "NAME": "VALUE" literals.
-vars=$(grep -oE '"(WINE|PROTON|SDL|DXVK|VKD3D|GST|MVK|MTL)[A-Z0-9_]*"[[:space:]]*:' "$SWIFT" |
+vars=$(grep -oE '"(WINE|PROTON|ROSETTA|SDL|DXVK|VKD3D|GST|MVK|MTL)[A-Z0-9_]*"[[:space:]]*:' "$SWIFT" |
        tr -d '":' | sort -u)
 
 # Wine reads its own variables through getenv() in the unix side, and Proton's
@@ -43,6 +44,7 @@ external_reason() {
         SDL_JOYSTICK_MFI)            echo "SDL2, bundled by games — not Wine" ;;
         DYLD_FALLBACK_LIBRARY_PATH)  echo "dyld itself" ;;
         GST_DEBUG)                   echo "GStreamer" ;;
+        ROSETTA_ADVERTISE_AVX)       echo "Rosetta 2, read before the Wine executable starts" ;;
         *)                           echo "" ;;
     esac
 }

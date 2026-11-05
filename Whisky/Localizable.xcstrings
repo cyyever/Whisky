@@ -81,22 +81,6 @@
         }
       }
     },
-    "button.createShortcut": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Create Shortcut"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "创建快捷方式"
-          }
-        }
-      }
-    },
     "button.moveBottle": {
       "localizations": {
         "en": {
@@ -321,70 +305,6 @@
         }
       }
     },
-    "config.avx": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Advertise AVX Support"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "查看 AVX 支持"
-          }
-        }
-      }
-    },
-    "config.avx.warning": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "May negatively impact performance"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "可能会对性能产生负面影响"
-          }
-        }
-      }
-    },
-    "config.buildVersion": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Build Version"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "构建版本"
-          }
-        }
-      }
-    },
-    "config.dpi": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI Scaling"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI 缩放"
-          }
-        }
-      }
-    },
     "config.dxr": {
       "extractionState": "manual",
       "localizations": {
@@ -483,22 +403,6 @@
         }
       }
     },
-    "config.inspect": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Configure..."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "配置..."
-          }
-        }
-      }
-    },
     "config.metalHud": {
       "localizations": {
         "en": {
@@ -592,70 +496,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Wine"
-          }
-        }
-      }
-    },
-    "configDpi.dpi": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI"
-          }
-        }
-      }
-    },
-    "configDpi.preview": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Text will look like this:"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文字外观示例："
-          }
-        }
-      }
-    },
-    "configDpi.previewText": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The quick brown fox jumps over the lazy dog."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "中国智造，慧及全球"
-          }
-        }
-      }
-    },
-    "configDpi.title": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI Settings"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "DPI 设置"
           }
         }
       }

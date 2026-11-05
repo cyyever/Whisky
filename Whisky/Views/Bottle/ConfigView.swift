@@ -34,13 +34,8 @@ struct ConfigView: View {
         MTLCreateSystemDefaultDevice()?.supportsFamily(.apple9) ?? false
 
     @ObservedObject var bottle: Bottle
-    @State private var buildVersion: Int = 0
     @State private var retinaMode: Bool = false
-    @State private var dpiConfig: Int = 96
-    @State private var buildVersionLoadingState: LoadingState = .loading
     @State private var retinaModeLoadingState: LoadingState = .loading
-    @State private var dpiConfigLoadingState: LoadingState = .loading
-    @State private var dpiSheetPresented: Bool = false
     @AppStorage("wineSectionExpanded") private var wineSectionExpanded: Bool = true
     @AppStorage("metalSectionExpanded") private var metalSectionExpanded: Bool = true
     @AppStorage("advancedSectionExpanded") private var advancedSectionExpanded: Bool = false
@@ -49,23 +44,6 @@ struct ConfigView: View {
         Form {
             Section("config.title.wine", isExpanded: $wineSectionExpanded) {
                 // The Wine backend and Windows 11 mode are fixed for every bottle.
-                SettingItemView(title: "config.buildVersion", loadingState: buildVersionLoadingState) {
-                    TextField("config.buildVersion", value: $buildVersion, formatter: NumberFormatter())
-                        .multilineTextAlignment(.trailing)
-                        .textFieldStyle(PlainTextFieldStyle())
-                        .onSubmit {
-                            buildVersionLoadingState = .modifying
-                            Task(priority: .userInitiated) {
-                                do {
-                                    try await Wine.changeBuildVersion(bottle: bottle, version: buildVersion)
-                                    buildVersionLoadingState = .success
-                                } catch {
-                                    print("Failed to change build version")
-                                    buildVersionLoadingState = .failed
-                                }
-                            }
-                        }
-                }
                 SettingItemView(title: "config.retinaMode", loadingState: retinaModeLoadingState) {
                     Toggle("config.retinaMode", isOn: $retinaMode)
                         .onChange(
@@ -77,7 +55,7 @@ struct ConfigView: View {
                                         try await Wine.changeRetinaMode(bottle: bottle, retinaMode: newValue)
                                         retinaModeLoadingState = .success
                                     } catch {
-                                        print("Failed to change build version")
+                                        print("Failed to change Retina mode: \(error)")
                                         retinaModeLoadingState = .failed
                                     }
                                 }
@@ -86,38 +64,9 @@ struct ConfigView: View {
                 // Enhanced Sync selector removed: the backend is locked to msync on
                 // this stack (macOS has no eventfd for esync). `enhancedSync` stays in
                 // the model at its `.msync` default for decode compat.
-                SettingItemView(title: "config.dpi", loadingState: dpiConfigLoadingState) {
-                    Button("config.inspect") {
-                        dpiSheetPresented = true
-                    }
-                    .sheet(isPresented: $dpiSheetPresented) {
-                        DPIConfigSheetView(
-                            dpiConfig: $dpiConfig,
-                            isRetinaMode: $retinaMode,
-                            presented: $dpiSheetPresented
-                        )
-                    }
-                }
                 Toggle(isOn: $bottle.settings.followSystemProxy) {
                     Text("config.followSystemProxy")
                     Text("config.followSystemProxy.info")
-                }
-                if #available(macOS 15, *) {
-                    Toggle(isOn: $bottle.settings.avxEnabled) {
-                        VStack(alignment: .leading) {
-                            Text("config.avx")
-                            if bottle.settings.avxEnabled {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .symbolRenderingMode(.multicolor)
-                                        .font(.subheadline)
-                                    Text("config.avx.warning")
-                                        .fontWeight(.light)
-                                        .font(.subheadline)
-                                }
-                            }
-                        }
-                    }
                 }
             }
             Section("config.title.metal", isExpanded: $metalSectionExpanded) {
@@ -144,8 +93,6 @@ struct ConfigView: View {
         .animation(.whiskyDefault, value: advancedSectionExpanded)
         .navigationTitle("tab.config")
         .onAppear {
-            loadBuildName()
-
             Task(priority: .userInitiated) {
                 do {
                     retinaMode = try await Wine.retinaMode(bottle: bottle)
@@ -155,116 +102,9 @@ struct ConfigView: View {
                     retinaModeLoadingState = .failed
                 }
             }
-            Task(priority: .userInitiated) {
-                do {
-                    dpiConfig = try await Wine.dpiResolution(bottle: bottle) ?? 0
-                    dpiConfigLoadingState = .success
-                } catch {
-                    print(error)
-                    // If DPI has not yet been edited, there will be no registry entry
-                    dpiConfigLoadingState = .success
-                }
-            }
-        }
-        .onChange(of: dpiConfig) {
-            if dpiConfigLoadingState == .success {
-                Task(priority: .userInitiated) {
-                    dpiConfigLoadingState = .modifying
-                    do {
-                        try await Wine.changeDpiResolution(bottle: bottle, dpi: dpiConfig)
-                        dpiConfigLoadingState = .success
-                    } catch {
-                        print(error)
-                        dpiConfigLoadingState = .failed
-                    }
-                }
-            }
         }
     }
 
-    func loadBuildName() {
-        Task(priority: .userInitiated) {
-            do {
-                if let buildVersionString = try await Wine.buildVersion(bottle: bottle) {
-                    buildVersion = Int(buildVersionString) ?? 0
-                } else {
-                    buildVersion = 0
-                }
-
-                buildVersionLoadingState = .success
-            } catch {
-                print(error)
-                buildVersionLoadingState = .failed
-            }
-        }
-    }
-}
-
-struct DPIConfigSheetView: View {
-    @Binding var dpiConfig: Int
-    @Binding var isRetinaMode: Bool
-    @Binding var presented: Bool
-    @State private var stagedChanges: Float
-    @FocusState var textFocused: Bool
-
-    init(dpiConfig: Binding<Int>, isRetinaMode: Binding<Bool>, presented: Binding<Bool>) {
-        self._dpiConfig = dpiConfig
-        self._isRetinaMode = isRetinaMode
-        self._presented = presented
-        self.stagedChanges = Float(dpiConfig.wrappedValue)
-    }
-
-    var body: some View {
-        VStack {
-            HStack {
-                Text("configDpi.title")
-                    .fontWeight(.bold)
-                Spacer()
-            }
-            Divider()
-            GroupBox(label: Label("configDpi.preview", systemImage: "text.magnifyingglass")) {
-                VStack {
-                    HStack {
-                        Text("configDpi.previewText")
-                            .padding(16)
-                            .font(
-                                .system(
-                                    size: (10 * CGFloat(stagedChanges)) / 72 * (isRetinaMode ? 0.5 : 1)
-                                ))
-                        Spacer()
-                    }
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: 80)
-            }
-            HStack {
-                Slider(
-                    value: $stagedChanges, in: 96...480, step: 24,
-                    onEditingChanged: { _ in
-                        textFocused = false
-                    })
-                TextField(String(), value: $stagedChanges, format: .number)
-                    .frame(width: 40)
-                    .focused($textFocused)
-                Text("configDpi.dpi")
-            }
-            Spacer()
-            HStack {
-                Spacer()
-                Button("create.cancel") {
-                    presented = false
-                }
-                .keyboardShortcut(.cancelAction)
-                Button("button.ok") {
-                    dpiConfig = Int(stagedChanges)
-                    presented = false
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding()
-        .frame(width: ViewWidth.medium, height: 240)
-    }
 }
 
 struct SettingItemView<Content: View>: View {
