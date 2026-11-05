@@ -28,7 +28,6 @@ struct PinView: View {
     @State private var image: Image?
     @State private var showRenameSheet = false
     @State private var name: String = ""
-    @State private var opening: Bool = false
 
     var body: some View {
         VStack {
@@ -42,8 +41,6 @@ struct PinView: View {
                 }
             }
             .frame(width: 45, height: 45)
-            .scaleEffect(opening ? 2 : 1)
-            .opacity(opening ? 0 : 1)
             Spacer()
             Text(name)
                 .multilineTextAlignment(.center)
@@ -75,14 +72,14 @@ struct PinView: View {
             .labelStyle(.titleAndIcon)
         }
         .onTapGesture(count: 2) {
-            runProgram()
+            program.run()
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(name)
         .accessibilityIdentifier("pin." + (pin.url?.lastPathComponent ?? pin.name))
         .accessibilityAction {
-            runProgram()
+            program.run()
         }
         .accessibilityAction(named: Text("button.rename")) {
             showRenameSheet.toggle()
@@ -112,17 +109,5 @@ struct PinView: View {
                 bottle.settings.pins[index].name = name
             }
         }
-    }
-
-    func runProgram() {
-        withAnimation(.easeIn(duration: 0.25)) {
-            opening = true
-        } completion: {
-            withAnimation(.easeOut(duration: 0.1)) {
-                opening = false
-            }
-        }
-
-        program.run()
     }
 }
