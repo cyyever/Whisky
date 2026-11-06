@@ -22,6 +22,9 @@ ARM_BREW_PREFIX="$(brew --prefix)"
 # off PATH). llvm is keg-only; phase 1 (mesa_clc) needs its llvm-config.
 export PATH="$ARM_BREW_PREFIX/opt/llvm/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
+# WHISKY_BUILD_JOBS caps ninja; unset, ninja keeps its own default.
+NINJA_JOBS=()
+if [ -n "${WHISKY_BUILD_JOBS:-}" ]; then NINJA_JOBS=(-j "$(whisky_ncpu)"); fi
 
 # This payload only needs the Vulkan-on-Metal driver. Media playback is
 # provided separately by Wine/GStreamer, not Mesa video drivers.
@@ -78,7 +81,7 @@ tools_setup=(meson setup "$TOOLS_BUILD" "$MESA_SRC" -Dbuildtype=release
     "${minimal_options[@]}")
 if [ -f "$TOOLS_BUILD/build.ninja" ]; then tools_setup+=(--reconfigure); fi
 "${tools_setup[@]}"
-ninja -C "$TOOLS_BUILD" src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2
+ninja -C "$TOOLS_BUILD" "${NINJA_JOBS[@]}" src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2
 mkdir -p "$TOOLS_BIN"
 cp "$TOOLS_BUILD/src/compiler/clc/mesa_clc" \
    "$TOOLS_BUILD/src/compiler/spirv/vtn_bindgen2" "$TOOLS_BIN/"
@@ -136,7 +139,7 @@ if [ -d "$DRIVER_BUILD" ] && [ -f "$recorded" ] &&
 fi
 if [ -d "$DRIVER_BUILD" ]; then meson_args+=(--reconfigure); fi
 meson setup "${meson_args[@]}"
-ninja -C "$DRIVER_BUILD"
+ninja -C "$DRIVER_BUILD" "${NINJA_JOBS[@]}"
 
 echo "=== Installing to $OUT_DIR ==="
 mkdir -p "$OUT_DIR"
