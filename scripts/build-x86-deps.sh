@@ -18,8 +18,7 @@ set -euo pipefail
 #   freetype     dlopened by win32u for font rendering
 #   gmp, nettle  gnutls' crypto backend
 #   gnutls       dlopened by secur32 (schannel) and bcrypt
-#   SDL2         linked by winebus.so for controllers (vendor/sdl2, the tag the
-#                32-bit SDL2.dll is built from too)
+#   SDL2         linked by winebus.so for controllers (vendor/sdl2)
 #   Vulkan loader  winevulkan dlopens it; build-proton-x86.sh installs it at the
 #                leaf names winevulkan looks for and points it at KosmicKrisp
 #   SPIRV-Tools  static, for build-kosmickrisp-x86.sh: the x86_64 driver and its
@@ -202,7 +201,7 @@ cmake_build "$WORK_DIR/freetype-src" "$WORK_DIR/freetype-build" \
 echo "=== SDL2 (vendor/sdl2) ==="
 git -C "$PROJECT_DIR" submodule update --init --depth 1 vendor/sdl2
 # Build dir outside the submodule, so the parent repo does not report untracked
-# content in vendor/sdl2 (build-sdl2.sh's win32 build dir has the same reason).
+# content in vendor/sdl2.
 cmake_build "$PROJECT_DIR/vendor/sdl2" "$WORK_DIR/sdl2-build" \
     -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF -DSDL_TESTS=OFF -DSDL_INSTALL_TESTS=OFF
 

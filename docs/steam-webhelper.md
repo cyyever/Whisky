@@ -45,7 +45,9 @@ successful Steam login/UI observations predate this provider change.
 `gldriverquery.exe` exiting `3221225781` (`STATUS_DLL_NOT_FOUND`, the missing 32-bit
 `SDL2.dll`) is **not** a lead for anything — measured 2026-08-07 by moving the DLL aside:
 the probe failed, and Steam logged in three seconds later and showed its whole UI anyway.
-`scripts/build-sdl2.sh` only silences that one log line; it is optional.
+The optional 32-bit SDL2 supplementation workaround has been retired. Leave Steam’s own
+probe executable in place; a missing probe dependency does not establish a
+game failure. Wine’s native SDL2 controller dependency remains enabled.
 
 **Still open:** the "Special Offers" news window cannot be closed **while msync is on**.
 `WM_CLOSE` is ignored and `SendMessageTimeout(WM_NULL)` to it times out — its owning
