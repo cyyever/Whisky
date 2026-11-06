@@ -23,6 +23,14 @@ ARM_BREW_PREFIX="$(brew --prefix)"
 export PATH="$ARM_BREW_PREFIX/opt/llvm/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 
+# This payload only needs the Vulkan-on-Metal driver. Media playback is
+# provided separately by Wine/GStreamer, not Mesa video drivers.
+minimal_options=(
+    -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dglx=disabled
+    -Dgbm=disabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
+    -Dbuild-tests=false
+)
+
 # Apply out-of-tree Mesa patches (patches/mesa/0001-*.patch: the WSI present-blit
 # command-buffer lifetime fix -- acquire frees a blit cmdbuf the GPU may still be
 # executing; the freed quad tears into a diagonal under GPU backlog).
@@ -66,7 +74,8 @@ echo "=== Phase 1: arm64 mesa_clc / vtn_bindgen2 ==="
 # along, just one directory over. Reconfiguring is cheap and keeps object files.
 tools_setup=(meson setup "$TOOLS_BUILD" "$MESA_SRC" -Dbuildtype=release
     -Dplatforms=macos -Dvulkan-drivers= -Dgallium-drivers= -Dopengl=false
-    -Dmesa-clc=enabled -Dinstall-mesa-clc=true -Dzstd=disabled)
+    -Dmesa-clc=enabled -Dinstall-mesa-clc=true -Dzstd=disabled
+    "${minimal_options[@]}")
 if [ -f "$TOOLS_BUILD/build.ninja" ]; then tools_setup+=(--reconfigure); fi
 "${tools_setup[@]}"
 ninja -C "$TOOLS_BUILD" src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2
@@ -111,7 +120,7 @@ export PKG_CONFIG_LIBDIR="$X86_DEPS/lib/pkgconfig:$X86_DEPS/share/pkgconfig"
 meson_args=( "$DRIVER_BUILD" "$MESA_SRC" --cross-file "$CROSS_FILE"
     -Dbuildtype=release -Dplatforms=macos
     -Dvulkan-drivers=kosmickrisp -Dgallium-drivers= -Dopengl=false
-    -Dmesa-clc=system -Dzstd=disabled )
+    -Dmesa-clc=system -Dzstd=disabled "${minimal_options[@]}" )
 # meson records the cross-file's absolute path in meson-private/cmd_line.txt and
 # re-reads it on every regeneration -- including from `ninja`, before it can be
 # told a new one. So a build dir configured against a cross-file that has since
