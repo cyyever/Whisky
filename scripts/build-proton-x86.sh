@@ -76,7 +76,10 @@ CLEAN_PATH="$(wine_clean_path)"
 # ccache is on by default; WHISKY_CCACHE=0 disables it (release/reproducible builds
 # or to rule out a stale-object bug) — see whisky_ccache_on in lib/common.sh.
 echo "=== Configuring Wine (x86_64) ==="
-wine_configure "$BUILD_DIR" --disable-tests
+# Drop Wine's generic USB passthrough and camera-capture backends. Xbox and
+# other SDL controllers stay enabled through winebus.sys; they do not use
+# libusb/wineusb.sys.
+wine_configure "$BUILD_DIR" --disable-tests --without-usb --without-v4l2 --without-gphoto
 
 NCPU=$(whisky_ncpu)
 echo "=== Building Wine (x86_64) with $NCPU cores ==="
