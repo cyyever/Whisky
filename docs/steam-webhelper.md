@@ -106,16 +106,10 @@ Patch 0020 appends both `--no-sandbox` and `--in-process-gpu`. Keep these until
 GUI testing establishes that the out-of-process surface path works with DXVK.
 Removing the old graphics shim alone does not establish that.
 
-**Experimental ANGLE-Vulkan ES3 (shelved).** `--use-angle=vulkan --use-cmd-decoder=passthrough`
-routes ANGLE → `vulkan-1.dll` (winevulkan) → KosmicKrisp → Metal, giving real **GLES 3.0**
-and bypassing Apple's GL. But the Steam UI **flickers**, root-caused to KosmicKrisp's
-Metal-4 WSI: ruled out present-mode (force-FIFO no effect), `framebufferOnly=NO`
-(→ freeze), and `--disable-partial-swap`; the present path itself is structurally
-correct Metal-4 (which is why single-swapchain DXVK games render fine). Likely cause:
-CEF's ~10 swapchains interleaving on KosmicKrisp's single Metal-4 queue — a WSI-maturity
-issue, not a Wine/flag fix. The flags are **not** in the tree and **not** shipped;
-the Steam UI uses ANGLE-D3D11 through DXVK; multi-swapchain flicker is unverified. Do NOT set a
-bottle-global `d3d11=native` override for the UI.
+**Experimental ANGLE-Vulkan ES3 (shelved).** Earlier experiments observed
+Steam UI flicker, but did not establish a root cause. The shipped path is
+ANGLE-D3D11 through DXVK. Do not infer a Metal queue bug from those observations.
+The ANGLE-Vulkan flags are not shipped.
 
 **Bundled `cef.win64/vulkan-1.dll` shadows winevulkan — fixed with `vulkan-1=b`
 (2026-07-26).** In a freshly created bottle CEF would spin in a tight GL-init retry
@@ -212,3 +206,42 @@ and rewriting an advertised `0.0.0.0` to `127.0.0.1`) and injects
 
 This only covers proxy-mode setups. VPN / "TUN" tunnels route traffic
 transparently at the IP layer and need no proxy variables — leave the toggle off.
+
+## Presentation investigation (2026-11-06)
+
+Mesa patch 0005 advertises FIFO/IMMEDIATE compatibility. Both modes use the
+same three drawables and the existing Metal callback changes display sync.
+An x86_64 driver build succeeded. A 25-second Steam GUI run reported
+`dynamic: yes` and switched FIFO → IMMEDIATE → FIFO without recreating the
+swapchain. This fixes unnecessary mode-change recreation, not Steam flicker.
+
+The user still observed whole-window flicker with fixed FIFO and again at
+96 DPI (CEF device scale factor 1). Neither workaround resolved it. A short
+macdrv trace recorded 309 presents, with 308 using one HWND/surface pair;
+no alternating surfaces on the same HWND were observed in that capture.
+Surface update calls happen before each Vulkan present by design.
+
+A static D3D11 two-child-window test completed 30 seconds without Present
+errors. A separate 12-second window recording was decoded into 692 frames;
+inspected frames retained blue/orange content, with no obvious black frames
+or cross-window corruption. This limited workload did not reproduce Steam's
+problem and does not establish correctness for CEF rendering.
+
+Upstream Mesa MR !45568 was built temporarily as an independent WSI queue
+experiment. A short Steam login run had no reported device loss or queue
+creation failure, but no visual or matched performance improvement has been
+established. It is not part of the patch series in this change.
+
+RE2 used D3D12/vkd3d-proton, not DXVK D3D11. During reported stutter, system
+GPU utilization sampled 94–95%, while pipeline caches continued updating.
+macOS exposed a 1470×956 desktop at 2x (2940×1912 backing pixels), despite a
+2560×1664 built-in panel. That matched the game's requested display size;
+it was not evidence of an external-monitor detection error. CPU samples had
+Rosetta stack-unwinding artifacts and did not establish a CPU bottleneck.
+
+Local diagnostics remain outside Git in `.diagnostics/`, including recordings
+and original configuration backups. At the end of these experiments, the
+installed GUI was a temporary 96-DPI build, the desktop was changed to
+1280×832 at 2x, and RE2's saved raytracing settings were disabled. The
+Steam FIFO environment override was removed because games can inherit it.
+Restore the normal GUI before treating subsequent runs as production defaults.

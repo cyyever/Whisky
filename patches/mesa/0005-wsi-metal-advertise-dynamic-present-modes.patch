@@ -1,0 +1,56 @@
+Subject: [PATCH] wsi/metal: advertise compatible FIFO and immediate modes
+
+Allow DXVK to change sync interval without recreating a Metal swapchain.
+The queried mode remains first when the caller supplies a truncated array.
+Validated by an x86_64 build and a Steam GUI run reporting dynamic switching.
+This is not a fix for the separately observed Steam flicker.
+
+Generated-by: LLM
+
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -141,20 +141,33 @@
+       }
+ 
+       case VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_KHR: {
+-         /* Unsupported, just report the input present mode. */
++         /* FIFO and IMMEDIATE differ only in CAMetalLayer's display sync
++          * setting. Both use the same three drawables and can be switched
++          * without recreating the swapchain.
++          */
+          VkSurfacePresentModeCompatibilityKHR *compat = ext;
++         assert(present_mode);
+          if (compat->pPresentModes) {
+-            if (compat->presentModeCount) {
+-               assert(present_mode);
+-               compat->pPresentModes[0] = present_mode->presentMode;
+-               compat->presentModeCount = 1;
+-            }
++            const uint32_t capacity = compat->presentModeCount;
++            const VkPresentModeKHR modes[] = {
++               present_mode->presentMode,
++               present_mode->presentMode == VK_PRESENT_MODE_FIFO_KHR
++                  ? VK_PRESENT_MODE_IMMEDIATE_KHR
++                  : VK_PRESENT_MODE_FIFO_KHR,
++            };
++            const uint32_t count =
++               (present_mode->presentMode == VK_PRESENT_MODE_FIFO_KHR ||
++                present_mode->presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR)
++               ? ARRAY_SIZE(modes) : 1;
++            const uint32_t written = MIN2(capacity, count);
++            memcpy(compat->pPresentModes, modes,
++                   written * sizeof(modes[0]));
++            compat->presentModeCount = written;
+          } else {
+-            if (!present_mode)
+-               wsi_common_vk_warn_once("Use of VkSurfacePresentModeCompatibilityKHR "
+-                                       "without a VkSurfacePresentModeKHR set. This is an "
+-                                       "application bug.\n");
+-            compat->presentModeCount = 1;
++            compat->presentModeCount =
++               present_mode->presentMode == VK_PRESENT_MODE_FIFO_KHR ||
++               present_mode->presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR
++               ? 2 : 1;
+          }
+          break;
+       }
