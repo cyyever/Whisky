@@ -23,7 +23,7 @@ import os.log
 /// a bottle, so the user does not have to hunt down the right `Setup.exe`.
 ///
 /// Only **Steam** is a validated path on this stack (the whole fork is built
-/// around it — Steam CEF flags via Proton, DXVK auto-drop, Proton lock). The others
+/// around it — Steam CEF flags via Proton, Mullion's D3D11 renderer, Proton lock). The others
 /// are provided as a convenience and run through the exact same "download the
 /// vendor installer, launch it in the bottle" path; their post-install runtime
 /// is not specifically tuned here.

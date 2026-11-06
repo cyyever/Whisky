@@ -243,10 +243,10 @@ public struct BottleSettings: Codable, Equatable {
     }
 
     public func environmentVariables(wineEnv: inout [String: String]) {
-        // No WINEDLLOVERRIDES for the D3D/Vulkan stack: proton-wine's load order
-        // (patches/proton-wine 0017) resolves d3d9/d3d8/d3d11/d3d10core/dxgi/vulkan-1
-        // and d3d12/d3d12core to builtin — DXVK / vkd3d-proton / winevulkan. Nothing to
-        // set here.
+        // No WINEDLLOVERRIDES for the D3D stack: proton-wine's load order
+        // (patches/proton-wine 0017) resolves D3D8/9 to DXVK, D3D10/11/12 plus
+        // DXGI and winemetal to Mullion, and vulkan-1 to Wine's loader. Nothing
+        // to set here.
         //
         // This used to say an env override "cannot" catch an app-directory load,
         // which is not true: get_load_order()'s "*basename" rung runs for loads by

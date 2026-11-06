@@ -1,27 +1,27 @@
-Subject: ntdll: resolve the D3D/Vulkan builtins ahead of the registry load order
+Subject: ntdll: resolve the D3D/Metal/Vulkan builtins ahead of the registry load order
 
-DXVK supplies d3d8/d3d9/d3d10core/d3d11/dxgi, vkd3d-proton supplies the
-optional d3d12/d3d12core pair, and winevulkan supplies vulkan-1. All are
-installed with the Wine builtin signature. Prefer them to stale DllOverrides
-registry entries (including per-application entries), which otherwise make
-stamped DLLs unloadable when an old installer requested native only.
+DXVK supplies d3d8/d3d9, Mullion supplies d3d10core/d3d11/dxgi/d3d12/
+d3d12core/winemetal, and winevulkan supplies vulkan-1 for the remaining DXVK
+path. All are installed with the Wine builtin signature. Prefer them to stale
+DllOverrides registry entries (including per-application entries), which
+otherwise make stamped DLLs unloadable when an old installer requested native
+only.
 
 Explicit WINEDLLOVERRIDES still wins: full module path, wildcard basename,
 and bare basename are checked in the same order as upstream. This permits
-per-run debugging and native D3D12 Agility SDK overrides when needed.
-Without make vkd3d, builtin d3d12 is Wine's implementation; this rule does
-not install or promise vkd3d-proton. No private Metal interface is needed:
-all graphics providers use winevulkan on macOS.
+per-run debugging and native D3D12 Agility SDK overrides when needed. Mullion's
+winemetal builtins provide the direct Metal path; DXVK D3D8/9 still uses
+winevulkan.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
 index 722190d..0f31a53 100644
 --- a/dlls/ntdll/unix/loadorder.c
 +++ b/dlls/ntdll/unix/loadorder.c
-@@ -396,6 +396,22 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
+@@ -396,6 +396,23 @@ enum loadorder get_load_order( const UNICODE_STRING *nt_name )
      static const WCHAR easyanticheat_x64W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','6','4',0};
      static const WCHAR easyanticheatW[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t',0};
      static const WCHAR soW[] = {'.','s','o',0};
-+    /* DXVK, vkd3d-proton and winevulkan ship as Wine builtins. Resolve them
++    /* DXVK, Mullion and winevulkan ship as Wine builtins. Resolve them
 +     * ahead of stale registry overrides; explicit environment overrides still
 +     * win below. D3D12 is optional and uses Wine's builtin until installed. */
 +    static const WCHAR d3d9W[]      = {'d','3','d','9',0};
@@ -32,10 +32,11 @@ index 722190d..0f31a53 100644
 +    static const WCHAR vulkan1W[]   = {'v','u','l','k','a','n','-','1',0};
 +    static const WCHAR d3d12W[]     = {'d','3','d','1','2',0};
 +    static const WCHAR d3d12coreW[] = {'d','3','d','1','2','c','o','r','e',0};
++    static const WCHAR winemetalW[] = {'w','i','n','e','m','e','t','a','l',0};
 +    static const WCHAR * const builtin_onlyW[] =
 +    {
 +        d3d9W, d3d8W, d3d11W, d3d10coreW, dxgiW, vulkan1W,
-+        d3d12W, d3d12coreW,
++        d3d12W, d3d12coreW, winemetalW,
 +    };
  
      static const WCHAR prefixW[] = {'\\','?','?','\\'};
@@ -44,10 +45,10 @@ index 722190d..0f31a53 100644
          }
      }
  
-+    /* The fork's D3D/Vulkan builtins, resolved before any registry lookup. A
++    /* The fork's D3D/Metal/Vulkan builtins, resolved before any registry lookup. A
 +     * bottle's DllOverrides outlive whatever wrote them — an old Whisky that
 +     * dropped DXVK into a game directory as *native*, winetricks, a game's own
-+     * installer — and this tree ships those same modules as builtins, carrying
++     * installer — and this tree ships these modules as builtins, carrying
 +     * the "Wine builtin DLL" signature. A stale "d3d9"="native" therefore does
 +     * not select a different provider, it makes every candidate unloadable and
 +     * the app dies on STATUS_DLL_NOT_FOUND with the DLL sitting right there.

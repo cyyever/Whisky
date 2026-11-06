@@ -3,6 +3,7 @@ set -e
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/lib/vkd3d.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mullion.sh"
 VKD3D_LIBS="$PROJECT_DIR/vendor/vkd3d-proton/build.w64/libs"
 check_vkd3d_pair "$VKD3D_LIBS"
 whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
@@ -159,6 +160,16 @@ fi
 if [ -f "$VKD3D_LIBS/d3d12/d3d12.dll" ]; then
     echo "=== Restoring vkd3d-proton builtins over Wine's vkd3d ==="
     install_vkd3d_builtins "$VKD3D_LIBS" "$INSTALL_DIR/Wine/lib/wine/x86_64-windows"
+fi
+
+# Mullion is the default D3D10/11/12 provider. Restore it after Wine, DXVK and
+# vkd3d-proton so every Proton rebuild keeps the selected Metal backend. DXVK's
+# D3D8/9 DLLs remain installed for older games.
+if mullion_stage_ready; then
+    echo "=== Restoring Mullion builtins over Wine, DXVK and vkd3d-proton ==="
+    install_mullion_builtins "$INSTALL_DIR/Wine"
+else
+    echo "No staged Mullion found; the make proton target builds it after Wine is installed."
 fi
 
 # Bundle x86 dylibs so Wine finds them at runtime. cp -R (implies -P on BSD)

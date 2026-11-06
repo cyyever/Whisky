@@ -1,20 +1,22 @@
 # Proton migration — Valve Proton_11.0 on Apple Silicon (Rosetta 2)
 
 Goal: replace Whisky's x86_64 Wine 11.13 with **Valve's `proton-wine` 11.0** so Proton
-inherits all of Whisky's macOS capabilities — msync fast-sync, KosmicKrisp Vulkan, DXVK (D3D8–11/DXGI), Steam webhelper CEF flags, CoreAudio
+inherits all of Whisky's macOS capabilities — msync fast-sync, Mullion's direct
+Metal backend for D3D10–12, KosmicKrisp Vulkan with DXVK for D3D8/9, Steam webhelper CEF flags, CoreAudio
 virtual-device hiding, `WINE_NX_COMPAT` — while keeping D3D9/10/11 all working. Motivation:
 Proton ships Valve's game fixes, media-converter, `amd_ags`, fsync, and a maintained
 tree that plain WineHQ 11.13 lacks.
 
-## Status (Proton is the shipped, single backend; Steam logs in fully under msync)
+## Status (Proton is the shipped Wine runtime; Mullion is the default D3D10/11/12 backend)
 - Proton is laid **directly over** `Libraries/Wine` — the single shipped backend. The
   `WineBackend` enum and the side-by-side `Libraries/WineProton` plumbing that existed
   during bring-up are gone; legacy Whisky-Wine 11.13 (`vendor/wine`) is removed entirely.
-- Built x86_64, runs under Rosetta 2; DXVK (D3D9 and D3D11) installed on top of the
-  Proton build. Optional vkd3d-proton provides D3D12 via the same Vulkan path.
-  vkd3d-proton needs `VK_EXT_transform_feedback` to create a device. Upstream
-  KosmicKrisp lacks it, so `patches/mesa/0004` backports mesa!44928 (unmerged as of
-  2026-11-01); drop the patch once it lands.
+- Built x86_64, runs under Rosetta 2. Mullion is built from the `cyyever/mullion`
+  submodule and installed as the default D3D10/11/12/DXGI provider, translating
+  directly to Metal. DXVK remains installed for D3D8/9; that path still uses
+  winevulkan and KosmicKrisp. `make mullion` reselects Mullion after explicit
+  `make dxvk` or `make vkd3d` fallback builds.
+  Mullion is x86_64-only here; its D3D11 video API is not implemented yet.
   Reports `wine-11.0`.
 - **Steam logs in fully.** With the minimal-msync config Steam boots → CEF webhelper →
   full CM logon: `RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, login window

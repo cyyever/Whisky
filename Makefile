@@ -29,15 +29,15 @@ XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
 CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 SWIFTLINT ?= swiftlint
 
-# proton, dxvk and vkd3d all install into the same Libraries/Wine tree, and
+# proton, dxvk, vkd3d and Mullion all install into the same Libraries/Wine tree, and
 # install-app replaces a live /Applications/Whisky.app. None of that is safe to
 # interleave, and none of it is the slow part -- the scripts parallelise inside.
 .NOTPARALLEL:
 
 .PHONY: all help x86-deps proton proton-debug clean-proton \
-        gstreamer dxvk vkd3d test-d3d12 proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
+        gstreamer dxvk vkd3d mullion test-d3d12 proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
 
-all: app proton  ## Build everything (app + Proton)
+all: app proton  ## Build everything (app + Proton with Mullion as default D3D10/11/12 backend)
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -78,7 +78,9 @@ $(GST_STAMP): $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh
 
 # === Proton (the shipped Wine backend) ===
 
-proton: $(WINE_STAMP)  ## Build Proton x86_64 and install to Libraries/Wine
+proton: $(WINE_STAMP)  ## Build Proton x86_64 and install it with the default Mullion D3D10/11/12 backend
+	$(SCRIPTS_DIR)/build-dxvk.sh
+	$(SCRIPTS_DIR)/build-mullion.sh
 
 # build-proton-x86.sh does two jobs: it builds Wine, and it assembles what ships
 # beside it -- DXVK and vkd3d-proton copied over Wine's builtins, and KosmicKrisp's
@@ -136,6 +138,10 @@ vkd3d:  ## Fetch pinned vkd3d-proton and install d3d12/d3d12core (win64)
 	$(SCRIPTS_DIR)/build-vkd3d.sh --build-only
 	$(MAKE) --no-print-directory proton
 	$(SCRIPTS_DIR)/build-vkd3d.sh --install-only
+
+# === Mullion (default D3D10/11/12 on Metal) ===
+
+mullion: proton  ## Rebuild/install Mullion from cyyever/mullion as the default D3D10/11/12 backend
 
 test-d3d12: vkd3d  ## Test installed D3D12 builtins in a disposable prefix
 	$(CURDIR)/tests/d3d12/run.sh

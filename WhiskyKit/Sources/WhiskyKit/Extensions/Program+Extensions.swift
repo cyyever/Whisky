@@ -30,7 +30,7 @@ extension Program {
 
     /// The single entry point for launching a program in a bottle. Every caller —
     /// GUI buttons, pins, the file-open sheet, and the CLI — goes through here, so
-    /// bottle preparation (Steam's CEF wrapper, DXVK auto-drop) happens exactly
+    /// bottle preparation (Steam's CEF wrapper and renderer setup) happens exactly
     /// once, and there is only one way to run a program.
     public func launch() async {
         // Steam is single-instance: if a client is already running, warn and do not

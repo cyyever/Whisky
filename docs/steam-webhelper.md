@@ -1,7 +1,8 @@
 # Steam webhelper: CEF flags via Proton + update-stuck proxy fix
 
-Steam's D3D11 renderer uses DXVK → winevulkan → KosmicKrisp. Always validate
-Steam from the Whisky GUI; a bare CLI launch is not equivalent.
+Whisky's default Steam D3D11 backend is Mullion → Metal. DXVK → winevulkan →
+KosmicKrisp remains the D3D8/9 fallback. Always validate Steam from the Whisky
+GUI; a bare CLI launch is not equivalent.
 
 ## Startup and Retina validation (2026-11-05)
 
@@ -96,14 +97,13 @@ and the host exits. `--no-sandbox` is the universal Wine/Proton workaround
 fix, so the flag is permanent.
 
 **GPU rendering and GLES3.** CEF's SharedImageStub needs a shared GLES3
-context. DXVK reports D3D11 feature level 11_1 on this host. Wine's wined3d path
+context. Mullion reports D3D11 feature level 11_1 on this host. Wine's wined3d path
 falls back to FL_9_3, leaving ANGLE at GLES2 and causing a shared-context retry
-loop. `make dxvk` installs d3d11/d3d10core/dxgi as builtins; subsequent
-`make proton` runs restore those artifacts after Wine's install. On a first build,
-run `make dxvk` before launching Steam.
+loop. `make proton` builds and installs Mullion's d3d11/d3d10core/dxgi builtins.
+The DXVK path remains available through an explicit `make dxvk` build.
 
 Patch 0020 appends both `--no-sandbox` and `--in-process-gpu`. Keep these until
-GUI testing establishes that the out-of-process surface path works with DXVK.
+GUI testing establishes that the out-of-process surface path works with Mullion.
 Removing the old graphics shim alone does not establish that.
 
 **Experimental ANGLE-Vulkan ES3 (shelved).** Earlier experiments observed
