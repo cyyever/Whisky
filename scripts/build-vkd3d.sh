@@ -43,6 +43,8 @@ if [ "$MODE" != --install-only ]; then
     MESON_OPTS=(
         --buildtype release
         --strip
+        -Denable_tests=false -Denable_extras=false -Denable_profiling=false
+        -Denable_descriptor_qa=false
     )
 
     if [ ! -f "$VKD3D_SRC/$BUILD_DIR/build.ninja" ]; then

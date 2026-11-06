@@ -204,7 +204,7 @@ git -C "$PROJECT_DIR" submodule update --init --depth 1 vendor/sdl2
 # Build dir outside the submodule, so the parent repo does not report untracked
 # content in vendor/sdl2 (build-sdl2.sh's win32 build dir has the same reason).
 cmake_build "$PROJECT_DIR/vendor/sdl2" "$WORK_DIR/sdl2-build" \
-    -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF
+    -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF -DSDL_TESTS=OFF -DSDL_INSTALL_TESTS=OFF
 
 echo "=== Vulkan headers + loader ($VULKAN_VER) ==="
 unpack "Vulkan-Headers-$VULKAN_VER.tar.gz" "$WORK_DIR/vulkan-headers-src"

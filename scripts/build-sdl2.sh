@@ -65,7 +65,7 @@ cmake -S "$SDL_SRC" -B "$BUILD_DIR" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DSDL_SHARED=ON \
     -DSDL_STATIC=OFF \
-    -DSDL_TEST=OFF
+    -DSDL_TEST=OFF -DSDL_TESTS=OFF -DSDL_INSTALL_TESTS=OFF
 
 echo "=== Building ==="
 cmake --build "$BUILD_DIR"
