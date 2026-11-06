@@ -15,7 +15,7 @@ WINE_BUILD="${WHISKY_WINE_BUILD:-release}"
 
 echo "=== Building Proton (proton-wine) x86_64 from $WINE_SRC ==="
 
-# Apply the Proton macOS patch series (patches/proton-wine/, base e8e1bc79a94 on Valve's
+# Apply the Proton macOS patch series (patches/proton-wine/, base e8ca5806eec on Valve's
 # bleeding-edge — the only branch Valve still pushes to; proton_11.0 and
 # experimental_11.0 are both older). On a fresh machine vendor/proton-wine is laid
 # down from https://codeload.github.com/ValveSoftware/wine/tar.gz/<base> and
