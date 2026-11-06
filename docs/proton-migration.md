@@ -26,7 +26,7 @@ tree that plain WineHQ 11.13 lacks.
   (`WINEMSYNC=1` is **not** set — `do_msync()` defaults msync ON, so it was dropped as
   redundant; only the `.none` sync mode sets `WINEMSYNC=0`.)
 - Source tree `vendor/proton-wine/` is **gitignored**, tag `proton-wine-11.0-…`. Tracked
-  in main: `patches/proton-wine/` (**38-patch series**, base `e8e1bc79a94` on Valve's
+  in main: `patches/proton-wine/` (**39-patch series**, base `e8ca5806eec` on Valve's
   `bleeding-edge`) + `scripts/build-proton-x86.sh`
   (`make proton` — the single Wine build; configures, builds, installs to `Libraries/Wine`).
 - **App wiring**: single backend, no selector. `BottleSettings` has no `WineBackend`;
@@ -57,8 +57,8 @@ frame.
   `if (do_msync()) return msync_*`; also added the missing msync branch to
   `NtWaitForSingleObject` (only `NtWaitForMultipleObjects` had it).
 
-## patches/proton-wine/ — 38-patch series
-Base: **`e8e1bc79a94`** on Valve's `bleeding-edge` — the only branch Valve still pushes to
+## patches/proton-wine/ — 39-patch series
+Base: **`e8ca5806eec`** on Valve's `bleeding-edge` — the only branch Valve still pushes to
 (see the header comment in `scripts/build-proton-x86.sh`, which is the source of truth).
 
 Disjoint file ownership; all apply cleanly (`git apply --check`). Exported as
