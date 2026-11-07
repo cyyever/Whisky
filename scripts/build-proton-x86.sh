@@ -2,9 +2,9 @@
 set -e
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
-source "$(dirname "${BASH_SOURCE[0]}")/lib/vkd3d.sh"
-VKD3D_LIBS="$PROJECT_DIR/vendor/vkd3d-proton/build.w64/libs"
-check_vkd3d_pair "$VKD3D_LIBS"
+source "$PROJECT_DIR/scripts/lib/mullion.sh"
+check_mullion_source
+mullion_llvm_prefix >/dev/null  # catch a missing/wrong-architecture LLVM before the long Wine build
 whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 WINE_SRC="$PROJECT_DIR/vendor/proton-wine"
 BUILD_DIR="$WINE_SRC/build"
@@ -124,16 +124,13 @@ cp -R "$WINE_INSTALL_ROOT/bin" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/lib" "$INSTALL_DIR/Wine/"
 cp -R "$WINE_INSTALL_ROOT/share" "$INSTALL_DIR/Wine/"
 
-# --- DXVK (D3D9/D3D8/D3D11/D3D10/DXGI) restore over wined3d -----------------
-# build-dxvk.sh installs DXVK AS the builtin d3d9/d3d8/d3d11/d3d10core/dxgi
+# --- DXVK (D3D9/D3D8) restore over wined3d ----------------------------------
+# build-dxvk.sh installs DXVK as the builtin d3d9/d3d8
 # (patch 0017 defaults them to builtin, so no bottle needs a WINEDLLOVERRIDES),
 # and the cp -R of lib/ above just wrote wined3d's copies back over them.
-# Without this every `make proton` silently drops games back to wined3d: D3D9
-# paints a black window and burns a core in a SIGSEGV loop, and D3D11 caps at
-# feature level 9_3, which ANGLE (Steam's webhelper) turns into GLES2 and a
-# SharedImageStub death-loop -- failures that look nothing like "your graphics
-# backend was replaced". Skipped when the DXVK build trees are absent (run
-# `make dxvk`).
+# Without this every `make proton` silently drops D3D8/9 back to wined3d; D3D9
+# paints a black window and burns a core in a SIGSEGV loop. Skipped when the
+# DXVK build trees are absent (run `make dxvk`).
 #
 # The builtin signature is re-stamped rather than copied: build-dxvk.sh applies
 # it to the INSTALLED file, so the build tree's copy does not carry it, and
@@ -144,21 +141,26 @@ if [ -f "$DXVK_SRC_DIR/build.w64/src/d3d9/d3d9.dll" ]; then
     for dxvk_pair in "build.w64:x86_64-windows" "build.w32:i386-windows"; do
         dxvk_bdir="${dxvk_pair%%:*}"; dxvk_arch="${dxvk_pair##*:}"
         # Same list as DXVK_DLLS in build-dxvk.sh.
-        for dxvk_dll in d3d9/d3d9.dll d3d8/d3d8.dll d3d11/d3d11.dll d3d10/d3d10core.dll dxgi/dxgi.dll; do
+        for dxvk_dll in d3d9/d3d9.dll d3d8/d3d8.dll; do
             dxvk_src="$DXVK_SRC_DIR/$dxvk_bdir/src/$dxvk_dll"
             [ -f "$dxvk_src" ] || continue
             cp "$dxvk_src" "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/${dxvk_dll##*/}"
             mark_wine_builtin "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/${dxvk_dll##*/}"
         done
     done
-    echo "DXVK restored: d3d9/d3d8/d3d11/d3d10core/dxgi (x86_64 + i386)"
+    echo "DXVK restored: d3d9/d3d8 (x86_64 + i386)"
 fi
 
-# --- vkd3d-proton (D3D12) restore over Wine's own vkd3d ----------------------
-# Restore the complete win64 pair. Never silently mix Wine and vkd3d-proton.
-if [ -f "$VKD3D_LIBS/d3d12/d3d12.dll" ]; then
-    echo "=== Restoring vkd3d-proton builtins over Wine's vkd3d ==="
-    install_vkd3d_builtins "$VKD3D_LIBS" "$INSTALL_DIR/Wine/lib/wine/x86_64-windows"
+# --- Mullion restore over Wine's own Direct3D builtins -----------------------
+# Mullion builds against this Wine tree. Restore the already-built release after
+# Wine's make install so subsequent Proton rebuilds preserve the selected backend.
+MULLION_STAGE="$PROJECT_DIR/vendor/mullion-install-x86_64"
+if [ -d "$MULLION_STAGE/x86_64-windows" ] && [ -d "$MULLION_STAGE/x86_64-unix" ]; then
+    echo "=== Restoring Mullion builtins over Wine's Direct3D implementation ==="
+    for mullion_dll in "$MULLION_STAGE/x86_64-windows/"*.dll; do
+        cp "$mullion_dll" "$INSTALL_DIR/Wine/lib/wine/x86_64-windows/"
+    done
+    cp "$MULLION_STAGE/x86_64-unix/winemetal.so" "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/"
 fi
 
 # Bundle x86 dylibs so Wine finds them at runtime. cp -R (implies -P on BSD)
