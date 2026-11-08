@@ -1,17 +1,14 @@
 Subject: ntdll: resolve the D3D/Vulkan builtins ahead of the registry load order
 
-DXVK supplies d3d8/d3d9/d3d10core/d3d11/dxgi, vkd3d-proton supplies the
-optional d3d12/d3d12core pair, and winevulkan supplies vulkan-1. All are
-installed with the Wine builtin signature. Prefer them to stale DllOverrides
+DXVK supplies d3d8/d3d9, Mullion supplies d3d10core/d3d11/d3d12/d3d12core/dxgi,
+and winevulkan supplies vulkan-1. Prefer them to stale DllOverrides
 registry entries (including per-application entries), which otherwise make
 stamped DLLs unloadable when an old installer requested native only.
 
 Explicit WINEDLLOVERRIDES still wins: full module path, wildcard basename,
 and bare basename are checked in the same order as upstream. This permits
-per-run debugging and native D3D12 Agility SDK overrides when needed.
-Without make vkd3d, builtin d3d12 is Wine's implementation; this rule does
-not install or promise vkd3d-proton. No private Metal interface is needed:
-all graphics providers use winevulkan on macOS.
+per-run debugging and native D3D12 Agility SDK overrides when needed. Mullion's
+Wine Unix bridge connects its builtins to Metal; DXVK continues to use winevulkan.
 
 diff --git a/dlls/ntdll/unix/loadorder.c b/dlls/ntdll/unix/loadorder.c
 index 722190d..0f31a53 100644
@@ -21,9 +18,9 @@ index 722190d..0f31a53 100644
      static const WCHAR easyanticheat_x64W[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t','_','x','6','4',0};
      static const WCHAR easyanticheatW[] = {'e','a','s','y','a','n','t','i','c','h','e','a','t',0};
      static const WCHAR soW[] = {'.','s','o',0};
-+    /* DXVK, vkd3d-proton and winevulkan ship as Wine builtins. Resolve them
++    /* DXVK, Mullion and winevulkan ship as Wine builtins. Resolve them
 +     * ahead of stale registry overrides; explicit environment overrides still
-+     * win below. D3D12 is optional and uses Wine's builtin until installed. */
++     * win below. */
 +    static const WCHAR d3d9W[]      = {'d','3','d','9',0};
 +    static const WCHAR d3d8W[]      = {'d','3','d','8',0};
 +    static const WCHAR d3d11W[]     = {'d','3','d','1','1',0};

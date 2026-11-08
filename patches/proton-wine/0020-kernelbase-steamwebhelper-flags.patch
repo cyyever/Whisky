@@ -20,10 +20,10 @@ Keep both flags: the out-of-process surface failure was observed independently
 of the retired Metal-view shim. Removing that shim does not establish that
 CEF can create cross-process surfaces through winevulkan.
 
-CEF also needs a shared GLES3 context. DXVK's D3D11 supplies feature level
-11_1 on KosmicKrisp; Wine's wined3d path on this host falls back to FL_9_3,
-causing a GLES2 SharedImageStub retry loop. Run make dxvk after the first Wine
-build; subsequent make proton runs restore DXVK over Wine's builtins.
+CEF also needs a shared GLES3 context. Before Mullion integration, DXVK's D3D11
+supplied feature level 11_1 on KosmicKrisp; Wine's wined3d path on this host
+fell back to FL_9_3, causing a GLES2 SharedImageStub retry loop. Mullion is now
+the default D3D11 provider; validate Steam's CEF surface path with it separately.
 
 Whisky previously injected the flags via an IFEO "Debugger" wrapper around
 steamwebhelper.exe (steamwebhelper_wrapper.exe + a steamwebhelper_real.exe copy

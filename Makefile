@@ -29,13 +29,13 @@ XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
 CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 SWIFTLINT ?= swiftlint
 
-# proton, dxvk and vkd3d all install into the same Libraries/Wine tree, and
+# proton, dxvk and mullion all install into the same Libraries/Wine tree, and
 # install-app replaces a live /Applications/Whisky.app. None of that is safe to
 # interleave, and none of it is the slow part -- the scripts parallelise inside.
 .NOTPARALLEL:
 
-.PHONY: all help x86-deps proton proton-debug clean-proton \
-        gstreamer dxvk vkd3d test-d3d12 proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
+.PHONY: all help x86-deps llvm-x86 proton proton-debug clean-proton \
+        gstreamer dxvk mullion proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -46,6 +46,9 @@ help:  ## Show this help
 # === x86_64 libraries ===
 
 x86-deps: $(X86_DEPS_STAMP)  ## Cross-build Wine's x86_64 libraries into vendor/x86-deps
+
+llvm-x86:  ## Build LLVM 23 static libraries for Mullion's x86_64 Wine bridge
+	$(SCRIPTS_DIR)/build-llvm-x86.sh
 
 # The script pins every version, so a bump edits it -- hence the dependency.
 # The stamp is the script's last act, so a run that died halfway is not taken
@@ -78,10 +81,10 @@ $(GST_STAMP): $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh
 
 # === Proton (the shipped Wine backend) ===
 
-proton: $(WINE_STAMP)  ## Build Proton x86_64 and install to Libraries/Wine
+proton: $(WINE_STAMP) mullion  ## Build Proton x86_64 with Mullion as the Direct3D backend
 
 # build-proton-x86.sh does two jobs: it builds Wine, and it assembles what ships
-# beside it -- DXVK and vkd3d-proton copied over Wine's builtins, and KosmicKrisp's
+# beside it -- DXVK and Mullion copied over Wine's builtins, and KosmicKrisp's
 # ICD manifest copied to ~/.local/share/vulkan/icd.d. Each is an input, and a
 # missing one leaves the stamp newer than everything make knows about, so
 # `make proton` prints nothing and exits 0 having installed none of the change.
@@ -94,10 +97,8 @@ WINE_INPUTS := $(SCRIPTS_DIR)/build-proton-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
                $(wildcard $(CURDIR)/vendor/gstreamer-x86/lib/gstreamer-1.0/*.dylib) \
                $(wildcard $(CURDIR)/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib) \
                $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d9/d3d9.dll) \
-               $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d11/d3d11.dll) \
-               $(SCRIPTS_DIR)/lib/vkd3d.sh \
-               $(wildcard $(CURDIR)/vendor/vkd3d-proton/build.w64/libs/d3d12/d3d12.dll) \
-               $(wildcard $(CURDIR)/vendor/vkd3d-proton/build.w64/libs/d3d12core/d3d12core.dll)
+               $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d8/d3d8.dll) \
+               $(SCRIPTS_DIR)/lib/mullion.sh
 
 $(WINE_STAMP): $(X86_DEPS_STAMP) $(GST_STAMP) $(WINE_INPUTS) | check-proton-src
 	$(SCRIPTS_DIR)/build-proton-x86.sh
@@ -117,28 +118,22 @@ check-proton-src:
 
 proton-debug:  ## Reinstall Proton keeping PE debug info (for winedbg sessions)
 	WHISKY_WINE_BUILD=debug $(SCRIPTS_DIR)/build-proton-x86.sh
+	$(SCRIPTS_DIR)/build-mullion.sh
 	@touch $(WINE_STAMP)
 
 clean-proton:  ## Remove Proton build artifacts (keeps installed Wine)
 	rm -rf $(WINE_SRC)/build
 	rm -f $(WINE_STAMP)
 
-# === DXVK (D3D9/D3D11 on KosmicKrisp) ===
+# === DXVK (D3D9/D3D8 on KosmicKrisp) ===
 
-dxvk: proton  ## Build DXVK d3d9/d3d8/d3d11/d3d10core/dxgi (win32 + win64) as Wine builtins
+dxvk: proton  ## Build DXVK d3d9/d3d8 (win32 + win64) as Wine builtins
 	$(SCRIPTS_DIR)/build-dxvk.sh
 
-# === vkd3d-proton (D3D12 on KosmicKrisp) ===
+# === Mullion (D3D10/D3D11/D3D12/DXGI to Metal) ===
 
-# D3D12 is opt-in: basic rendering has worked, real games remain unverified.
-# test-d3d12 validates the actual installed builtins in a disposable prefix.
-vkd3d:  ## Fetch pinned vkd3d-proton and install d3d12/d3d12core (win64)
-	$(SCRIPTS_DIR)/build-vkd3d.sh --build-only
-	$(MAKE) --no-print-directory proton
-	$(SCRIPTS_DIR)/build-vkd3d.sh --install-only
-
-test-d3d12: vkd3d  ## Test installed D3D12 builtins in a disposable prefix
-	$(CURDIR)/tests/d3d12/run.sh
+mullion: $(WINE_STAMP)  ## Build and install Mullion as Wine's Direct3D backend
+	$(SCRIPTS_DIR)/build-mullion.sh
 
 proxychains:  ## Build x86_64 proxychains-ng into Libraries/ProxyChains (routes Steam through the system SOCKS proxy)
 	$(SCRIPTS_DIR)/build-proxychains.sh
@@ -210,5 +205,5 @@ run: app  ## Build, install and run Whisky
 submodule:  ## Init/update git submodules
 	git submodule update --init --recursive
 
-clean: clean-proton  ## Remove Proton and Xcode build artifacts (not DXVK/x86-deps)
+clean: clean-proton  ## Remove Proton and Xcode build artifacts (not Direct3D providers/x86-deps)
 	$(XCODEBUILD) clean 2>/dev/null || true

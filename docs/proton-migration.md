@@ -1,8 +1,9 @@
 # Proton migration — Valve Proton_11.0 on Apple Silicon (Rosetta 2)
 
 Goal: replace Whisky's x86_64 Wine 11.13 with **Valve's `proton-wine` 11.0** so Proton
-inherits all of Whisky's macOS capabilities — msync fast-sync, KosmicKrisp Vulkan, DXVK (D3D8–11/DXGI), Steam webhelper CEF flags, CoreAudio
-virtual-device hiding, `WINE_NX_COMPAT` — while keeping D3D9/10/11 all working. Motivation:
+inherits all of Whisky's macOS capabilities — msync fast-sync, KosmicKrisp Vulkan,
+Mullion (D3D10/11/12 + DXGI), DXVK (D3D8/9), Steam webhelper CEF flags, CoreAudio
+virtual-device hiding, `WINE_NX_COMPAT` — while keeping D3D8–12 available. Motivation:
 Proton ships Valve's game fixes, media-converter, `amd_ags`, fsync, and a maintained
 tree that plain WineHQ 11.13 lacks.
 
@@ -10,11 +11,10 @@ tree that plain WineHQ 11.13 lacks.
 - Proton is laid **directly over** `Libraries/Wine` — the single shipped backend. The
   `WineBackend` enum and the side-by-side `Libraries/WineProton` plumbing that existed
   during bring-up are gone; legacy Whisky-Wine 11.13 (`vendor/wine`) is removed entirely.
-- Built x86_64, runs under Rosetta 2; DXVK (D3D9 and D3D11) installed on top of the
-  Proton build. Optional vkd3d-proton provides D3D12 via the same Vulkan path.
-  vkd3d-proton needs `VK_EXT_transform_feedback` to create a device. Upstream
-  KosmicKrisp lacks it, so `patches/mesa/0004` backports mesa!44928 (unmerged as of
-  2026-11-01); drop the patch once it lands.
+- Built x86_64, runs under Rosetta 2; Mullion (D3D10/11/12 + DXGI) and DXVK
+  (D3D8/9) are installed over Wine's builtins. Mullion translates directly to
+  Metal; DXVK uses KosmicKrisp's Vulkan path. `patches/mesa/0004` backports
+  mesa!44928 for DXVK stream output (unmerged as of 2026-11-01); drop it once it lands.
   Reports `wine-11.0`.
 - **Steam logs in fully.** With the minimal-msync config Steam boots → CEF webhelper →
   full CM logon: `RecvMsgClientLogOnResponse : 'OK'` + JWT, real SteamID, login window
@@ -458,13 +458,10 @@ source of truth):
 - **KosmicKrisp loader swap**: install the Khronos Vulkan loader as BOTH
   `Wine/lib/libMoltenVK.dylib` and `Wine/lib/libvulkan.1.dylib`; drop the ICD manifest
   to `~/.local/share/vulkan/icd.d/`.
-- **DXVK restore over wined3d**: `make install` writes Wine's builtin d3d9/d3d8/
-  d3d11/d3d10core/dxgi (wined3d — D3D9 broken, D3D11 at FL 9_3 → GLES2 only),
-  clobbering any prior DXVK install. The script restores DXVK's builds (x86_64 +
-  i386, re-stamped as builtins) over them so `make proton` is order-independent —
-  skipped when the DXVK build trees are absent (run `make dxvk`). See
-  `docs/steam-webhelper.md` for why the webhelper needs FL 10+ (GLES3 /
-  SharedImageStub).
+- **Direct3D provider restore**: `make install` overwrites Wine's builtins.
+  `build-proton-x86.sh` restores DXVK D3D8/9 (x86_64 + i386) and any existing
+  Mullion files. `make proton` then builds and installs Mullion against the Wine
+  build tree; `make dxvk` builds DXVK after Proton.
 - `install_name_tool -add_rpath '@loader_path/../..'` on every `x86_64-unix/*.so`.
 - Append `[Drivers] Graphics=mac` to `share/wine/wine.inf`; symlink `wine64 → wine`;
   write `WhiskyWineVersion.plist`.

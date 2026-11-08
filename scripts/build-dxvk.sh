@@ -1,10 +1,11 @@
 #!/bin/bash
 set -e
 
-# Build DXVK -- d3d9, d3d8, d3d11, d3d10core and dxgi, 32- and 64-bit PE,
+# Build DXVK -- d3d9 and d3d8, 32- and 64-bit PE,
 # cross-compiled with mingw-w64 -- and install them as the Wine *builtin* DLLs,
 # overwriting wined3d's (broken for D3D9 on macOS, and capped at feature level 9_3
-# for D3D11 on its GL 2.1). proton-wine patch 0017 then defaults all of them to
+# for D3D11 on its GL 2.1). Mullion provides D3D10/11/12 and DXGI directly on Metal.
+# proton-wine patch 0017 defaults the shipped DLLs to
 # builtin in the load order, so no bottle needs a WINEDLLOVERRIDES. DXVK renders
 # through winevulkan on KosmicKrisp.
 #
@@ -37,15 +38,15 @@ apply_patches "$DXVK_SRC" "$PROJECT_DIR/patches/dxvk" DXVK
 MESON_OPTS=(
     -Denable_d3d9=true
     -Denable_d3d8=true
-    -Denable_d3d10=true
-    -Denable_d3d11=true
-    -Denable_dxgi=true
+    -Denable_d3d10=false
+    -Denable_d3d11=false
+    -Denable_dxgi=false
 )
 
 # <build-tree path>, relative to src/ -- the DLLs this script installs, and the
 # ones build-proton-x86.sh restores after every Wine install (it keeps its own
 # copy of this list; keep the two in step).
-DXVK_DLLS=(d3d9/d3d9.dll d3d8/d3d8.dll d3d11/d3d11.dll d3d10/d3d10core.dll dxgi/dxgi.dll)
+DXVK_DLLS=(d3d9/d3d9.dll d3d8/d3d8.dll)
 
 # WHISKY_DXVK_DEBUG=1 keeps symbols. A stripped release build is the right
 # default, but it is also why a crash inside DXVK reads as a bare address: the
@@ -99,11 +100,6 @@ build_arch() {  # <build-dir> <wine-arch-dir>
         mark_wine_builtin "$WINE_LIB/$wine_arch/${dll##*/}"
     done
 }
-
-# DXMT's Metal interface, left behind by an install from before D3D11 moved to
-# DXVK. Nothing loads it any more; remove it so a bottle does not pick it up.
-rm -f "$WINE_LIB/x86_64-windows/winemetal.dll" "$WINE_LIB/i386-windows/winemetal.dll" \
-      "$WINE_LIB/x86_64-unix/winemetal.so"
 
 setup_arch build-win32.txt build.w32 win32
 setup_arch build-win64.txt build.w64 win64

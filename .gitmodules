@@ -13,3 +13,7 @@
 [submodule "vendor/gstreamer"]
 	path = vendor/gstreamer
 	url = https://gitlab.freedesktop.org/gstreamer/gstreamer.git
+[submodule "vendor/mullion"]
+	path = vendor/mullion
+	url = https://github.com/cyyever/mullion.git
+	branch = feature/llvm23-default

@@ -98,6 +98,12 @@ vendor/ffmpeg-x86/
 vendor/gstreamer-x86/
 vendor/kosmickrisp/
 vendor/vkd3d-proton/
+vendor/mullion-build-x86_64/
+vendor/mullion-install-x86_64/
+vendor/llvm23-x86_64/
+vendor/llvm23-build-x86_64/
+vendor/llvm23-source/
+vendor/llvm-project-23.1.5.src.tar.xz
 tests/d3d12/.build/
 # vkd3d-proton pipeline cache dropped in cwd when running D3D12 probes
 vkd3d-proton.cache

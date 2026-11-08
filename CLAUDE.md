@@ -7,20 +7,19 @@ Keep this file high-level. Details live in `docs/`, the build scripts, `patches/
 ## Architecture
 - **Whisky** — SwiftUI app (Xcode project). **WhiskyKit** — Swift package (Wine/bottle/process logic); `PlatformMacOS/` holds the macOS-specific files.
 - **Wine** — x86_64 Proton-wine 11.0, built from source, runs under Rosetta 2. Source `vendor/proton-wine` (gitignored) + `patches/proton-wine/`.
-- **DXVK** — D3D9/8 and D3D11/10/DXGI (`vendor/dxvk`), over winevulkan. **KosmicKrisp** — Vulkan-on-Metal (`vendor/mesa`). Transform feedback (stream output) is a backport of an unmerged MR (`patches/mesa/0004`). Optional **vkd3d-proton** provides D3D12 through the same Vulkan path; see `tests/d3d12/README.md`.
+- **Mullion** — default D3D10/11/12 + DXGI provider, translated directly to Metal (`vendor/mullion`). **DXVK** — D3D9/8 over winevulkan (`vendor/dxvk`). **KosmicKrisp** — Vulkan-on-Metal (`vendor/mesa`). Transform feedback (stream output) is a backport of an unmerged MR (`patches/mesa/0004`).
 - Steam CEF (`steamwebhelper.exe`) gets `--no-sandbox` appended in Proton itself (`hack_append_command_line`, patches/proton-wine 0020) — no launcher shim.
 
 ## Build
 ```bash
 make x86-deps         # one-time: cross-build Wine's x86_64 libraries (freetype, gnutls, SDL2, Vulkan loader)
+make llvm-x86         # build LLVM 23 x86_64 static libraries for Mullion
 make gstreamer        # x86_64 GStreamer for winegstreamer (WMV); make proton needs it
-make proton           # build + install Proton (applies patches/proton-wine/*)
-make dxvk             # DXVK d3d9/d3d8/d3d11/d3d10core/dxgi builtins
-make vkd3d           # optional: fetch pinned D3D12 provider and install win64 DLLs
-make test-d3d12      # validate installed D3D12 in a disposable prefix
+make proton          # Proton plus Mullion D3D10/11/12 + DXGI builtins
+make dxvk            # DXVK d3d9/d3d8 builtins
 make app / make run   # build / run the app
 ```
-Fresh-machine order: ARM brew deps (`autoconf automake bison cmake meson ninja nasm glslang pkg-config mingw-w64 ccache llvm libclc spirv-llvm-translator spirv-tools`, plus `mako pyyaml` for brew's python3) → Rosetta 2 → `vendor/proton-wine` at the base hash in `scripts/build-proton-x86.sh` → `make x86-deps` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` (builds GStreamer first — Wine is configured `--with-gstreamer` and configure hard-errors without it) → `make dxvk`. The scripts own the decisions.
+Fresh-machine order: ARM brew deps (`autoconf automake bison cmake meson ninja nasm glslang pkg-config mingw-w64 ccache llvm libclc spirv-llvm-translator spirv-tools`, plus `mako pyyaml` for brew's python3) → Rosetta 2 → `git submodule update --init --recursive vendor/mullion` → `make llvm-x86` → `vendor/proton-wine` at the base hash in `scripts/build-proton-x86.sh` → `make x86-deps` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` (builds GStreamer first — Wine is configured `--with-gstreamer` and configure hard-errors without it) → `make dxvk`. Set `WHISKY_MULLION_LLVM` for a different LLVM prefix.
 
 ## Key paths
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`
