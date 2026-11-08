@@ -106,10 +106,19 @@ Patch 0020 appends both `--no-sandbox` and `--in-process-gpu`. Keep these until
 GUI testing establishes that the out-of-process surface path works with DXVK.
 Removing the old graphics shim alone does not establish that.
 
-**Experimental ANGLE-Vulkan ES3 (shelved).** Earlier experiments observed
-Steam UI flicker, but did not establish a root cause. The shipped path is
-ANGLE-D3D11 through DXVK. Do not infer a Metal queue bug from those observations.
-The ANGLE-Vulkan flags are not shipped.
+**Experimental ANGLE-Vulkan ES3 (shelved).** `--use-angle=vulkan --use-cmd-decoder=passthrough`
+routes ANGLE → `vulkan-1.dll` (winevulkan) → KosmicKrisp → Metal, giving real **GLES 3.0**
+and bypassing Apple's GL. Steam UI flicker was observed with this path, but its cause
+was not established; earlier notes that attributed it to interleaved Metal 4 submissions
+were hypotheses, not a diagnosis. A later Steam run using ANGLE-D3D11 through DXVK also
+logged FIFO → IMMEDIATE → FIFO swapchain creation within seconds, with dynamic mode
+switching reported as unavailable. This shows repeated swapchain creation, but does not
+yet connect it to the visible flicker. KosmicKrisp's Metal WSI currently reports only
+the queried present mode as compatible, although it can change `displaySyncEnabled`;
+whether reporting FIFO and IMMEDIATE as compatible is valid and fixes this behavior still
+needs testing. The ANGLE-Vulkan flags are **not** in the tree and **not** shipped; the
+Steam UI uses ANGLE-D3D11 through DXVK. Do NOT set a bottle-global `d3d11=native`
+override for the UI.
 
 **Bundled `cef.win64/vulkan-1.dll` shadows winevulkan — fixed with `vulkan-1=b`
 (2026-07-26).** In a freshly created bottle CEF would spin in a tight GL-init retry
