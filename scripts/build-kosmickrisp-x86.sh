@@ -138,9 +138,19 @@ meson_args=( "$DRIVER_BUILD" "$MESA_SRC" --cross-file "$CROSS_FILE"
 # Start over instead. Costs one full rebuild, once.
 drop_if_stale "$DRIVER_BUILD"
 recorded="$DRIVER_BUILD/meson-private/cmd_line.txt"
-if [ -d "$DRIVER_BUILD" ] && [ -f "$recorded" ] &&
-   ! grep -qF "$CROSS_FILE" "$recorded"; then
-    echo "=== Build dir was configured against a different cross-file; reconfiguring from scratch ==="
+rebuild_driver=false
+if [ -d "$DRIVER_BUILD" ]; then
+    if [ -f "$recorded" ] && ! grep -qF "$CROSS_FILE" "$recorded"; then
+        rebuild_driver=true
+    elif [ -f "$DRIVER_BUILD/build.ninja" ] &&
+         ! grep -qF "$XCODE_CLANG -arch x86_64" "$DRIVER_BUILD/build.ninja"; then
+        # Meson keeps the compiler cached even when --reconfigure sees an updated
+        # cross file, so old build dirs would continue using Homebrew clang.
+        rebuild_driver=true
+    fi
+fi
+if [ "$rebuild_driver" = true ]; then
+    echo "=== Build dir uses a stale cross-file or compiler; rebuilding from scratch ==="
     rm -rf "$DRIVER_BUILD"
 fi
 if [ -d "$DRIVER_BUILD" ]; then meson_args+=(--reconfigure); fi
