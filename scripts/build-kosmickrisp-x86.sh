@@ -22,6 +22,12 @@ ARM_BREW_PREFIX="$(brew --prefix)"
 # off PATH). llvm is keg-only; phase 1 (mesa_clc) needs its llvm-config.
 export PATH="$ARM_BREW_PREFIX/opt/llvm/bin:$ARM_BREW_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
+# Homebrew LLVM builds the native shader tools above. Use Xcode's compiler for
+# the macOS x86_64 driver: Homebrew clang cannot resolve the SDK's endian.h
+# compatibility header in this cross build, which makes compilation fail in
+# u_endian.h.
+XCODE_CLANG="$(xcrun --find clang)"
+XCODE_CLANGXX="$(xcrun --find clang++)"
 # WHISKY_BUILD_JOBS caps ninja; unset, ninja keeps its own default.
 NINJA_JOBS=()
 if [ -n "${WHISKY_BUILD_JOBS:-}" ]; then NINJA_JOBS=(-j "$(whisky_ncpu)"); fi
@@ -95,10 +101,10 @@ CROSS_FILE="$PROJECT_DIR/build/mesa-x86_64-darwin-cross.ini"
 mkdir -p "$(dirname "$CROSS_FILE")"
 cat > "$CROSS_FILE" <<EOF
 [binaries]
-c = ['clang', '-arch', 'x86_64']
-cpp = ['clang++', '-arch', 'x86_64']
-objc = ['clang', '-arch', 'x86_64']
-objcpp = ['clang++', '-arch', 'x86_64']
+c = ['$XCODE_CLANG', '-arch', 'x86_64']
+cpp = ['$XCODE_CLANGXX', '-arch', 'x86_64']
+objc = ['$XCODE_CLANG', '-arch', 'x86_64']
+objcpp = ['$XCODE_CLANGXX', '-arch', 'x86_64']
 ar = 'ar'
 strip = 'strip'
 pkg-config = '$ARM_BREW_PREFIX/bin/pkg-config'
