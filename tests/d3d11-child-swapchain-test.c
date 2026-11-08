@@ -13,6 +13,10 @@
  *       d3d11-child-swapchain-test.c -ld3d11 -ldxgi -luser32
  * Run:
  *   wine d3d11-child-swapchain-test.exe    # exit 0 = all cases pass
+ *   wine d3d11-child-swapchain-test.exe --continuous single 1
+ *   wine d3d11-child-swapchain-test.exe --continuous children 1
+ * Continuous mode lasts 30 seconds. Compare interval 0 and 1; check visually.
+ * A DXVK_CONFIG syncInterval override takes precedence over this argument.
  */
 
 #define COBJMACROS   /* C-style IFace_Method() wrappers */
@@ -21,6 +25,7 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <stdio.h>
+#include <string.h>
 
 static int failures;
 static ID3D11Device *device;
@@ -75,7 +80,79 @@ static void check_swapchain(const char *name, HWND hwnd)
     IDXGISwapChain1_Release(swapchain);
 }
 
-int main(void)
+/* A static image must stay static: this intentionally has no animation.
+ * Escape or closing the host stops the run. HRESULTs cannot detect visible
+ * corruption, so success only means presentation completed without API errors. */
+static int continuous_present(int children, UINT interval)
+{
+    HWND host = NULL, windows[2] = {0};
+    IDXGISwapChain1 *chains[2] = {0};
+    ID3D11RenderTargetView *targets[2] = {0};
+    ID3D11DeviceContext *context = NULL;
+    const FLOAT colors[2][4] = {{0.1f, 0.5f, 0.8f, 1}, {0.8f, 0.35f, 0.1f, 1}};
+    int count = children ? 2 : 1, result = 1;
+    unsigned frames = 0;
+    ULONGLONG start = GetTickCount64();
+    MSG msg;
+
+    SetProcessDPIAware();
+    host = CreateWindowExA(0, "D3d11ChildSwapchainTest",
+        children ? "D3D11: two static children (Escape closes)" : "D3D11: static window (Escape closes)",
+        WS_OVERLAPPEDWINDOW, 100, 100, 700, 350, NULL, NULL, GetModuleHandleA(NULL), NULL);
+    if (!host) goto done;
+    ID3D11Device_GetImmediateContext(device, &context);
+    for (int i = 0; i < count; ++i)
+    {
+        DXGI_SWAP_CHAIN_DESC1 desc = {0};
+        ID3D11Texture2D *buffer = NULL;
+        HRESULT hr;
+        windows[i] = children ? CreateWindowExA(0, "D3d11ChildSwapchainTest", "child",
+            WS_CHILD | WS_VISIBLE, 10 + 330 * i, 10, 320, 240, host, NULL, GetModuleHandleA(NULL), NULL) : host;
+        if (!windows[i]) goto done;
+        desc.Width = 320; desc.Height = 240;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.BufferCount = 2;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        hr = IDXGIFactory2_CreateSwapChainForHwnd(factory, (IUnknown *)device, windows[i], &desc, NULL, NULL, &chains[i]);
+        if (FAILED(hr)) { printf("FAIL create %d hr=%08lx\n", i, hr); goto done; }
+        hr = IDXGISwapChain1_GetBuffer(chains[i], 0, &IID_ID3D11Texture2D, (void **)&buffer);
+        if (SUCCEEDED(hr)) hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)buffer, NULL, &targets[i]);
+        if (buffer) ID3D11Texture2D_Release(buffer);
+        if (FAILED(hr)) { printf("FAIL target %d hr=%08lx\n", i, hr); goto done; }
+    }
+    ShowWindow(host, SW_SHOW);
+    printf("Continuous: %d surface(s), sync interval %u, 30 seconds; static blue/orange, no intended flicker\n", count, interval);
+    fflush(stdout);
+    while (IsWindow(host) && GetTickCount64() - start < 30000 && !(GetAsyncKeyState(VK_ESCAPE) & 0x8000))
+    {
+        while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageA(&msg); }
+        if (!IsWindow(host)) break;
+        for (int i = 0; i < count; ++i)
+        {
+            HRESULT hr;
+            ID3D11DeviceContext_ClearRenderTargetView(context, targets[i], colors[i]);
+            hr = IDXGISwapChain1_Present(chains[i], interval, 0);
+            if (FAILED(hr)) { printf("FAIL present %d frame %u hr=%08lx removed=%08lx\n", i, frames, hr, ID3D11Device_GetDeviceRemovedReason(device)); goto done; }
+        }
+        ++frames;
+        Sleep(16); /* Bound CPU use even with sync interval zero. */
+    }
+    printf("Completed %u frames in %llu ms; inspect visually for corruption\n", frames, GetTickCount64() - start);
+    result = 0;
+done:
+    if (context) { ID3D11DeviceContext_ClearState(context); ID3D11DeviceContext_Flush(context); }
+    for (int i = 0; i < count; ++i) {
+        if (targets[i]) ID3D11RenderTargetView_Release(targets[i]);
+        if (chains[i]) IDXGISwapChain1_Release(chains[i]);
+    }
+    if (context) ID3D11DeviceContext_Release(context);
+    if (host && IsWindow(host)) DestroyWindow(host);
+    return result;
+}
+
+int main(int argc, char **argv)
 {
     D3D_FEATURE_LEVEL level = 0;
     WNDCLASSA wc = {0};
@@ -109,6 +186,18 @@ int main(void)
 
 #define WIN(style, parent) CreateWindowExA(0, "D3d11ChildSwapchainTest", "sc", (style), \
                                            0, 0, 320, 240, (parent), NULL, wc.hInstance, NULL)
+
+    if (argc > 1)
+    {
+        int result;
+        if (strcmp(argv[1], "--continuous") || (argc > 2 && strcmp(argv[2], "single") && strcmp(argv[2], "children")) ||
+            (argc > 3 && strcmp(argv[3], "0") && strcmp(argv[3], "1")) || argc > 4)
+        { fprintf(stderr, "Usage: %s [--continuous [single|children] [0|1]]\n", argv[0]); return 2; }
+        result = continuous_present(argc > 2 && !strcmp(argv[2], "children"), argc > 3 && !strcmp(argv[3], "0") ? 0 : 1);
+        IDXGIFactory2_Release(factory); IDXGIAdapter_Release(adapter);
+        IDXGIDevice_Release(dxgi_device); ID3D11Device_Release(device);
+        return result;
+    }
 
     /* Baseline: a toplevel. This is what games hand D3D11, and it always worked. */
     toplevel = WIN(WS_OVERLAPPEDWINDOW, NULL);
