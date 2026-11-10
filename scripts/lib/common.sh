@@ -68,6 +68,39 @@ with open(sys.argv[1], "r+b") as f:
 PY
 }
 
+# check_submodule_pin <path-relative-to-repo-root> [label]
+#
+# The superproject's gitlink is the single source of truth for which revision of
+# a vendored tree we build. A worktree that has drifted from it -- an interrupted
+# bump, a manual checkout, a `--remote` update that was never committed -- builds
+# binaries that silently do not match what the repository describes, which is
+# indistinguishable from a bug in our own patches. (That is exactly how a Wine
+# built from one patch series ended up running against an app expecting another.)
+#
+# Read the expected revision from the gitlink rather than a constant duplicated
+# in a script: a constant has to be hand-edited every time the pin moves, and
+# when someone forgets, the check contradicts the repository it is guarding.
+check_submodule_pin() {
+    local path="$1" label="${2:-$1}" expected actual
+    expected=$(git -C "$PROJECT_DIR" ls-tree HEAD "$path" 2>/dev/null | awk '$2 == "commit" {print $3}')
+    if [ -z "$expected" ]; then
+        echo "ERROR: $label is not a submodule gitlink of this checkout ($path)." >&2
+        return 1
+    fi
+    if [ ! -e "$PROJECT_DIR/$path/.git" ]; then
+        echo "ERROR: $label source is missing at vendor/$label." >&2
+        echo "       Run 'git submodule update --init --recursive $path'." >&2
+        return 1
+    fi
+    actual=$(git -C "$PROJECT_DIR/$path" rev-parse HEAD)
+    if [ "$actual" != "$expected" ]; then
+        echo "ERROR: $label is checked out at $actual, but this tree pins $expected." >&2
+        echo "       Run 'git submodule update --init --recursive $path' to match the pin," >&2
+        echo "       or commit the moved gitlink if the bump is intended." >&2
+        return 1
+    fi
+}
+
 # apply_patches <src_dir> <patch_dir> <label> [reset]
 #
 # Idempotently apply patch_dir/*.patch to the git worktree at src_dir: skip

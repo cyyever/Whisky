@@ -30,6 +30,8 @@ require_tools meson ninja i686-w64-mingw32-gcc x86_64-w64-mingw32-gcc
 
 echo "=== Building DXVK from $DXVK_SRC ==="
 
+check_submodule_pin vendor/dxvk DXVK
+
 # Apply out-of-tree DXVK patches (KosmicKrisp adaptations), tracked in the
 # parent repository. Applying them makes the submodule worktree dirty. Idempotent: skip a patch that is already applied,
 # fail loudly on conflicts.

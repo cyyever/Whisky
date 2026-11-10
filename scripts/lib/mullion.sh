@@ -1,6 +1,5 @@
 #!/bin/bash
 # Mullion is the default D3D10/11/12 + DXGI provider for Whisky's x86_64 Wine.
-MULLION_REVISION=a056bf89bd172522f6e9b985eb2041dda43c594e
 MULLION_DIR="$PROJECT_DIR/vendor/mullion"
 MULLION_BUILD="$PROJECT_DIR/vendor/mullion-build-x86_64"
 MULLION_STAGE="$PROJECT_DIR/vendor/mullion-install-x86_64"
@@ -10,12 +9,7 @@ check_mullion_source() {
         echo "ERROR: Mullion source is missing at $MULLION_DIR; initialize vendor/mullion." >&2
         return 1
     fi
-    local actual
-    actual=$(git -C "$MULLION_DIR" rev-parse HEAD)
-    if [ "$actual" != "$MULLION_REVISION" ]; then
-        echo "ERROR: Mullion must be pinned to $MULLION_REVISION (found $actual)." >&2
-        return 1
-    fi
+    check_submodule_pin vendor/mullion Mullion || return 1
     if [ ! -f "$MULLION_DIR/include/native/directx/d3d11.h" ]; then
         echo "ERROR: Mullion's nested submodules are missing; run 'git submodule update --init --recursive vendor/mullion'." >&2
         return 1

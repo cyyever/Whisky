@@ -41,6 +41,7 @@ ARM_BREW_PREFIX="$(brew --prefix)"
     echo "ERROR: no GStreamer source at $GST_SRC" >&2
     echo "       git submodule update --init --depth 1 vendor/gstreamer" >&2
     exit 1; }
+check_submodule_pin vendor/gstreamer GStreamer
 [ -d "$FFMPEG_PREFIX/lib/pkgconfig" ] || {
     echo "ERROR: no x86_64 FFmpeg at $FFMPEG_PREFIX (run scripts/build-ffmpeg-x86.sh)" >&2
     exit 1; }

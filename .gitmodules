@@ -1,6 +1,7 @@
 [submodule "vendor/dxvk"]
 	path = vendor/dxvk
 	url = https://github.com/cyyever/dxvk.git
+	branch = whisky-kosmickrisp-compat-clean
 [submodule "vendor/mesa"]
 	path = vendor/mesa
 	url = https://gitlab.freedesktop.org/mesa/mesa.git
@@ -13,6 +14,7 @@
 [submodule "vendor/gstreamer"]
 	path = vendor/gstreamer
 	url = https://gitlab.freedesktop.org/gstreamer/gstreamer.git
+	branch = main
 [submodule "vendor/mullion"]
 	path = vendor/mullion
 	url = https://github.com/cyyever/mullion.git

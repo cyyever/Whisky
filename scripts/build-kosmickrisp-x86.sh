@@ -43,6 +43,9 @@ minimal_options=(
 # Apply out-of-tree Mesa patches (patches/mesa/0001-*.patch: the WSI present-blit
 # command-buffer lifetime fix -- acquire frees a blit cmdbuf the GPU may still be
 # executing; the freed quad tears into a diagonal under GPU backlog).
+# Checked before patching: apply_patches resets the worktree, so a drifted
+# checkout would be silently patched and built instead of reported.
+check_submodule_pin vendor/mesa Mesa
 apply_patches "$MESA_SRC" "$PROJECT_DIR/patches/mesa" Mesa
 
 # A brew upgrade moves a dependency's Cellar directory, and meson does not
