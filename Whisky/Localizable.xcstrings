@@ -613,6 +613,40 @@
         }
       }
     },
+    "main.wineSkew.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The installed Wine was built from a different patch series. Run 'make proton' to rebuild it; until then, fixes and defaults those patches carry are missing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装的 Wine 由不同的补丁系列构建。请运行 'make proton' 重新构建；在此之前，这些补丁携带的修复和默认设置都不生效。"
+          }
+        }
+      }
+    },
+    "main.wineSkew.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wine does not match this version of Whisky"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wine 与当前版本的 Whisky 不匹配"
+          }
+        }
+      }
+    },
     "menu.chooseFile": {
       "localizations": {
         "en": {

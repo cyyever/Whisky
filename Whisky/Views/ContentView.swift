@@ -34,12 +34,16 @@ struct ContentView: View {
     @State private var refreshAnimation: Angle = .degrees(0)
 
     @State private var bottleFilter = ""
+    @State private var patchSkew: PatchSeriesSkew?
 
     var body: some View {
         NavigationSplitView {
             sidebar
         } detail: {
             detail
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            patchSkewBanner
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -55,6 +59,7 @@ struct ContentView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     bottleVM.loadBottles()
+                    patchSkew = WhiskyWineInstaller.installedPatchSeriesSkew()
                     triggerRefresh.toggle()
                     withAnimation(.default) {
                         refreshAnimation = .degrees(360)
@@ -104,6 +109,46 @@ struct ContentView: View {
             if !WhiskyWineInstaller.isWhiskyWineInstalled() {
                 showSetup = true
             }
+            patchSkew = WhiskyWineInstaller.installedPatchSeriesSkew()
+        }
+        .onChange(of: showSetup) {
+            // Setup can install or replace Wine, so the skew it leaves behind
+            // is only knowable once the sheet is gone.
+            patchSkew = WhiskyWineInstaller.installedPatchSeriesSkew()
+        }
+    }
+
+    /// Surfaces a Wine whose patch series differs from the one this app was
+    /// built against. Before this, the mismatch only reached the launch log,
+    /// so a stale Wine would keep running — with the defaults and fixes its
+    /// patches carry silently absent — and nothing in the UI said so.
+    @ViewBuilder
+    var patchSkewBanner: some View {
+        if let skew = patchSkew {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("main.wineSkew.title")
+                        .fontWeight(.medium)
+                    Text("main.wineSkew.detail")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(verbatim: "\(skew.installedDescription) ≠ \(skew.expected)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial)
+            .overlay(alignment: .bottom) {
+                Divider()
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("banner.wineSkew")
         }
     }
 

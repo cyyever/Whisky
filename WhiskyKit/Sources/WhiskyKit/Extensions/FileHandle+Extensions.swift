@@ -89,7 +89,7 @@ extension FileHandle {
             header += "WhiskyWine Version: \(version.major).\(version.minor).\(version.patch)\n"
         }
         if let skew = WhiskyWineInstaller.patchSeriesMismatch() {
-            let installed = skew.installed.isEmpty ? "unstamped" : skew.installed
+            let installed = skew.installedDescription
             header += "*** PATCH SERIES MISMATCH: Wine \(installed), app expects \(skew.expected)\n"
             header += "*** Run 'make proton'. Defaults that moved into Wine may be absent.\n"
             Logger.wineKit.warning(

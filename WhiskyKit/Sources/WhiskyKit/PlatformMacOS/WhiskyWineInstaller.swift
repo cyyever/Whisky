@@ -44,13 +44,21 @@ public class WhiskyWineInstaller {
     /// number cannot do this: the whole series can change while Wine stays
     /// 11.0.0, and the app now depends on defaults those patches carry. Computed
     /// on both sides, so neither can go stale.
-    public static func patchSeriesMismatch() -> (installed: String, expected: String)? {
+    public static func patchSeriesMismatch() -> PatchSeriesSkew? {
         guard
             let expected = Bundle.main.object(forInfoDictionaryKey: "WhiskyWinePatchDigest") as? String,
             !expected.isEmpty
         else { return nil }  // an app built without the stamp has nothing to claim
         let installed = installedInfo()?.patchSeriesDigest ?? ""
-        return installed == expected ? nil : (installed: installed, expected: expected)
+        return installed == expected ? nil : PatchSeriesSkew(installed: installed, expected: expected)
+    }
+
+    /// The skew worth showing in the UI. A missing Wine install is the setup
+    /// flow's job, so it is not reported here: otherwise every pre-install
+    /// launch would raise a warning about a Wine that was never built.
+    public static func installedPatchSeriesSkew() -> PatchSeriesSkew? {
+        guard isWhiskyWineInstalled() else { return nil }
+        return patchSeriesMismatch()
     }
 
     private static func installedInfo() -> WhiskyWineVersion? {
@@ -74,4 +82,22 @@ public struct WhiskyWineVersion: Codable {
     public var version = SemanticVersion(1, 0, 0)
     /// "" for a Wine installed before the stamp existed — itself a mismatch.
     public var patchSeriesDigest: String = ""
+}
+
+/// An installed Wine whose patch series differs from the one the app was built
+/// against. Equatable so SwiftUI can hold it in state without redrawing loops.
+public struct PatchSeriesSkew: Equatable, Sendable {
+    public let installed: String
+    public let expected: String
+
+    public init(installed: String, expected: String) {
+        self.installed = installed
+        self.expected = expected
+    }
+
+    /// A Wine predating the stamp reports "", which would otherwise render as
+    /// an empty gap in both the log header and the UI.
+    public var installedDescription: String {
+        installed.isEmpty ? "unstamped" : installed
+    }
 }
