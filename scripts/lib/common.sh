@@ -81,7 +81,7 @@ PY
 # in a script: a constant has to be hand-edited every time the pin moves, and
 # when someone forgets, the check contradicts the repository it is guarding.
 check_submodule_pin() {
-    local path="$1" label="${2:-$1}" expected actual
+    local path="$1" label="${2:-$1}" expected actual drifted
     expected=$(git -C "$PROJECT_DIR" ls-tree HEAD "$path" 2>/dev/null | awk '$2 == "commit" {print $3}')
     if [ -z "$expected" ]; then
         echo "ERROR: $label is not a submodule gitlink of this checkout ($path)." >&2
@@ -97,6 +97,19 @@ check_submodule_pin() {
         echo "ERROR: $label is checked out at $actual, but this tree pins $expected." >&2
         echo "       Run 'git submodule update --init --recursive $path' to match the pin," >&2
         echo "       or commit the moved gitlink if the bump is intended." >&2
+        return 1
+    fi
+
+    # The gitlink only pins the vendored tree's own HEAD. Its nested submodules
+    # carry pins of their own, and those drift the same way -- DXVK's dxbc-spirv
+    # shader compiler was found several commits ahead of what DXVK pins. Flag
+    # only '+' (checked out off its pin); '-' means uninitialised, which is
+    # normal for the nested trees no build of ours needs.
+    drifted=$(git -C "$PROJECT_DIR/$path" submodule status --recursive 2>/dev/null | awk '/^\+/ {print "       " $2 " " $1}')
+    if [ -n "$drifted" ]; then
+        echo "ERROR: $label has nested submodules checked out off their pins:" >&2
+        echo "$drifted" >&2
+        echo "       Run 'git submodule update --init --recursive $path' to match them." >&2
         return 1
     fi
 }
