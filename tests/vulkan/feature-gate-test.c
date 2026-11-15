@@ -1,12 +1,11 @@
 /*
  * feature-gate-test — are the driver features our patches relax still missing?
  *
- * Two of our patches exist only because KosmicKrisp did not report a feature
- * that a translation layer demanded:
+ * DXVK's KosmicKrisp fork and our vkd3d-proton patch relax device creation
+ * requirements for features that the driver does not expose:
  *
- *   patches/dxvk/0001          six VkPhysicalDeviceFeatures turned from
- *                              required into optional so DXVK's d3d9 can create
- *                              a device at all
+ *   DXVK's fork marks fillModeNonSolid unavailable so KosmicKrisp's lack of
+ *                              wireframe support does not block D3D9 device creation
  *   patches/vkd3d-proton/0001  a device-init gate made non-fatal so D3D12
  *                              reaches device creation
  *
@@ -16,10 +15,10 @@
  * while a relaxed one lets the layer build a pipeline the device cannot honour
  * -- invalid usage, and device loss on some drivers.
  *
- * So this asks the driver directly rather than reading the patch and guessing,
- * and it is meant to be re-run after every `git submodule update` of mesa.
+ * So this asks the driver directly rather than reading the source and guessing,
+ * and it is meant to be re-run after every Mesa or DXVK submodule update.
  *
- * This only REPORTS what the driver has; whether a patch still relaxes a given
+ * This only REPORTS what the driver has; whether source still relaxes a given
  * feature is a separate question, answered by feature-gate-test.sh, which owns
  * the verdict. Reporting on driver support alone kept calling four
  * already-narrowed relaxations "dead weight" after they had been removed.
@@ -38,7 +37,6 @@
 
 struct gate {
     const char *feature;
-    const char *patch;
     VkBool32    supported;
 };
 
@@ -76,19 +74,19 @@ int main(void)
     printf("device: %s\n\n", name);
 
     struct gate gates[] = {
-        { "fillModeNonSolid",    "dxvk/0001",         f2.features.fillModeNonSolid },
-        { "geometryShader",      "dxvk/0001",         f2.features.geometryShader },
-        { "shaderCullDistance",  "dxvk/0001",         f2.features.shaderCullDistance },
-        { "depthClipEnable",     "dxvk/0001",         clip.depthClipEnable },
-        { "robustBufferAccess2", "dxvk/0001",         rob2.robustBufferAccess2 },
-        { "nullDescriptor",      "dxvk/0001",         rob2.nullDescriptor },
-        { "transformFeedbackQueries", "vkd3d-proton/0001", xfbp.transformFeedbackQueries },
+        { "fillModeNonSolid",    f2.features.fillModeNonSolid },
+        { "geometryShader",      f2.features.geometryShader },
+        { "shaderCullDistance",  f2.features.shaderCullDistance },
+        { "depthClipEnable",     clip.depthClipEnable },
+        { "robustBufferAccess2", rob2.robustBufferAccess2 },
+        { "nullDescriptor",      rob2.nullDescriptor },
+        { "transformFeedbackQueries", xfbp.transformFeedbackQueries },
         /* Mirror what vkd3d actually tests (libs/vkd3d/device.c): it accepts
          * EITHER the single-texel bool OR an alignment of one byte. Checking
          * only the bool would call the relaxation necessary on a driver vkd3d
          * would have accepted unpatched -- the inverse of the failure this
          * test exists to catch. */
-        { "singleTexelAlignment", "vkd3d-proton/0001",
+        { "singleTexelAlignment",
           (align.storageTexelBufferOffsetSingleTexelAlignment ||
            align.storageTexelBufferOffsetAlignmentBytes == 1) &&
           (align.uniformTexelBufferOffsetSingleTexelAlignment ||

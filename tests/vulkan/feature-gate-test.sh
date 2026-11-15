@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# feature-gate-test — is any relaxation in our patches now dead weight?
+# feature-gate-test — is any device-feature relaxation now dead weight?
 #
 #   tests/vulkan/feature-gate-test.sh
 #
@@ -8,11 +8,10 @@
 #
 #   1. does the driver report the feature?   -- asked of KosmicKrisp, by the
 #                                               companion C probe
-#   2. does the patch still relax it?        -- asked of the patch files here
+#   2. does the source still relax it?       -- checked in DXVK/vkd3d-proton
 #
-# The C probe alone cannot answer the second, and reporting on the first alone
-# is how the first version of this test kept calling four already-narrowed
-# relaxations "dead weight" after they had been removed.
+# The C probe alone cannot answer the second; a relaxation is dead weight only
+# when the driver reports support and the translation layer still relaxes it.
 #
 # Exit code is the number of relaxations that are dead weight, so a bump can be
 # gated on it. Note it is the SCRIPT's exit code: piping this into `tail` reads
@@ -38,16 +37,15 @@ fi
 out=$(VK_DRIVER_FILES="$ICD" VK_ICD_FILENAMES="$ICD" "$PROBE") || { echo "$out"; echo "FAIL: probe failed"; exit 1; }
 echo "$out" | sed -n '1p'
 
-# Each gate: feature name, the patch that relaxes it, and a pattern that is
-# present in that patch only while the relaxation is.
-gate() {  # <feature> <patch> <grep-pattern>
-    local feat=$1 patch=$2 pat=$3 driver relaxed
+# Each gate: feature name, source file, and a pattern present while relaxed.
+gate() {  # <feature> <source> <grep-pattern>
+    local feat=$1 source=$2 pat=$3 driver relaxed
     driver=$(echo "$out" | awk -v f="$feat" '$1 == f { print ($2 == "SUPPORTED") ? "yes" : "no" }')
     [ -n "$driver" ] || { printf "  %-26s (not reported by probe)\n" "$feat"; return 0; }
-    if grep -q "$pat" "$PROJECT_DIR/patches/$patch" 2>/dev/null; then relaxed=yes; else relaxed=no; fi
+    if grep -Eq "$pat" "$PROJECT_DIR/$source" 2>/dev/null; then relaxed=yes; else relaxed=no; fi
 
     if [ "$driver" = yes ] && [ "$relaxed" = yes ]; then
-        printf "  %-26s DEAD WEIGHT -- driver has it, %s still relaxes it\n" "$feat" "$patch"
+        printf "  %-26s DEAD WEIGHT -- driver has it, %s still relaxes it\n" "$feat" "$source"
         return 1
     elif [ "$driver" = yes ]; then
         printf "  %-26s ok -- driver has it, and the relaxation is gone\n" "$feat"
@@ -60,21 +58,13 @@ gate() {  # <feature> <patch> <grep-pattern>
     return 0
 }
 
-echo "cross-checking each relaxation against the patch that carries it:"
+echo "cross-checking each relaxation against the source that carries it:"
 dead=0
-gate fillModeNonSolid    dxvk/0001-d3d9-kosmickrisp-optional-features.patch \
-     '^+.*fillModeNonSolid, false' || dead=$((dead+1))
-gate shaderCullDistance  dxvk/0001-d3d9-kosmickrisp-optional-features.patch \
-     '^+.*shaderCullDistance, false' || dead=$((dead+1))
-gate depthClipEnable     dxvk/0001-d3d9-kosmickrisp-optional-features.patch \
-     '^+.*depthClipEnable, false' || dead=$((dead+1))
-gate robustBufferAccess2 dxvk/0001-d3d9-kosmickrisp-optional-features.patch \
-     '^+.*robustBufferAccess2, false' || dead=$((dead+1))
-gate nullDescriptor      dxvk/0001-d3d9-kosmickrisp-optional-features.patch \
-     '^+.*nullDescriptor, false' || dead=$((dead+1))
-gate transformFeedbackQueries vkd3d-proton/0001-optional-features-kosmickrisp.patch \
+gate fillModeNonSolid    vendor/dxvk/src/dxvk/dxvk_device_info.cpp \
+     'ENABLE_FEATURE\(core.features, fillModeNonSolid, false\)' || dead=$((dead+1))
+gate transformFeedbackQueries patches/vkd3d-proton/0001-optional-features-kosmickrisp.patch \
      'disabling stream output' || dead=$((dead+1))
-gate singleTexelAlignment     vkd3d-proton/0001-optional-features-kosmickrisp.patch \
+gate singleTexelAlignment     patches/vkd3d-proton/0001-optional-features-kosmickrisp.patch \
      'proceeding anyway' || dead=$((dead+1))
 
 echo

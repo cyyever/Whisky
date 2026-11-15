@@ -32,11 +32,6 @@ echo "=== Building DXVK from $DXVK_SRC ==="
 
 check_submodule_pin vendor/dxvk DXVK
 
-# Apply out-of-tree DXVK patches (KosmicKrisp adaptations), tracked in the
-# parent repository. Applying them makes the submodule worktree dirty. Idempotent: skip a patch that is already applied,
-# fail loudly on conflicts.
-apply_patches "$DXVK_SRC" "$PROJECT_DIR/patches/dxvk" DXVK
-
 MESON_OPTS=(
     -Denable_d3d9=true
     -Denable_d3d8=true
