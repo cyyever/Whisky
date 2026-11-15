@@ -26,14 +26,8 @@ Fresh-machine order: ARM brew deps (`autoconf automake bison cmake meson ninja n
 - Bottles: `~/Library/Containers/com.isaacmarovitz.Whisky/Bottles/`
 - x86_64 libraries: `vendor/x86-deps/` (gitignored), cross-built by the arm64 clang with `-arch x86_64` — there is no x86_64 Homebrew. Build scripts: `scripts/`.
 
-## Detailed docs
-- Proton migration + per-patch notes → `docs/proton-migration.md`
-- Steam webhelper / CEF flags → `docs/steam-webhelper.md`
-- Steam networking / proxy / TUN → `docs/steam-networking.md`
-- C++ cross-platform plan → `docs/cxx-migration-plan.md`
-
 ## Operational gotchas
-- **Steam login**: works end to end as of 2026-08-07, with no proxy and no TUN. Turn Follow System Proxy OFF (an HTTP proxy breaks Steam's CM); SOCKS is tunneled via proxychains automatically. Only on a genuinely filtering network is a system TUN worth reaching for — see `docs/steam-networking.md`. Launch Steam and games from the **Whisky GUI / Steam Play button**, never a bare CLI: a CLI launch logs `no bootstrapper found` and invalidates any conclusion about the login window.
+- **Steam diagnostics**: reproduce through the Whisky GUI so bottle settings and launch environment are applied. Check the Whisky launch log and Steam logs separately; a black window does not establish a network failure. Proxy configuration: `docs/steam-networking.md`.
 - Native ARM64 Wine doesn't work on macOS — x86_64 + Rosetta only; WoW64 (`i386,x86_64`) because Steam is 32-bit.
 - Xbox Bluetooth controllers need `SDL_JOYSTICK_MFI=0`.
 - Rebuild Wine → restart Whisky/Steam (wineserver version mismatch).

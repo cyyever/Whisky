@@ -39,7 +39,7 @@ index b259388..30fecd5 100644
 +     * every winemac.drv OnMainThread() caller deadlocks: a 32-bit DirectShow
 +     * RenderFile that never returns (tests/gstreamer/dshow-render-test.sh).
 +     * The trade: 32-bit wm_reader loses its GL I420->RGBA converter and falls
-+     * back to videoconvert on the CPU. See docs/proton-migration.md, 0035. */
++     * back to videoconvert on the CPU. */
 +#ifdef __APPLE__
 +    GST_INFO("Not creating a GL display; the GL element chain deadlocks on macOS.");
 +#else

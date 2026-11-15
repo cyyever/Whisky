@@ -40,7 +40,7 @@ for the full fresh-machine bootstrap (FFmpeg and KosmicKrisp are also required).
 ## My game isn't working
 
 Some games need extra steps. See [`docs/`](docs) and [`CLAUDE.md`](CLAUDE.md) for
-notes on Steam, D3D9/DXVK, Unity fullscreen, and controllers.
+Steam proxy configuration, launch diagnostics, and controller setup.
 
 ## Credits
 
