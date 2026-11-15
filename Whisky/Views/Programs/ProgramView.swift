@@ -34,16 +34,6 @@ struct ProgramView: View {
                         Text(locale.pretty()).id(locale)
                     }
                 }
-                VStack {
-                    HStack {
-                        Text("program.args")
-                        Spacer()
-                    }
-                    TextField("program.args", text: $program.settings.arguments)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .labelsHidden()
-                }
             }
             EnvironmentArgView(program: program, isExpanded: $envArgsSectionExpanded)
         }

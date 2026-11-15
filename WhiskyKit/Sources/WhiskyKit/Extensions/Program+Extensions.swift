@@ -50,10 +50,9 @@ extension Program {
         if GogGalaxy.isGalaxyClient(url), !GogGalaxy.isGalaxyRunning(in: bottle) {
             GogGalaxy.clearStaleLocks(in: bottle)
         }
-        let arguments = settings.arguments.split { $0.isWhitespace }.map(String.init)
         do {
             try await Wine.runProgram(
-                at: url, args: arguments, bottle: bottle, environment: generateEnvironment()
+                at: url, bottle: bottle, environment: generateEnvironment()
             )
         } catch {
             await showRunError(message: error.localizedDescription)

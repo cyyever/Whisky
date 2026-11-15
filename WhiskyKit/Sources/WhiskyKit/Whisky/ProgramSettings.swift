@@ -69,8 +69,6 @@ public enum Locales: String, Codable, CaseIterable {
 public struct ProgramSettings: Codable {
     public var locale: Locales = .auto
     public var environment: [String: String] = [:]
-    public var arguments: String = ""
-
     static func decode(from settingsURL: URL) throws -> Self {
         guard FileManager.default.fileExists(atPath: settingsURL.path(percentEncoded: false)) else {
             let settings = Self()
