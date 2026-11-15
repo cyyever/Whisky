@@ -28,6 +28,7 @@ whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 # u_endian.h.
 XCODE_CLANG="$(xcrun --find clang)"
 XCODE_CLANGXX="$(xcrun --find clang++)"
+MACOS_SDK="$(xcrun --show-sdk-path)"
 # WHISKY_BUILD_JOBS caps ninja; unset, ninja keeps its own default.
 NINJA_JOBS=()
 if [ -n "${WHISKY_BUILD_JOBS:-}" ]; then NINJA_JOBS=(-j "$(whisky_ncpu)"); fi
@@ -104,10 +105,10 @@ CROSS_FILE="$PROJECT_DIR/build/mesa-x86_64-darwin-cross.ini"
 mkdir -p "$(dirname "$CROSS_FILE")"
 cat > "$CROSS_FILE" <<EOF
 [binaries]
-c = ['$XCODE_CLANG', '-arch', 'x86_64']
-cpp = ['$XCODE_CLANGXX', '-arch', 'x86_64']
-objc = ['$XCODE_CLANG', '-arch', 'x86_64']
-objcpp = ['$XCODE_CLANGXX', '-arch', 'x86_64']
+c = ['$XCODE_CLANG', '-arch', 'x86_64', '-isysroot', '$MACOS_SDK']
+cpp = ['$XCODE_CLANGXX', '-arch', 'x86_64', '-isysroot', '$MACOS_SDK']
+objc = ['$XCODE_CLANG', '-arch', 'x86_64', '-isysroot', '$MACOS_SDK']
+objcpp = ['$XCODE_CLANGXX', '-arch', 'x86_64', '-isysroot', '$MACOS_SDK']
 ar = 'ar'
 strip = 'strip'
 pkg-config = '$ARM_BREW_PREFIX/bin/pkg-config'
@@ -146,9 +147,11 @@ if [ -d "$DRIVER_BUILD" ]; then
     if [ -f "$recorded" ] && ! grep -qF "$CROSS_FILE" "$recorded"; then
         rebuild_driver=true
     elif [ -f "$DRIVER_BUILD/build.ninja" ] &&
-         ! grep -qF "$XCODE_CLANG -arch x86_64" "$DRIVER_BUILD/build.ninja"; then
+         { ! grep -qF "$XCODE_CLANG -arch x86_64" "$DRIVER_BUILD/build.ninja" ||
+           ! grep -qF -- "-isysroot $MACOS_SDK" "$DRIVER_BUILD/build.ninja"; }; then
         # Meson keeps the compiler cached even when --reconfigure sees an updated
-        # cross file, so old build dirs would continue using Homebrew clang.
+        # cross file, so old build dirs would continue using Homebrew clang or
+        # compile against headers without the active macOS SDK.
         rebuild_driver=true
     fi
 fi

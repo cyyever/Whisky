@@ -807,9 +807,9 @@ index 2334342..28d109e 100644
 +            count->info.stage = MESA_SHADER_COMPUTE;
 +            memset(&count->info.cs, 0, sizeof(count->info.cs));
 +            count->xfb_info = NULL;
-+            kk_compile_msl(pdev, count, state, &shader->gs_count);
++            kk_compile_msl(pdev, count, state, &shader->gs_count, apply_wa19);
 +         }
-+         kk_compile_msl(pdev, pre_gs, state, &shader->pre_gs);
++         kk_compile_msl(pdev, pre_gs, state, &shader->pre_gs, apply_wa19);
 +      } else {
 +         ralloc_free(count);
 +         ralloc_free(pre_gs);

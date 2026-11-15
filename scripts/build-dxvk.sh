@@ -33,6 +33,10 @@ echo "=== Building DXVK from $DXVK_SRC ==="
 check_submodule_pin vendor/dxvk DXVK
 
 MESON_OPTS=(
+    # Manufacturer names from hwdata's pnp.ids are diagnostic-only and not
+    # needed to enumerate displays or render games. The macOS build host has
+    # no hwdata package, so disable this build-time lookup table explicitly.
+    -Dlibdisplay-info:pnp-ids=disabled
     -Denable_d3d9=true
     -Denable_d3d8=true
     -Denable_d3d10=false
@@ -68,8 +72,16 @@ setup_arch() {  # <cross-file> <build-dir> <install-subdir>
         echo "=== Configuring DXVK ($subdir) ==="
         (cd "$DXVK_SRC" && meson setup --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
     else
-        echo "=== Reconfiguring DXVK ($subdir) ==="
-        (cd "$DXVK_SRC" && meson setup --reconfigure --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
+        if ! meson configure "$DXVK_SRC/$build_dir" 2>/dev/null | grep -q 'libdisplay-info:pnp-ids'; then
+            # Meson cannot add a newly introduced subproject option to an old
+            # coredata cache. Wipe only this stale build directory, then do a
+            # fresh setup with the option above; source and install files stay.
+            echo "=== Recreating stale DXVK configuration ($subdir lacks pnp-ids option) ==="
+            (cd "$DXVK_SRC" && meson setup --wipe --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
+        else
+            echo "=== Reconfiguring DXVK ($subdir) ==="
+            (cd "$DXVK_SRC" && meson setup --reconfigure --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
+        fi
     fi
 }
 
