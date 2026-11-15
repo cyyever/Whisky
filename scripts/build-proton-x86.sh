@@ -91,7 +91,16 @@ arch -x86_64 env -i \
     make -j"$NCPU"
 
 echo "=== Installing to $INSTALL_DIR ==="
+mkdir -p "$INSTALL_DIR"
 TMPINSTALL=$(mktemp -d)
+WINE_STAGE=$(mktemp -d "$INSTALL_DIR/.Wine-stage.XXXXXX")
+VERSION_STAGE="$INSTALL_DIR/.WhiskyWineVersion.plist.$$"
+INSTALL_COMMITTED=0
+cleanup_install() {
+    rm -rf "$TMPINSTALL" "$VERSION_STAGE"
+    [ -z "$WINE_STAGE" ] || rm -rf "$WINE_STAGE"
+}
+trap cleanup_install EXIT
 arch -x86_64 make install DESTDIR="$TMPINSTALL"
 
 # Find where make install put files
@@ -118,11 +127,9 @@ if [ "$WINE_BUILD" = "release" ]; then
         -exec "$MINGW_STRIP" --strip-unneeded {} +
 fi
 
-rm -rf "$INSTALL_DIR/Wine"
-mkdir -p "$INSTALL_DIR/Wine"
-cp -R "$WINE_INSTALL_ROOT/bin" "$INSTALL_DIR/Wine/"
-cp -R "$WINE_INSTALL_ROOT/lib" "$INSTALL_DIR/Wine/"
-cp -R "$WINE_INSTALL_ROOT/share" "$INSTALL_DIR/Wine/"
+cp -R "$WINE_INSTALL_ROOT/bin" "$WINE_STAGE/"
+cp -R "$WINE_INSTALL_ROOT/lib" "$WINE_STAGE/"
+cp -R "$WINE_INSTALL_ROOT/share" "$WINE_STAGE/"
 
 # --- DXVK (D3D9/D3D8) restore over wined3d ----------------------------------
 # build-dxvk.sh installs DXVK as the builtin d3d9/d3d8
@@ -144,8 +151,8 @@ if [ -f "$DXVK_SRC_DIR/build.w64/src/d3d9/d3d9.dll" ]; then
         for dxvk_dll in d3d9/d3d9.dll d3d8/d3d8.dll; do
             dxvk_src="$DXVK_SRC_DIR/$dxvk_bdir/src/$dxvk_dll"
             [ -f "$dxvk_src" ] || continue
-            cp "$dxvk_src" "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/${dxvk_dll##*/}"
-            mark_wine_builtin "$INSTALL_DIR/Wine/lib/wine/$dxvk_arch/${dxvk_dll##*/}"
+            cp "$dxvk_src" "$WINE_STAGE/lib/wine/$dxvk_arch/${dxvk_dll##*/}"
+            mark_wine_builtin "$WINE_STAGE/lib/wine/$dxvk_arch/${dxvk_dll##*/}"
         done
     done
     echo "DXVK restored: d3d9/d3d8 (x86_64 + i386)"
@@ -158,9 +165,9 @@ MULLION_STAGE="$PROJECT_DIR/vendor/mullion-install-x86_64"
 if [ -d "$MULLION_STAGE/x86_64-windows" ] && [ -d "$MULLION_STAGE/x86_64-unix" ]; then
     echo "=== Restoring Mullion builtins over Wine's Direct3D implementation ==="
     for mullion_dll in "$MULLION_STAGE/x86_64-windows/"*.dll; do
-        cp "$mullion_dll" "$INSTALL_DIR/Wine/lib/wine/x86_64-windows/"
+        cp "$mullion_dll" "$WINE_STAGE/lib/wine/x86_64-windows/"
     done
-    cp "$MULLION_STAGE/x86_64-unix/winemetal.so" "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/"
+    cp "$MULLION_STAGE/x86_64-unix/winemetal.so" "$WINE_STAGE/lib/wine/x86_64-unix/"
 fi
 
 # Bundle x86 dylibs so Wine finds them at runtime. cp -R (implies -P on BSD)
@@ -171,9 +178,9 @@ echo "=== Bundling runtime dylibs ==="
 # The x86_64 libraries from build-x86-deps.sh. Their symlinks are all leaf-name
 # version chains within lib/, so cp -R keeps them intact; the install names that
 # still point into vendor/x86-deps are rewritten by the relocation loop below.
-cp -R "$X86_DEPS/lib/"*.dylib "$INSTALL_DIR/Wine/lib/"
+cp -R "$X86_DEPS/lib/"*.dylib "$WINE_STAGE/lib/"
 # Minimal x86_64 FFmpeg for winedmo (built by build-ffmpeg-x86.sh)
-cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$WINE_STAGE/lib/" 2>/dev/null || true
 
 # GStreamer for winegstreamer (built by build-gstreamer-x86.sh): the libraries,
 # the glib the wrap built beside them, and the plugin directory. Without this the
@@ -191,14 +198,14 @@ cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/
 GST_PREFIX="$PROJECT_DIR/vendor/gstreamer-x86"
 if [ -d "$GST_PREFIX/lib" ]; then
     echo "=== Bundling GStreamer (winegstreamer's backend) ==="
-    cp -R "$GST_PREFIX/lib/"*.dylib "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
-    rm -rf "$INSTALL_DIR/Wine/lib/gstreamer-1.0"
-    cp -R "$GST_PREFIX/lib/gstreamer-1.0" "$INSTALL_DIR/Wine/lib/" 2>/dev/null || true
+    cp -R "$GST_PREFIX/lib/"*.dylib "$WINE_STAGE/lib/" 2>/dev/null || true
+    rm -rf "$WINE_STAGE/lib/gstreamer-1.0"
+    cp -R "$GST_PREFIX/lib/gstreamer-1.0" "$WINE_STAGE/lib/" 2>/dev/null || true
     # The plugin scanner: GStreamer registers plugins by running this helper, and
     # without it the in-process fallback silently drops libav -- no WMV decoder.
-    mkdir -p "$INSTALL_DIR/Wine/libexec/gstreamer-1.0"
+    mkdir -p "$WINE_STAGE/libexec/gstreamer-1.0"
     cp "$GST_PREFIX/libexec/gstreamer-1.0/gst-plugin-scanner" \
-       "$INSTALL_DIR/Wine/libexec/gstreamer-1.0/" 2>/dev/null || true
+       "$WINE_STAGE/libexec/gstreamer-1.0/" 2>/dev/null || true
 
     # Same absolute-path problem as the unix modules below, and the same fix: the
     # plugins and the scanner were linked against vendor/gstreamer-x86 by
@@ -209,9 +216,9 @@ if [ -d "$GST_PREFIX/lib" ]; then
     # glib the wrap built (glib, gobject, gio, gmodule, ffi), and leaving those
     # pointing at the build tree pulled the whole build-tree branch back in --
     # two libgstreamers again, by a different route than the install names.
-    for f in "$INSTALL_DIR/Wine/lib/gstreamer-1.0/"*.dylib \
-             "$INSTALL_DIR/Wine/lib/"*.dylib \
-             "$INSTALL_DIR/Wine/libexec/gstreamer-1.0/gst-plugin-scanner"; do
+    for f in "$WINE_STAGE/lib/gstreamer-1.0/"*.dylib \
+             "$WINE_STAGE/lib/"*.dylib \
+             "$WINE_STAGE/libexec/gstreamer-1.0/gst-plugin-scanner"; do
         [ -f "$f" ] || continue
         # Symlinks: install_name_tool follows them and rewrites the target, so a
         # versioned pair gets patched twice and the ID ends up under the link's
@@ -229,12 +236,12 @@ if [ -d "$GST_PREFIX/lib" ]; then
         relocate_to_rpath "$f"
     done
 
-    n=$(ls "$INSTALL_DIR/Wine/lib/gstreamer-1.0/"*.dylib 2>/dev/null | wc -l | tr -d ' ')
+    n=$(ls "$WINE_STAGE/lib/gstreamer-1.0/"*.dylib 2>/dev/null | wc -l | tr -d ' ')
     # Fatal, not a word inside an echo. GStreamer registers plugins by running
     # this helper; without it the in-process fallback drops libav, and the only
     # symptom is a WMV that finds no decoder and stalls at runtime. Reporting
     # "scanner MISSING" and exiting 0 hides a broken install behind a green build.
-    if [ ! -x "$INSTALL_DIR/Wine/libexec/gstreamer-1.0/gst-plugin-scanner" ]; then
+    if [ ! -x "$WINE_STAGE/libexec/gstreamer-1.0/gst-plugin-scanner" ]; then
         echo "ERROR: gst-plugin-scanner missing from the install; plugins will not register" >&2
         exit 1
     fi
@@ -254,15 +261,15 @@ fi
 KK_DYLIB="$PROJECT_DIR/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib"
 if [ -f "$KK_DYLIB" ]; then
     echo "=== Asserting KosmicKrisp Vulkan loader swap ==="
-    rm -f "$INSTALL_DIR/Wine/lib/libMoltenVK.dylib.mvk-stock" \
-          "$INSTALL_DIR/Wine/lib/libMoltenVK.dylib.orig"
+    rm -f "$WINE_STAGE/lib/libMoltenVK.dylib.mvk-stock" \
+          "$WINE_STAGE/lib/libMoltenVK.dylib.orig"
     # cp -L resolves the libvulkan.1 -> libvulkan.1.x.y symlink to a real file
     # (the bundling above may have left symlinks; replace with the loader).
     for name in libMoltenVK.dylib libvulkan.1.dylib; do
-        rm -f "$INSTALL_DIR/Wine/lib/$name"
-        cp -L "$X86_DEPS/lib/libvulkan.1.dylib" "$INSTALL_DIR/Wine/lib/$name"
+        rm -f "$WINE_STAGE/lib/$name"
+        cp -L "$X86_DEPS/lib/libvulkan.1.dylib" "$WINE_STAGE/lib/$name"
         # After the relocation loop above, so these copies need their own pass.
-        relocate_to_rpath "$INSTALL_DIR/Wine/lib/$name"
+        relocate_to_rpath "$WINE_STAGE/lib/$name"
     done
 
     # ICD manifest so the loader finds the KosmicKrisp driver.
@@ -278,7 +285,7 @@ fi
 # points there. Each .so already has @loader_path/ (its own dir); add ../..
 # so the search reaches Wine/lib/.
 echo "=== Patching rpaths on Wine unix modules ==="
-for so in "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/"*.so; do
+for so in "$WINE_STAGE/lib/wine/x86_64-unix/"*.so; do
     install_name_tool -add_rpath '@loader_path/../..' "$so" 2>/dev/null || true
     relocate_to_rpath "$so"
 done
@@ -289,7 +296,7 @@ done
 # Patch wine.inf so wineboot writes the driver explicitly into HKLM
 # when initialising the prefix.
 echo "=== Patching wine.inf to set Graphics driver = mac ==="
-WINE_INF="$INSTALL_DIR/Wine/share/wine/wine.inf"
+WINE_INF="$WINE_STAGE/share/wine/wine.inf"
 if ! grep -q '^\[Drivers\]' "$WINE_INF"; then
     # Append the new section and reference it from [BaseInstall]'s AddReg list.
     cat >> "$WINE_INF" <<'INFEOF'
@@ -308,7 +315,7 @@ INFEOF
 fi
 
 # Create wine64 symlink for Whisky compatibility
-cd "$INSTALL_DIR/Wine/bin"
+cd "$WINE_STAGE/bin"
 [ ! -f wine64 ] && ln -s wine wine64
 
 # Write version plist, from the tree's VERSION file rather than from the binary.
@@ -319,7 +326,7 @@ cd "$INSTALL_DIR/Wine/bin"
 # and is what the tree is. Fall back to the binary if it is ever missing.
 WINE_VER=$(sed -n 's/^Wine version //p' "$WINE_SRC/VERSION" 2>/dev/null)
 [ -n "$WINE_VER" ] ||
-    WINE_VER=$("$INSTALL_DIR/Wine/bin/wine64" --version 2>&1 | sed 's/^wine-//; s/-.*$//')
+    WINE_VER=$("$WINE_STAGE/bin/wine64" --version 2>&1 | sed 's/^wine-//; s/-.*$//')
 MAJOR=$(echo "$WINE_VER" | cut -d. -f1)
 MINOR=$(echo "$WINE_VER" | cut -d. -f2)
 PATCH=$(echo "$WINE_VER" | cut -d. -f3)
@@ -330,7 +337,7 @@ PATCH=${PATCH:-0}
 # digest into Info.plist.
 PATCH_DIGEST=$(cat "$PROJECT_DIR"/patches/proton-wine/*.patch 2>/dev/null | shasum -a 256 | cut -c1-16)
 
-cat > "$INSTALL_DIR/WhiskyWineVersion.plist" << PLISTEOF
+cat > "$VERSION_STAGE" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -354,7 +361,12 @@ cat > "$INSTALL_DIR/WhiskyWineVersion.plist" << PLISTEOF
 </plist>
 PLISTEOF
 
-rm -rf "$TMPINSTALL"
+ # Replace only after the complete Wine tree and its metadata have been assembled.
+rm -rf "$INSTALL_DIR/Wine"
+mv "$WINE_STAGE" "$INSTALL_DIR/Wine"
+WINE_STAGE=""
+mv "$VERSION_STAGE" "$INSTALL_DIR/WhiskyWineVersion.plist"
+INSTALL_COMMITTED=1
 
 echo "=== Done! ==="
 echo "Wine version: $WINE_VER"
