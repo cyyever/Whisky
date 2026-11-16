@@ -1,4 +1,5 @@
 /* Exercise real WGL calls and check progress after a driver exception.
+ * --visible also exercises DPI-scaled drawables (use a 192 DPI prefix).
  * Default mode uses valid inputs. --fault passes a PAGE_NOACCESS attribute
  * list to wglCreateContextAttribsARB to test lock cleanup after SEH recovery.
  * This invalid-pointer probe models exception recovery, not the unknown Steam
@@ -62,6 +63,11 @@ int main(int argc, char **argv)
     window = CreateWindowA(wc.lpszClassName, "WGL lock test", WS_OVERLAPPEDWINDOW,
                            0, 0, 64, 64, NULL, NULL, wc.hInstance, NULL);
     if (!window || !(dc = GetDC(window))) return 2;
+    if (argc == 2 && !strcmp(argv[1], "--visible"))
+    {
+        ShowWindow(window, SW_SHOW);
+        UpdateWindow(window);
+    }
     pfd.nSize = sizeof(pfd);
     pfd.nVersion = 1;
     pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;

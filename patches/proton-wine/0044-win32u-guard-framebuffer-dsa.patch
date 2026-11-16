@@ -1,0 +1,32 @@
+Subject: win32u: require DSA entry points before enabling framebuffer surfaces
+
+DPI scaling can select the framebuffer surface on macOS, whose OpenGL
+driver lacks the required DSA functions. The resulting null call escapes
+wglMakeCurrent with the global lock held. Keep native drawables when the
+required entry points are unavailable.
+
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -3386,6 +3386,22 @@
+     USE_GL_FUNC(glViewportIndexedfv)
+ #undef USE_GL_FUNC
+ 
++    /* The framebuffer surface uses direct-state-access entry points. Drivers
++     * such as macOS OpenGL can create native drawables without providing them. */
++    if (fshack_enabled && (!display_funcs.p_glCreateFramebuffers ||
++        !display_funcs.p_glCreateRenderbuffers ||
++        !display_funcs.p_glNamedRenderbufferStorageMultisample ||
++        !display_funcs.p_glNamedFramebufferRenderbuffer ||
++        !display_funcs.p_glNamedFramebufferTexture ||
++        !display_funcs.p_glNamedFramebufferDrawBuffer ||
++        !display_funcs.p_glNamedFramebufferReadBuffer ||
++        !display_funcs.p_glGetNamedFramebufferAttachmentParameteriv ||
++        !display_funcs.p_glCheckNamedFramebufferStatus))
++    {
++        WARN( "Disabling framebuffer surfaces: required OpenGL DSA entry points are unavailable.\n" );
++        fshack_enabled = FALSE;
++    }
++
+     display_funcs.p_wglGetProcAddress = win32u_wglGetProcAddress;
+     display_funcs.p_get_pixel_formats = win32u_get_pixel_formats;
+ 
