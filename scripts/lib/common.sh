@@ -177,14 +177,8 @@ apply_patches() {
 #   * PATH gains Wine/bin so wine64/wineserver are directly on PATH;
 #   * WINEPREFIX points at the bottle;
 #   * DYLD_FALLBACK_LIBRARY_PATH points at Wine/lib (dylib resolution);
-#   * WINEMSYNC mirrors the bottle's enhancedSync, exactly as
-#     BottleSettings.environmentVariables does: "0" for .none, nothing for
-#     .msync (msync is proton-wine's default, so there is nothing to set).
-#     Emitted as ${WINEMSYNC:-0} so the msync A/B scripts, which export it
-#     before the eval, still win. Leaving it out entirely was the earlier
-#     design and it is a trap: the client then defaults to msync-on against a
-#     wineserver started with it off, and every wine invocation dies in
-#     msync_init before main() -- which looks like "the tool printed nothing".
+#   * WINEMSYNC is 1 for an explicit msync selection, otherwise 0.
+#     An existing WINEMSYNC override takes precedence for diagnostic runs.
 # Deliberately does NOT emit WINEDLLOVERRIDES (the app no longer sets it — patch
 # 0017's builtin load order handles D3D/Vulkan).
 bottle_shellenv() {
@@ -198,7 +192,9 @@ bottle_shellenv() {
     printf 'export WINEPREFIX=%q\n' "$bottle_dir"
     printf 'export DYLD_FALLBACK_LIBRARY_PATH=%q\n' "$wine_dir/lib"
     if plutil -p "$bottle_dir/Metadata.plist" 2>/dev/null |
-            grep -A2 '"enhancedSync"' | grep -q '"none"'; then
+            grep -A2 '"enhancedSync"' | grep -q '"msync"'; then
+        printf 'export WINEMSYNC=${WINEMSYNC:-1}\n'
+    else
         printf 'export WINEMSYNC=${WINEMSYNC:-0}\n'
     fi
 }

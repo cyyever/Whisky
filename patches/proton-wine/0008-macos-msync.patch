@@ -39,7 +39,7 @@ lost-wake fix that lets Steam log in with WINEMSYNC=1:
     (Auto-reset events on msync still have a consume-race spin -- run them on
     server-sync with WINEMSYNC_NO_AUTOEVENT=1; everything else stays on msync.)
 
-do_msync() respects WINEMSYNC (default on). Builds x86_64 under Rosetta.
+do_msync() respects WINEMSYNC (default off). Builds x86_64 under Rosetta.
 
 This patch is self-contained: it also ships the generated protocol files
 (include/wine/server_protocol.h, server/request_handlers.h,
@@ -1984,13 +1984,13 @@ index 0000000..0dcd8aa
 +int do_msync(void)
 +{
 +#ifdef __APPLE__
-+    /* msync (__ulock) is the default fast-sync on macOS; the wineserver fallback
-+     * is slower/less reliable, so default on. WINEMSYNC=0 forces it off (debug). */
++    /* Use server synchronization by default while investigating Steam hangs.
++     * WINEMSYNC=1 explicitly enables msync for comparison. */
 +    static int cached = -1;
 +    if (cached == -1)
 +    {
 +        const char *env = getenv( "WINEMSYNC" );
-+        cached = env ? atoi( env ) : 1;
++        cached = env ? atoi( env ) : 0;
 +    }
 +    return cached;
 +#else
@@ -5214,13 +5214,13 @@ index 0000000..e63c6e3
 +int do_msync(void)
 +{
 +#ifdef __APPLE__
-+    /* Default on to match the client-side do_msync (dlls/ntdll/unix/msync_shm.c);
-+     * WINEMSYNC=0 forces the (unreliable) server fallback for debugging. */
++    /* Default off to match the client-side do_msync (dlls/ntdll/unix/msync_shm.c);
++     * WINEMSYNC=1 explicitly enables msync for comparison. */
 +    static int cached = -1;
 +    if (cached == -1)
 +    {
 +        const char *env = getenv( "WINEMSYNC" );
-+        cached = env ? atoi( env ) : 1;
++        cached = env ? atoi( env ) : 0;
 +    }
 +    return cached;
 +#else

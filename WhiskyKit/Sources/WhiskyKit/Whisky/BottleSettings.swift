@@ -102,7 +102,7 @@ public struct BottleWineConfig: Codable, Equatable {
     static let defaultWineVersion = SemanticVersion(11, 11, 0)
     var wineVersion: SemanticVersion = Self.defaultWineVersion
     var windowsVersion: WinVersion = .win11
-    var enhancedSync: EnhancedSync = .msync
+    var enhancedSync: EnhancedSync = .none
     var followSystemProxy: Bool = true
 
     public init() {}
@@ -114,11 +114,9 @@ public struct BottleWineConfig: Codable, Equatable {
         // Keep the stored version until runProgram updates Wine's registry.
         // Changing metadata alone would leave it out of sync with the prefix.
         self.windowsVersion = container.decodeResilient(WinVersion.self, forKey: .windowsVersion, default: .win11)
-        // esync can't exist on macOS (no eventfd); an old `.esync` selection meant
-        // "fast-sync wanted", so migrate it to msync — the working macOS backend.
-        // Keeps the Picker (which only offers none/msync) able to represent every bottle.
-        let sync = container.decodeResilient(EnhancedSync.self, forKey: .enhancedSync, default: .msync)
-        self.enhancedSync = sync == .esync ? .msync : sync
+        // Legacy esync is unavailable on macOS; use server synchronization.
+        let sync = container.decodeResilient(EnhancedSync.self, forKey: .enhancedSync, default: .none)
+        self.enhancedSync = sync == .esync ? .none : sync
         self.followSystemProxy = container.decodeResilient(Bool.self, forKey: .followSystemProxy, default: true)
     }
 }
@@ -255,18 +253,10 @@ public struct BottleSettings: Codable, Equatable {
         // and that is what 0017 is for.
 
         switch enhancedSync {
-        case .none:
-            // msync (mach/__ulock fast-sync) is proton-wine's default on macOS —
-            // `do_msync()` treats an unset WINEMSYNC as enabled. So *disabling* it is
-            // the only thing an env can do here: WINEMSYNC=0 forces the (slower)
-            // wineserver fallback.
+        case .none, .esync:
             wineEnv.updateValue("0", forKey: "WINEMSYNC")
-        case .esync, .msync:
-            // Nothing to set: msync is already the default. WINEMSYNC=1 would be
-            // redundant, so we leave the env untouched and let the default stand.
-            // (`.esync` is decode-migrated to `.msync` — no eventfd on macOS; and
-            // WINEESYNC is dead on this stack, so we never touch it either.)
-            break
+        case .msync:
+            wineEnv.updateValue("1", forKey: "WINEMSYNC")
         }
 
         if dxrEnabled {
