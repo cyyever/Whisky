@@ -1,0 +1,14 @@
+Subject: configure: do not build Wine's d3dcompiler_47 DLL
+
+Steam ships its own D3DCompiler_47.dll in the CEF directory. Do not build
+Wine's builtin copy so the Steam-provided implementation is used instead.
+
+diff --git a/configure.ac b/configure.ac
+--- a/configure.ac
++++ b/configure.ac
+@@ -2660,5 +2660,3 @@
+ WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_46)
+ WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_46/tests)
+-WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_47)
+-WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_47/tests)
+ WINE_CONFIG_MAKEFILE(dlls/d3dim)
