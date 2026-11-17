@@ -1,40 +1,9 @@
 Subject: kernelbase: append --no-sandbox --in-process-gpu to steamwebhelper.exe
 
-Steam's CEF host steamwebhelper.exe crashes under Wine on macOS without two
-Chromium flags:
-
-  - --no-sandbox: CEF's sandbox hooks the NT kernel and, under Wine's
-    incomplete sandbox emulation, deadlocks its own cross-thread IPC
-    (src/common/pipes.cpp "Stalled cross-thread pipe" -> Fatal assert ->
-    _ExitOnFatalAssert; the host exits).
-
-  - --in-process-gpu: the out-of-process GPU process cannot create an
-    ANGLE/D3D11 window surface on the browser window, so the UI never paints:
-
-        SwapChain11.cpp:636 rx::SwapChain11::reset: Could not create additional
-          swap chains or offscreen surfaces, HRESULT: 0x80004005
-        EGL Driver message (Critical) eglCreateWindowSurface: Bad allocation.
-        eglCreateWindowSurface failed with error EGL_BAD_ALLOC
-
-Keep both flags: the out-of-process surface failure was observed independently
-of the retired Metal-view shim. Removing that shim does not establish that
-CEF can create cross-process surfaces through winevulkan.
-
-CEF also needs a shared GLES3 context. Before Mullion integration, DXVK's D3D11
-supplied feature level 11_1 on KosmicKrisp; Wine's wined3d path on this host
-fell back to FL_9_3, causing a GLES2 SharedImageStub retry loop. Mullion is now
-the default D3D11 provider; validate Steam's CEF surface path with it separately.
-
-Whisky previously injected the flags via an IFEO "Debugger" wrapper around
-steamwebhelper.exe (steamwebhelper_wrapper.exe + a steamwebhelper_real.exe copy
-+ a per-bottle registry value, on top of patch 0010's IFEO-debugger support).
-That is a lot of machinery for two flags. Wine already has a
-hack_append_command_line() table that appends flags per-exe (Warhammer2.exe and
-SummerIslands.exe already get --in-process-gpu there), so this adds a
-steamwebhelper.exe entry instead. The substring match catches every
-steamwebhelper.exe launch (browser + renderer/gpu/utility children), matching
-the prior wrapper's behavior, and lets us delete the wrapper binary, the _real
-copy, the IFEO registry setup, and the Steam.swift plumbing for it.
+Keep Steam CEF GPU initialization in the browser process to work around
+previous cross-process ANGLE surface creation failures on macOS.
+Disable the CEF sandbox for compatibility with Wine.
+The compatibility entry applies to all steamwebhelper.exe launches.
 
 diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
 index fe337dc..4f7bf30 100644
