@@ -37,5 +37,9 @@ mullion_llvm_prefix() {
         echo "       Install the x86_64 LLVM 23 build and set WHISKY_MULLION_LLVM to its prefix." >&2
         return 1
     fi
+    if [ "$("$candidate/bin/llvm-config" --assertion-mode)" != ON ]; then
+        echo "ERROR: Mullion needs LLVM assertions enabled; rebuild with 'make llvm-x86'." >&2
+        return 1
+    fi
     printf '%s\n' "$candidate"
 }

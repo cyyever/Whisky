@@ -36,6 +36,7 @@ CCACHE_DISABLE=1 cmake \
     -DLLVM_DEFAULT_TARGET_TRIPLE=x86_64-apple-darwin \
     -DLLVM_TARGETS_TO_BUILD=X86 \
     -DLLVM_ENABLE_PROJECTS= \
+    -DLLVM_ENABLE_ASSERTIONS=ON \
     -DLLVM_ENABLE_RTTI=OFF \
     -DLLVM_ENABLE_ZLIB=OFF \
     -DLLVM_ENABLE_ZSTD=OFF \
@@ -58,11 +59,15 @@ CCACHE_DISABLE=1 ninja -C "$LLVM_BUILD" -j "$NCPU" \
 
 actual_version=$("$LLVM_PREFIX/bin/llvm-config" --version)
 actual_target=$("$LLVM_PREFIX/bin/llvm-config" --host-target)
+assertion_mode=$("$LLVM_PREFIX/bin/llvm-config" --assertion-mode)
 [ "$actual_version" = "$LLVM_VERSION" ] || {
     echo "ERROR: expected LLVM $LLVM_VERSION, got $actual_version." >&2; exit 1;
 }
 [[ "$actual_target" == x86_64-* ]] || {
     echo "ERROR: expected x86_64 LLVM, got $actual_target." >&2; exit 1;
+}
+[ "$assertion_mode" = ON ] || {
+    echo "ERROR: LLVM assertions must be enabled, got $assertion_mode." >&2; exit 1;
 }
 lipo -archs "$LLVM_PREFIX/lib/libLLVMCore.a" | grep -qw x86_64 || {
     echo "ERROR: libLLVMCore.a does not contain x86_64 code." >&2; exit 1;
