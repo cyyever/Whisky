@@ -18,4 +18,4 @@
 [submodule "vendor/mullion"]
 	path = vendor/mullion
 	url = https://github.com/cyyever/mullion.git
-	branch = feature/llvm23-default
+	branch = main
