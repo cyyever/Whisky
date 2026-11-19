@@ -318,6 +318,8 @@ fi
 cd "$WINE_STAGE/bin"
 [ ! -f wine64 ] && ln -s wine wine64
 
+"$PROJECT_DIR/scripts/sign-wine.sh" "$WINE_STAGE"
+
 # Write version plist, from the tree's VERSION file rather than from the binary.
 # `wine --version` is git-describe output against whatever tags the clone has,
 # and ours is deepened rather than complete: the nearest wine-* tag it can see is
