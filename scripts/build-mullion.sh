@@ -21,20 +21,26 @@ WINE_LIB="$INSTALL_DIR/Wine/lib/wine"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 MESON_OPTIONS=(
     --cross-file "$MULLION_DIR/build-win64.txt"
+    --native-file "$MULLION_DIR/build-native-llvm23.txt"
     --prefix "$MULLION_STAGE"
     --buildtype release
     -Dnative_llvm_path="$LLVM_PREFIX"
     -Dwine_build_path="$WINE_BUILD"
     -Dwine_builtin_dll=true
     -Dbuild_airconv_for_windows=false
+    -Dcpp_link_args=-lstdc++exp
     -Denable_d3d12=true
 )
 
-if [ -d "$MULLION_BUILD" ]; then
-    (cd "$MULLION_DIR" && meson setup --reconfigure "${MESON_OPTIONS[@]}" "$MULLION_BUILD")
-else
-    (cd "$MULLION_DIR" && meson setup "${MESON_OPTIONS[@]}" "$MULLION_BUILD")
+if [ -f "$MULLION_BUILD/meson-private/coredata.dat" ]; then
+    # Meson caches compiler selection. Recreate old Apple Clang configurations once.
+    if grep -Fq "$MULLION_DIR/build-native-llvm23.txt" "$MULLION_BUILD/meson-private/cmd_line.txt"; then
+        MESON_OPTIONS+=(--reconfigure)
+    else
+        MESON_OPTIONS+=(--wipe)
+    fi
 fi
+(cd "$MULLION_DIR" && meson setup "${MESON_OPTIONS[@]}" "$MULLION_BUILD")
 
 NCPU=$(whisky_ncpu)
 echo "=== Building Mullion for x86_64 Wine with $NCPU jobs ==="
