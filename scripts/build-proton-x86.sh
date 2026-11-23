@@ -8,28 +8,16 @@ mullion_llvm_prefix >/dev/null  # catch a missing/wrong-architecture LLVM before
 whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 WINE_SRC="$PROJECT_DIR/vendor/proton-wine"
 BUILD_DIR="$WINE_SRC/build"
-# release (default) strips PE debug info at install time; debug keeps it for
-# winedbg (`make proton-debug`). Compilation always carries -g, so switching
-# modes never invalidates the build tree or ccache — only the install differs.
+# Release strips PE debug info at install time. make proton-debug keeps it for winedbg.
 WINE_BUILD="${WHISKY_WINE_BUILD:-release}"
 
 echo "=== Building Proton (proton-wine) x86_64 from $WINE_SRC ==="
 
-# Apply the Proton macOS patch series (patches/proton-wine/, base e8ca5806eec on Valve's
-# bleeding-edge — the only branch Valve still pushes to; proton_11.0 and
-# experimental_11.0 are both older). On a fresh machine vendor/proton-wine is laid
-# down from https://codeload.github.com/ValveSoftware/wine/tar.gz/<base> and
-# committed once as a local git tree, so the reset below has something to reset
-# to. Keep this hash in step with every rebase of the series. The reset arg
-# cleans the source first (`git checkout -- .` + `git clean -fdq`), so add-file patches
-# (msync_*.c, server/msync.c, …) re-apply cleanly on a forced rebuild. `git clean -fdq`
-# removes untracked NON-ignored files — patch leftovers, the generated inputs, and stray
-# dist/.cache — but KEEPS gitignored paths: build/ (intentional — incremental compiles)
-# and configure. NOTE: also discards uncommitted proton-wine edits (e.g. local msync
-# diagnostics) — commit them or capture as a patch to survive a rebuild.
+# ValveSoftware/wine bleeding-edge base: a47c73f52fd7b2efafc1c560710f3a5099ae51e0.
+# Bootstrap vendor/proton-wine from https://codeload.github.com/ValveSoftware/wine/tar.gz/<base>.
+# Commit the extracted source before applying patches. Reset mode discards local source edits and keeps build/.
 apply_patches "$WINE_SRC" "$PROJECT_DIR/patches/proton-wine" Wine reset
 
-# Wine's generator bootstrap needs autotools + python3 + perl (Wine's own generators).
 for t in autoreconf python3 perl; do
     command -v "$t" >/dev/null 2>&1 || {
         echo "ERROR: $t not found (brew install autoconf; python3/perl ship with macOS/brew)" >&2
@@ -37,12 +25,7 @@ for t in autoreconf python3 perl; do
     }
 done
 
-# Regenerate Wine's generated build inputs. The clean removed the non-ignored ones
-# (include/config.h.in, include/wine/vulkan.h, server_protocol.h, syscall headers);
-# configure is gitignored so the clean KEPT it — remove it too so autoreconf regenerates
-# it fresh from the current configure.ac. All generators are offline (vk.xml is vendored).
-# These are build artifacts, deliberately kept OUT of git (committing them caused the past
-# base-drift). build/ (also gitignored) is intentionally preserved for incremental builds.
+# Regenerate protocol, Vulkan and configure inputs from the patched sources.
 echo "=== Regenerating Wine build inputs (generator bootstrap) ==="
 rm -f "$WINE_SRC/configure"
 ( cd "$WINE_SRC" && \
@@ -56,25 +39,15 @@ if [ ! -f "$X86_DEPS/.built" ]; then
     exit 1
 fi
 
-# Build tools (bison, the mingw-w64 cross-compiler, pkg-config) come from the ARM64
-# brew — they are arch-independent / target PE, so no x86_64 copies are needed. Only
-# the libraries linked into x86_64 Wine (freetype, gnutls, SDL2, the Vulkan loader)
-# must be x86_64; build-x86-deps.sh cross-builds those into X86_DEPS, and
-# wine_configure finds them via PKG_CONFIG_PATH.
+# Use native build tools and the x86_64 libraries staged by build-x86-deps.sh.
 ARM_BREW_PREFIX="$(brew --prefix)"
 
-# The reset above KEEPS the gitignored build/ tree, so configure+make below are
-# incremental (ccache further speeds recompiles). `make clean-proton` (rm -rf build/)
-# for a true from-scratch build tree.
+# Keep the build tree for incremental builds. make clean-proton removes it.
 mkdir -p "$BUILD_DIR"
 
 # CLEAN_PATH is also needed for the make step below (env -i wipes PATH).
 CLEAN_PATH="$(wine_clean_path)"
 
-# The env/toolchain + shared configure flags live in wine_configure (lib/common.sh),
-# byte-for-byte identical to build-msync-tests.sh; --disable-tests is the only extra.
-# ccache is on by default; WHISKY_CCACHE=0 disables it (release/reproducible builds
-# or to rule out a stale-object bug) — see whisky_ccache_on in lib/common.sh.
 echo "=== Configuring Wine (x86_64) ==="
 # Drop Wine's generic USB passthrough and camera-capture backends. Xbox and
 # other SDL controllers stay enabled through winebus.sys; they do not use
@@ -103,15 +76,10 @@ cleanup_install() {
 trap cleanup_install EXIT
 arch -x86_64 make install DESTDIR="$TMPINSTALL"
 
-# Find where make install put files
 WINE_INSTALL_BIN=$(find "$TMPINSTALL" -name "wine" -type f | head -1)
 WINE_INSTALL_ROOT=$(dirname "$(dirname "$WINE_INSTALL_BIN")")
 
-# --- Trim the install --------------------------------------------------------
-# winegcc import libs (.a, ~97 MB) and man pages are dev-only. PE debug
-# sections are ~2/3 of lib/wine and only useful to winedbg — stripped in
-# release installs, kept by `make proton-debug`. (.tlb/.msstyles are data, not
-# PE — excluded.)
+# Trim development files and strip PE debug sections in release builds.
 find "$WINE_INSTALL_ROOT/lib/wine" -name '*.a' -delete
 rm -rf "$WINE_INSTALL_ROOT/share/man"
 if [ "$WINE_BUILD" = "release" ]; then
@@ -131,17 +99,8 @@ cp -R "$WINE_INSTALL_ROOT/bin" "$WINE_STAGE/"
 cp -R "$WINE_INSTALL_ROOT/lib" "$WINE_STAGE/"
 cp -R "$WINE_INSTALL_ROOT/share" "$WINE_STAGE/"
 
-# --- DXVK (D3D9/D3D8) restore over wined3d ----------------------------------
-# build-dxvk.sh installs DXVK as the builtin d3d9/d3d8
-# (patch 0017 defaults them to builtin, so no bottle needs a WINEDLLOVERRIDES),
-# and the cp -R of lib/ above just wrote wined3d's copies back over them.
-# Without this every `make proton` silently drops D3D8/9 back to wined3d; D3D9
-# paints a black window and burns a core in a SIGSEGV loop. Skipped when the
-# DXVK build trees are absent (run `make dxvk`).
-#
-# The builtin signature is re-stamped rather than copied: build-dxvk.sh applies
-# it to the INSTALLED file, so the build tree's copy does not carry it, and
-# without it wineboot never mirrors the DLL into a bottle's system32.
+# Restore DXVK's D3D8/9 DLLs after Wine installs its builtins. Stamp each installed DLL
+# so wineboot can mirror it into a bottle.
 DXVK_SRC_DIR="$PROJECT_DIR/vendor/dxvk"
 if [ -f "$DXVK_SRC_DIR/build.w64/src/d3d9/d3d9.dll" ]; then
     echo "=== Restoring DXVK builtins over wined3d (proton install clobbered them) ==="
@@ -158,9 +117,7 @@ if [ -f "$DXVK_SRC_DIR/build.w64/src/d3d9/d3d9.dll" ]; then
     echo "DXVK restored: d3d9/d3d8 (x86_64 + i386)"
 fi
 
-# --- Mullion restore over Wine's own Direct3D builtins -----------------------
-# Mullion builds against this Wine tree. Restore the already-built release after
-# Wine's make install so subsequent Proton rebuilds preserve the selected backend.
+# Restore the Mullion builtins after Wine installs its Direct3D DLLs.
 MULLION_STAGE="$PROJECT_DIR/vendor/mullion-install-x86_64"
 if [ -d "$MULLION_STAGE/x86_64-windows" ] && [ -d "$MULLION_STAGE/x86_64-unix" ]; then
     echo "=== Restoring Mullion builtins over Wine's Direct3D implementation ==="
@@ -170,62 +127,32 @@ if [ -d "$MULLION_STAGE/x86_64-windows" ] && [ -d "$MULLION_STAGE/x86_64-unix" ]
     cp "$MULLION_STAGE/x86_64-unix/winemetal.so" "$WINE_STAGE/lib/wine/x86_64-unix/"
 fi
 
-# Bundle x86 dylibs so Wine finds them at runtime. cp -R (implies -P on BSD)
-# preserves the libfoo.dylib -> libfoo.N.dylib -> libfoo.N.x.y.dylib symlink
-# chains — plain cp used to materialize each as a full copy (3x libavcodec
-# alone wasted ~28 MB).
+# Preserve versioned dylib symlinks when bundling runtime dependencies.
 echo "=== Bundling runtime dylibs ==="
-# The x86_64 libraries from build-x86-deps.sh. Their symlinks are all leaf-name
-# version chains within lib/, so cp -R keeps them intact; the install names that
-# still point into vendor/x86-deps are rewritten by the relocation loop below.
 cp -R "$X86_DEPS/lib/"*.dylib "$WINE_STAGE/lib/"
 # Minimal x86_64 FFmpeg for winedmo (built by build-ffmpeg-x86.sh)
 cp -Rn "$PROJECT_DIR/vendor/ffmpeg-x86/lib/"*.dylib "$WINE_STAGE/lib/" 2>/dev/null || true
 
-# GStreamer for winegstreamer (built by build-gstreamer-x86.sh): the libraries,
-# the glib the wrap built beside them, and the plugin directory. Without this the
-# Libraries tree only works on the machine that built it -- winegstreamer.so and
-# GStreamer's compiled-in plugin path both point into vendor/gstreamer-x86, so a
-# tarball install or a cleaned build tree leaves wmvcore unable to create a sync
-# reader again. GST_PLUGIN_PATH is set alongside, because the compiled-in path is
-# the build tree's, not this one.
-# The absent prefix is fatal, not a skipped optional feature: Wine is configured
-# --with-gstreamer unconditionally. Delete
-# vendor/gstreamer-x86 while build/ is up to date and make relinks nothing,
-# `make install` succeeds, this block would silently not run, and the installed
-# winegstreamer.so points at a prefix that no longer exists -- with no message
-# anywhere until a game plays a WMV and hangs.
+# Bundle GStreamer's libraries, plugins and scanner together. Wine requires GStreamer,
+# and the installed runtime must resolve these files after the build tree is removed.
 GST_PREFIX="$PROJECT_DIR/vendor/gstreamer-x86"
 if [ -d "$GST_PREFIX/lib" ]; then
     echo "=== Bundling GStreamer (winegstreamer's backend) ==="
     cp -R "$GST_PREFIX/lib/"*.dylib "$WINE_STAGE/lib/" 2>/dev/null || true
     rm -rf "$WINE_STAGE/lib/gstreamer-1.0"
     cp -R "$GST_PREFIX/lib/gstreamer-1.0" "$WINE_STAGE/lib/" 2>/dev/null || true
-    # The plugin scanner: GStreamer registers plugins by running this helper, and
-    # without it the in-process fallback silently drops libav -- no WMV decoder.
+    # The scanner registers the libav plugin used for WMV decoding.
     mkdir -p "$WINE_STAGE/libexec/gstreamer-1.0"
     cp "$GST_PREFIX/libexec/gstreamer-1.0/gst-plugin-scanner" \
        "$WINE_STAGE/libexec/gstreamer-1.0/" 2>/dev/null || true
 
-    # Same absolute-path problem as the unix modules below, and the same fix: the
-    # plugins and the scanner were linked against vendor/gstreamer-x86 by
-    # pkg-config, so they resolve only on the machine that built them.
-    # One rpath per location, pointing at Wine/lib where every dependency is --
-    # not a handful of guesses, which only differ in how far up they climb.
-    # Every dylib in lib/, not just libgst*: the GStreamer prefix also holds the
-    # glib the wrap built (glib, gobject, gio, gmodule, ffi), and leaving those
-    # pointing at the build tree pulled the whole build-tree branch back in --
-    # two libgstreamers again, by a different route than the install names.
+    # Relocate plugins, the scanner and all bundled libraries, including GLib, against Wine/lib.
     for f in "$WINE_STAGE/lib/gstreamer-1.0/"*.dylib \
              "$WINE_STAGE/lib/"*.dylib \
              "$WINE_STAGE/libexec/gstreamer-1.0/gst-plugin-scanner"; do
         [ -f "$f" ] || continue
-        # Symlinks: install_name_tool follows them and rewrites the target, so a
-        # versioned pair gets patched twice and the ID ends up under the link's
-        # name while dependents record the real one.
+        # Patch real files once. install_name_tool follows symlinks.
         [ -L "$f" ] && continue
-        # Only what came from a bundled build-tree prefix (see bundled_prefixes).
-        # Not `grep "$PROJECT_DIR/"`: that is too wide (see bundled_prefixes).
         has_bundled_ref "$f" || continue
         case "$f" in
         */lib/gstreamer-1.0/*)     rp='@loader_path/..' ;;
@@ -237,10 +164,6 @@ if [ -d "$GST_PREFIX/lib" ]; then
     done
 
     n=$(ls "$WINE_STAGE/lib/gstreamer-1.0/"*.dylib 2>/dev/null | wc -l | tr -d ' ')
-    # Fatal, not a word inside an echo. GStreamer registers plugins by running
-    # this helper; without it the in-process fallback drops libav, and the only
-    # symptom is a WMV that finds no decoder and stalls at runtime. Reporting
-    # "scanner MISSING" and exiting 0 hides a broken install behind a green build.
     if [ ! -x "$WINE_STAGE/libexec/gstreamer-1.0/gst-plugin-scanner" ]; then
         echo "ERROR: gst-plugin-scanner missing from the install; plugins will not register" >&2
         exit 1
@@ -251,13 +174,7 @@ else
     exit 1
 fi
 
-# --- KosmicKrisp Vulkan driver (Mesa) loader swap ----------------------------
-# winevulkan dlopens the Vulkan implementation by leaf name: historically
-# "libMoltenVK.dylib", but a Wine configured against a Vulkan loader uses
-# "libvulkan.1.dylib" instead. Install the Khronos loader (build-x86-deps.sh)
-# at BOTH names so ICD discovery picks KosmicKrisp up either way. There is no
-# MoltenVK fallback any more: KosmicKrisp is the Vulkan driver, and without
-# its artifacts Wine has no Vulkan at all.
+# Install the Khronos loader under both names that winevulkan can request so either resolves KosmicKrisp.
 KK_DYLIB="$PROJECT_DIR/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib"
 if [ -f "$KK_DYLIB" ]; then
     echo "=== Asserting KosmicKrisp Vulkan loader swap ==="
@@ -320,12 +237,7 @@ cd "$WINE_STAGE/bin"
 
 "$PROJECT_DIR/scripts/sign-wine.sh" "$WINE_STAGE"
 
-# Write version plist, from the tree's VERSION file rather than from the binary.
-# `wine --version` is git-describe output against whatever tags the clone has,
-# and ours is deepened rather than complete: the nearest wine-* tag it can see is
-# wine-8.0, so the binary calls itself "wine-8.0-21162-g0509a0b64a4" and the
-# plist claimed major 8 for a Wine 11.0 build. VERSION says "Wine version 11.0"
-# and is what the tree is. Fall back to the binary if it is ever missing.
+# Use VERSION for the plist. Shallow or tarball-based checkouts may lack the matching Wine tags.
 WINE_VER=$(sed -n 's/^Wine version //p' "$WINE_SRC/VERSION" 2>/dev/null)
 [ -n "$WINE_VER" ] ||
     WINE_VER=$("$WINE_STAGE/bin/wine64" --version 2>&1 | sed 's/^wine-//; s/-.*$//')
@@ -334,9 +246,7 @@ MINOR=$(echo "$WINE_VER" | cut -d. -f2)
 PATCH=$(echo "$WINE_VER" | cut -d. -f3)
 PATCH=${PATCH:-0}
 
-# Which patch series this Wine carries. MAJOR.MINOR.PATCH stays 11.0.0 however
-# much the series changes, so it cannot answer that. `make app` stamps the same
-# digest into Info.plist.
+# Record the same patch digest as the app so a bottle can identify its Wine build.
 PATCH_DIGEST=$(cat "$PROJECT_DIR"/patches/proton-wine/*.patch 2>/dev/null | shasum -a 256 | cut -c1-16)
 
 cat > "$VERSION_STAGE" << PLISTEOF
