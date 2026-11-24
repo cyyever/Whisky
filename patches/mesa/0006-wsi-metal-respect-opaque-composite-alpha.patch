@@ -1,0 +1,30 @@
+Subject: [PATCH] wsi/metal: respect VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR on CAMetalLayer
+
+Upstream Mesa forced CAMetalLayer.opaque = NO for non-software drivers
+(KosmicKrisp) to work around a Metal 4 presentation bug. Leaving the
+layer non-opaque prevents macOS Direct-to-Display scanout and forces
+WindowServer to alpha-composite every frame (observed at 40-80% CPU).
+
+Honor the swapchain's opaque_composition flag so fullscreen opaque
+swapchains can use Direct-to-Display on macOS 26+.
+
+--- a/src/vulkan/wsi/wsi_common_metal.c
++++ b/src/vulkan/wsi/wsi_common_metal.c
+@@ -893,13 +893,11 @@
+    const bool immediate_mode =
+       pCreateInfo->presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR;
+ 
+-   /* Non-software implementations need to work around a Metal bug
+-    * when presenting through Metal4. This is accomplished through
+-    * setting the layer's opaque value to false. And since we will
+-    * be blitting to the drawable, which means rendering, we can
+-    * set the framebuffer only usage.
++   /* Honor the requested composite alpha so opaque fullscreen swapchains
++    * can use macOS Direct-to-Display instead of forcing WindowServer to
++    * alpha-composite every frame.
+     */
+-   const bool layer_opaque = opaque_composition && wsi_device->sw;
++   const bool layer_opaque = opaque_composition;
+    const bool framebuffer_only = !wsi_device->sw;
+ 
+    VkResult result = wsi_metal_layer_configure(metal_surface->pLayer,

@@ -281,6 +281,17 @@ static void *render_thread(void *arg)
     sc.clipped = VK_TRUE;
     VkSwapchainKHR swap; VK(vkCreateSwapchainKHR(dev, &sc, NULL, &swap));
 
+    /* Verify Direct-to-Display prerequisites on the CAMetalLayer so
+     * WindowServer is not forced into per-frame alpha compositing. */
+    if (!layer.opaque || !layer.framebufferOnly || layer.presentsWithTransaction || !layer.displaySyncEnabled) {
+        fprintf(stderr,
+                "FAIL  CAMetalLayer properties break Direct-to-Display: "
+                "opaque=%d framebufferOnly=%d presentsWithTransaction=%d displaySyncEnabled=%d\n",
+                (int)layer.opaque, (int)layer.framebufferOnly,
+                (int)layer.presentsWithTransaction, (int)layer.displaySyncEnabled);
+        exit(1);
+    }
+
     uint32_t imgn = 0;
     VK(vkGetSwapchainImagesKHR(dev, swap, &imgn, NULL));
     VkImage *imgs = calloc(imgn, sizeof(*imgs));
