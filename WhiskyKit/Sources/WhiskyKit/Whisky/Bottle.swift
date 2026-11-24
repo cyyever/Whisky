@@ -33,8 +33,15 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
     @Published public var launchingPrograms: Set<URL> = []
     @Published public var launchingStatus: String?
 
+    @MainActor public func isLaunching(_ programURL: URL) -> Bool {
+        let target = programURL.standardizedFileURL.path(percentEncoded: false)
+        return launchingPrograms.contains {
+            $0.standardizedFileURL.path(percentEncoded: false) == target
+        }
+    }
+
     @MainActor public func beginLaunching(_ programURL: URL, status: String) {
-        launchingPrograms.insert(programURL)
+        launchingPrograms.insert(programURL.standardizedFileURL)
         launchingStatus = status
     }
 
@@ -45,7 +52,10 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
     }
 
     @MainActor public func endLaunching(_ programURL: URL) {
-        launchingPrograms.remove(programURL)
+        let target = programURL.standardizedFileURL.path(percentEncoded: false)
+        launchingPrograms = launchingPrograms.filter {
+            $0.standardizedFileURL.path(percentEncoded: false) != target
+        }
         if launchingPrograms.isEmpty {
             launchingStatus = nil
         }

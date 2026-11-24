@@ -38,6 +38,24 @@ struct BottleView: View {
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
+                if !bottle.launchingPrograms.isEmpty, let statusText = bottle.launchingStatus {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(statusText)
+                            .font(.callout.weight(.medium))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1)
+                    )
+                    .padding([.horizontal, .top])
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 LazyVGrid(columns: gridLayout, alignment: .center) {
                     ForEach(bottle.pinnedPrograms, id: \.id) { pinnedProgram in
                         PinView(
@@ -58,6 +76,7 @@ struct BottleView: View {
                 .formStyle(.grouped)
                 .scrollDisabled(true)
             }
+            .animation(.whiskyDefault, value: bottle.launchingPrograms.isEmpty)
             .bottomBar {
                 HStack {
                     Spacer()

@@ -33,7 +33,7 @@ extension Program {
     /// bottle preparation (Steam's CEF wrapper, DXVK auto-drop) happens exactly
     /// once, and there is only one way to run a program.
     public func launch() async {
-        let alreadyLaunching = await MainActor.run { bottle.launchingPrograms.contains(url) }
+        let alreadyLaunching = await MainActor.run { bottle.isLaunching(url) }
         if alreadyLaunching { return }
 
         let isSteam = Steam.isSteamClient(url)

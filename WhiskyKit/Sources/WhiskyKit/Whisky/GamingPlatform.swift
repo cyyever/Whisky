@@ -158,7 +158,8 @@ public enum GamingPlatformInstaller {
         // Deliberately not waitForExit: first run self-updates (hundreds of MB)
         // and then stays up as the client, so waiting would pin the UI's
         // progress indicator for the whole session.
-        try await Wine.runProgram(at: client, bottle: bottle)
+        let program = Program(url: client, bottle: bottle)
+        await program.launch()
     }
 
     /// Add the freshly installed client to the bottle's program list so it shows

@@ -27,7 +27,7 @@ struct ProgramView: View {
     @AppStorage("envArgsSectionExpanded") private var envArgsSectionExpanded: Bool = true
 
     private var isLaunching: Bool {
-        bottle.launchingPrograms.contains(program.url)
+        bottle.isLaunching(program.url)
     }
 
     var body: some View {

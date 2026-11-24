@@ -28,52 +28,86 @@ struct PinView: View {
     @State private var image: Image?
     @State private var showRenameSheet = false
     @State private var name: String = ""
+    @State private var pulse = false
 
     private var isLaunching: Bool {
-        bottle.launchingPrograms.contains(program.url)
+        bottle.isLaunching(program.url)
     }
 
     var body: some View {
         VStack {
-            Group {
-                if let image {
-                    image
-                        .resizable()
-                } else {
-                    Image(systemName: "app.dashed")
-                        .resizable()
+            ZStack {
+                if isLaunching {
+                    Circle()
+                        .strokeBorder(Color.accentColor.opacity(pulse ? 0.25 : 0.85), lineWidth: 2.5)
+                        .frame(width: 56, height: 56)
+                        .scaleEffect(pulse ? 1.14 : 0.94)
+                }
+                Group {
+                    if let image {
+                        image
+                            .resizable()
+                    } else {
+                        Image(systemName: "app.dashed")
+                            .resizable()
+                    }
+                }
+                .frame(width: 45, height: 45)
+                .opacity(isLaunching ? (pulse ? 0.55 : 0.9) : 1.0)
+                .scaleEffect(isLaunching ? (pulse ? 0.92 : 1.0) : 1.0)
+
+                if isLaunching {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .padding(6)
+                        .background(.regularMaterial, in: Circle())
+                        .shadow(radius: 2)
                 }
             }
-            .frame(width: 45, height: 45)
-            .opacity(isLaunching ? 0.55 : 1.0)
-            .scaleEffect(isLaunching ? 0.94 : 1.0)
+            .frame(width: 56, height: 56)
             Spacer()
-            Text(isLaunching ? String(localized: "launch.startingShort") : name)
-                .foregroundStyle(isLaunching ? .secondary : .primary)
+            Text(isLaunching ? (bottle.launchingStatus ?? String(localized: "launch.startingShort")) : name)
+                .foregroundStyle(isLaunching ? Color.accentColor : Color.primary)
+                .fontWeight(isLaunching ? .medium : .regular)
                 .multilineTextAlignment(.center)
                 .lineLimit(2, reservesSpace: true)
         }
-        .frame(width: 90, height: 90)
+        .frame(width: 96, height: 96)
         .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(isLaunching ? Color.accentColor.opacity(0.10) : Color.clear)
+        )
         .overlay {
-            HStack {
-                Spacer()
-                if isLaunching {
-                    ProgressView()
-                        .controlSize(.small)
-                        .padding(3)
-                        .background(.ultraThinMaterial, in: Circle())
-                } else {
-                    Image(systemName: "play.fill")
-                        .resizable()
-                        .foregroundColor(.green)
-                        .frame(width: 16, height: 16)
+            if !isLaunching {
+                HStack {
+                    Spacer()
+                    Button {
+                        program.run()
+                    } label: {
+                        Image(systemName: "play.fill")
+                            .resizable()
+                            .foregroundColor(.green)
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.plain)
                 }
+                .frame(width: 45, height: 45)
+                .padding(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
             }
-            .frame(width: 45, height: 45)
-            .padding(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
         }
         .animation(.whiskyDefault, value: isLaunching)
+        .onChange(of: isLaunching, initial: true) { _, launching in
+            if launching {
+                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            } else {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    pulse = false
+                }
+            }
+        }
         .contextMenu {
             ProgramMenuView(program: program, path: $path)
 

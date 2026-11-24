@@ -20,21 +20,21 @@ import SwiftUI
 
 extension View {
     func bottomBar<Content>(
-        @ViewBuilder content: () -> Content
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View where Content: View {
-        modifier(BottomBarViewModifier(barContent: content()))
+        modifier(BottomBarViewModifier(barContent: content))
     }
 }
 
 private struct BottomBarViewModifier<BarContent>: ViewModifier where BarContent: View {
-    var barContent: BarContent
+    let barContent: () -> BarContent
 
     func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     Divider()
-                    barContent
+                    barContent()
                 }
                 .background(.regularMaterial)
                 .buttonStyle(BottomBarButtonStyle())
