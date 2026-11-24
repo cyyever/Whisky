@@ -16,6 +16,7 @@ int main(int argc, char **argv) {
     int frames = argc > 1 ? atoi(argv[1]) : 30;
     double min_ms = argc > 2 ? atof(argv[2]) : 0.0;
     double max_ms = argc > 3 ? atof(argv[3]) : 10000.0;
+    UINT sync_interval = argc > 4 ? (UINT)atoi(argv[4]) : 0;
 
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = DefWindowProcA;
@@ -47,13 +48,13 @@ int main(int argc, char **argv) {
     if (FAILED(hr)) { fprintf(stderr, "FAIL: D3D11CreateDeviceAndSwapChain hr=0x%lx\n", (unsigned long)hr); return 1; }
 
     /* Warm up 2 frames */
-    for (int i = 0; i < 2; i++) IDXGISwapChain_Present(sc, 0, 0);
+    for (int i = 0; i < 2; i++) IDXGISwapChain_Present(sc, sync_interval, 0);
 
     LARGE_INTEGER freq, t0, t1;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&t0);
     for (int i = 0; i < frames; i++) {
-        hr = IDXGISwapChain_Present(sc, 0, 0);
+        hr = IDXGISwapChain_Present(sc, sync_interval, 0);
         if (FAILED(hr)) { fprintf(stderr, "FAIL: Present hr=0x%lx\n", (unsigned long)hr); return 1; }
     }
     QueryPerformanceCounter(&t1);
