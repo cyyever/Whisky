@@ -31,11 +31,40 @@
 		6E7C07C02AAF570100F6E66B /* FileOpenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E7C07BF2AAF570100F6E66B /* FileOpenView.swift */; };
 		6EB58AC92AEACE5E00B1ED3F /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 6EB58AC82AEACE5E00B1ED3F /* Localizable.xcstrings */; };
 		6EF557982A410599001A4F09 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EF557972A410599001A4F09 /* SetupView.swift */; };
-		8C2AEFC82AED79B700CB568F /* WhiskyKit in Frameworks */ = {isa = PBXBuildFile; productRef = 8C2AEFC72AED79B700CB568F /* WhiskyKit */; };
 		8C73E1342AF472FC00B6FB45 /* ProgramMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C73E1332AF472FC00B6FB45 /* ProgramMenuView.swift */; };
-		8CB681E52AED7C6F0018D319 /* WhiskyKit in Resources */ = {isa = PBXBuildFile; fileRef = 8CB681E42AED7C6F0018D319 /* WhiskyKit */; };
 		EB58FB552A499896002DC184 /* SemanticVersion in Frameworks */ = {isa = PBXBuildFile; productRef = EB58FB542A499896002DC184 /* SemanticVersion */; };
 		EEA5A2462A31DD65008274AE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA5A2452A31DD65008274AE /* AppDelegate.swift */; };
+		82B1F4EEACD905C1B5239897 /* Bundle+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1619E580D1E7FEEEC63831E7 /* Bundle+Extensions.swift */; };
+		529BC38F3FB447368FC70A80 /* FileHandle+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9381D28CE899DE114507F7E4 /* FileHandle+Extensions.swift */; };
+		8FA1845FA9996351B8552365 /* Logger+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EF9E27C3D188006D81751AD /* Logger+Extensions.swift */; };
+		35E2FC2247405310E2209796 /* Process+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DA830A46C2E568D3830A730 /* Process+Extensions.swift */; };
+		C1E5BE4ABCFC17A8F280197C /* Program+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 052E1716EC1BBE0E0F632225 /* Program+Extensions.swift */; };
+		D4569C536C1CEBC2C00D1821 /* URL+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA111B3C522DFF4675D40B7F /* URL+Extensions.swift */; };
+		6C0B8D63E62536469A091AB6 /* COFFFileHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C7E1585BF42C880584D008D /* COFFFileHeader.swift */; };
+		8380A0BFC1C2F6C25BF0588F /* Magic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B772B9434FEDFA04CF8AE6A /* Magic.swift */; };
+		3F131CB6D8B8951EA236764E /* OptionalHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DE9680F3578BF50CE76DFA6 /* OptionalHeader.swift */; };
+		6F986F6B6D49D55A5E52B375 /* PortableExecutable.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ED40019723EBFB13238D3F2 /* PortableExecutable.swift */; };
+		9EB3F163AD85E014CCD55FF7 /* Section.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07824238D1BDD0C53FA2AE02 /* Section.swift */; };
+		53FEAAEE8AA78612BB5AD0A8 /* ResourceDataEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24B9717207B1BE378E2B00DD /* ResourceDataEntry.swift */; };
+		7C22963AA77D54393F340078 /* ResourceDirectoryEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DDF258D300F54C9B908F0F1 /* ResourceDirectoryEntry.swift */; };
+		5E3F412B3FF9FAB267E12C96 /* ResourceDirectoryTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08DE32360973D31D7C3899F /* ResourceDirectoryTable.swift */; };
+		694231E2C7DAAF0AEF9B50ED /* ResourceType.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EEDDED4B0099CCAD9DEA269 /* ResourceType.swift */; };
+		7F0B7B1843181761D819CDDF /* BitmapInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E8B2FD2A19DF00524005729 /* BitmapInfo.swift */; };
+		F7C64121AF96C2802E0D7229 /* Rosetta2.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CBC67AD91D44FA618D8B22F /* Rosetta2.swift */; };
+		A3ACBC21DF80A7EBD1E159D4 /* SystemProxy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05C5031CA762546AC730FCE9 /* SystemProxy.swift */; };
+		69AEF33480BE0D63C698DA22 /* WhiskyWineInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4888F76C3959CCA383C60DAE /* WhiskyWineInstaller.swift */; };
+		B19660F865EA41388665E691 /* Bottle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3DD89A75CCAE9A9C4A1C32 /* Bottle.swift */; };
+		836C547958F33CF113FE70D2 /* BottleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FCAC95994C5ECF425362BF2 /* BottleData.swift */; };
+		FFEDC84836F13A0152C3F5CA /* BottleSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 641F213BC7F0F2872FDEE371 /* BottleSettings.swift */; };
+		4C537B04FB9244FEE6476891 /* GamingPlatform.swift in Sources */ = {isa = PBXBuildFile; fileRef = B579793F51E3FE2924BFB575 /* GamingPlatform.swift */; };
+		3C3E6AA8CA348F003564CD6D /* GogGalaxy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EBC0F8C7D2FC76842043916 /* GogGalaxy.swift */; };
+		01DCA29918C0AB266EC03F28 /* Program.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0EE3E3C6369EC01C96D0F84 /* Program.swift */; };
+		94C185A340F410EF6270FF46 /* ProgramSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 361719097008FA833578FF45 /* ProgramSettings.swift */; };
+		33EFA8F00FF77A05F09DCB1D /* StaleLocks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F45A76ED4CF7270B9EB51FB /* StaleLocks.swift */; };
+		590C554C717484BDAAD52BCA /* Steam+LaunchGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD99C2276395459060862941 /* Steam+LaunchGuard.swift */; };
+		F2DB57ABCAE58E6F03C0E015 /* Steam.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95B3B140D68CB4AAB353B443 /* Steam.swift */; };
+		F9C8C7FE9F3DF6ED2ED3784E /* WineProcesses.swift in Sources */ = {isa = PBXBuildFile; fileRef = F25180954CA8DC062B03DB45 /* WineProcesses.swift */; };
+		0A89FDB153BBE1D67A663DA3 /* Wine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7341BC74EC6B8CCF9BC9DE9B /* Wine.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -84,8 +113,38 @@
 		6EF557972A410599001A4F09 /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
 		6EFDF64D2AAE2DA800EF622F /* Quartz.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Quartz.framework; path = System/Library/Frameworks/Quartz.framework; sourceTree = SDKROOT; };
 		8C73E1332AF472FC00B6FB45 /* ProgramMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramMenuView.swift; sourceTree = "<group>"; };
-		8CB681E42AED7C6F0018D319 /* WhiskyKit */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = WhiskyKit; sourceTree = "<group>"; };
 		EEA5A2452A31DD65008274AE /* AppDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		1619E580D1E7FEEEC63831E7 /* Bundle+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Bundle+Extensions.swift"; sourceTree = "<group>"; };
+		9381D28CE899DE114507F7E4 /* FileHandle+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FileHandle+Extensions.swift"; sourceTree = "<group>"; };
+		4EF9E27C3D188006D81751AD /* Logger+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Logger+Extensions.swift"; sourceTree = "<group>"; };
+		5DA830A46C2E568D3830A730 /* Process+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Process+Extensions.swift"; sourceTree = "<group>"; };
+		052E1716EC1BBE0E0F632225 /* Program+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Program+Extensions.swift"; sourceTree = "<group>"; };
+		EA111B3C522DFF4675D40B7F /* URL+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+Extensions.swift"; sourceTree = "<group>"; };
+		5C7E1585BF42C880584D008D /* COFFFileHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = COFFFileHeader.swift; sourceTree = "<group>"; };
+		0B772B9434FEDFA04CF8AE6A /* Magic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Magic.swift; sourceTree = "<group>"; };
+		2DE9680F3578BF50CE76DFA6 /* OptionalHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OptionalHeader.swift; sourceTree = "<group>"; };
+		6ED40019723EBFB13238D3F2 /* PortableExecutable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortableExecutable.swift; sourceTree = "<group>"; };
+		07824238D1BDD0C53FA2AE02 /* Section.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Section.swift; sourceTree = "<group>"; };
+		24B9717207B1BE378E2B00DD /* ResourceDataEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceDataEntry.swift; sourceTree = "<group>"; };
+		7DDF258D300F54C9B908F0F1 /* ResourceDirectoryEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceDirectoryEntry.swift; sourceTree = "<group>"; };
+		A08DE32360973D31D7C3899F /* ResourceDirectoryTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceDirectoryTable.swift; sourceTree = "<group>"; };
+		8EEDDED4B0099CCAD9DEA269 /* ResourceType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceType.swift; sourceTree = "<group>"; };
+		4E8B2FD2A19DF00524005729 /* BitmapInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BitmapInfo.swift; sourceTree = "<group>"; };
+		7CBC67AD91D44FA618D8B22F /* Rosetta2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Rosetta2.swift; sourceTree = "<group>"; };
+		05C5031CA762546AC730FCE9 /* SystemProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemProxy.swift; sourceTree = "<group>"; };
+		4888F76C3959CCA383C60DAE /* WhiskyWineInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhiskyWineInstaller.swift; sourceTree = "<group>"; };
+		6D3DD89A75CCAE9A9C4A1C32 /* Bottle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bottle.swift; sourceTree = "<group>"; };
+		0FCAC95994C5ECF425362BF2 /* BottleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottleData.swift; sourceTree = "<group>"; };
+		641F213BC7F0F2872FDEE371 /* BottleSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottleSettings.swift; sourceTree = "<group>"; };
+		B579793F51E3FE2924BFB575 /* GamingPlatform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GamingPlatform.swift; sourceTree = "<group>"; };
+		7EBC0F8C7D2FC76842043916 /* GogGalaxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GogGalaxy.swift; sourceTree = "<group>"; };
+		A0EE3E3C6369EC01C96D0F84 /* Program.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Program.swift; sourceTree = "<group>"; };
+		361719097008FA833578FF45 /* ProgramSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramSettings.swift; sourceTree = "<group>"; };
+		1F45A76ED4CF7270B9EB51FB /* StaleLocks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StaleLocks.swift; sourceTree = "<group>"; };
+		BD99C2276395459060862941 /* Steam+LaunchGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Steam+LaunchGuard.swift"; sourceTree = "<group>"; };
+		95B3B140D68CB4AAB353B443 /* Steam.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Steam.swift; sourceTree = "<group>"; };
+		F25180954CA8DC062B03DB45 /* WineProcesses.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WineProcesses.swift; sourceTree = "<group>"; };
+		7341BC74EC6B8CCF9BC9DE9B /* Wine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Wine.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,7 +152,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				8C2AEFC82AED79B700CB568F /* WhiskyKit in Frameworks */,
 				EB58FB552A499896002DC184 /* SemanticVersion in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -161,7 +219,6 @@
 			isa = PBXGroup;
 			children = (
 				6E40495429CCA19C006E3F1B /* Whisky */,
-				8CB681E42AED7C6F0018D319 /* WhiskyKit */,
 				6E2FB15F2B589A9000E344C6 /* Libraries */,
 				6E40495329CCA19C006E3F1B /* Products */,
 				6E5967692A9A424900D64F70 /* Frameworks */,
@@ -181,6 +238,7 @@
 		6E40495429CCA19C006E3F1B /* Whisky */ = {
 			isa = PBXGroup;
 			children = (
+				71CB6B125845A0BC2E4644C0 /* Core */,
 				EEA5A2452A31DD65008274AE /* AppDelegate.swift */,
 				6365C4BF2B1AA69500AAE1FD /* Extensions */,
 				6E5197D029D7200700CF655E /* Utils */,
@@ -260,6 +318,92 @@
 			path = Setup;
 			sourceTree = "<group>";
 		};
+		71CB6B125845A0BC2E4644C0 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				35D77412BFEAA75EA0FFBBE4 /* Extensions */,
+				3475222639D037BDE0E159F1 /* PE */,
+				A7B241C28F1A4546E7D1A736 /* PlatformMacOS */,
+				A0753D4A3F8385051081716A /* Whisky */,
+				1E669698685D3040BFC0E59B /* Wine */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		35D77412BFEAA75EA0FFBBE4 /* Extensions */ = {
+			isa = PBXGroup;
+			children = (
+				1619E580D1E7FEEEC63831E7 /* Bundle+Extensions.swift */,
+				9381D28CE899DE114507F7E4 /* FileHandle+Extensions.swift */,
+				4EF9E27C3D188006D81751AD /* Logger+Extensions.swift */,
+				5DA830A46C2E568D3830A730 /* Process+Extensions.swift */,
+				052E1716EC1BBE0E0F632225 /* Program+Extensions.swift */,
+				EA111B3C522DFF4675D40B7F /* URL+Extensions.swift */,
+			);
+			path = Extensions;
+			sourceTree = "<group>";
+		};
+		3475222639D037BDE0E159F1 /* PE */ = {
+			isa = PBXGroup;
+			children = (
+				36839D4FEE8B42972C8B3F70 /* RSRC */,
+				5C7E1585BF42C880584D008D /* COFFFileHeader.swift */,
+				0B772B9434FEDFA04CF8AE6A /* Magic.swift */,
+				2DE9680F3578BF50CE76DFA6 /* OptionalHeader.swift */,
+				6ED40019723EBFB13238D3F2 /* PortableExecutable.swift */,
+				07824238D1BDD0C53FA2AE02 /* Section.swift */,
+			);
+			path = PE;
+			sourceTree = "<group>";
+		};
+		36839D4FEE8B42972C8B3F70 /* RSRC */ = {
+			isa = PBXGroup;
+			children = (
+				24B9717207B1BE378E2B00DD /* ResourceDataEntry.swift */,
+				7DDF258D300F54C9B908F0F1 /* ResourceDirectoryEntry.swift */,
+				A08DE32360973D31D7C3899F /* ResourceDirectoryTable.swift */,
+				8EEDDED4B0099CCAD9DEA269 /* ResourceType.swift */,
+			);
+			path = RSRC;
+			sourceTree = "<group>";
+		};
+		A7B241C28F1A4546E7D1A736 /* PlatformMacOS */ = {
+			isa = PBXGroup;
+			children = (
+				4E8B2FD2A19DF00524005729 /* BitmapInfo.swift */,
+				7CBC67AD91D44FA618D8B22F /* Rosetta2.swift */,
+				05C5031CA762546AC730FCE9 /* SystemProxy.swift */,
+				4888F76C3959CCA383C60DAE /* WhiskyWineInstaller.swift */,
+			);
+			path = PlatformMacOS;
+			sourceTree = "<group>";
+		};
+		A0753D4A3F8385051081716A /* Whisky */ = {
+			isa = PBXGroup;
+			children = (
+				6D3DD89A75CCAE9A9C4A1C32 /* Bottle.swift */,
+				0FCAC95994C5ECF425362BF2 /* BottleData.swift */,
+				641F213BC7F0F2872FDEE371 /* BottleSettings.swift */,
+				B579793F51E3FE2924BFB575 /* GamingPlatform.swift */,
+				7EBC0F8C7D2FC76842043916 /* GogGalaxy.swift */,
+				A0EE3E3C6369EC01C96D0F84 /* Program.swift */,
+				361719097008FA833578FF45 /* ProgramSettings.swift */,
+				1F45A76ED4CF7270B9EB51FB /* StaleLocks.swift */,
+				BD99C2276395459060862941 /* Steam+LaunchGuard.swift */,
+				95B3B140D68CB4AAB353B443 /* Steam.swift */,
+				F25180954CA8DC062B03DB45 /* WineProcesses.swift */,
+			);
+			path = Whisky;
+			sourceTree = "<group>";
+		};
+		1E669698685D3040BFC0E59B /* Wine */ = {
+			isa = PBXGroup;
+			children = (
+				7341BC74EC6B8CCF9BC9DE9B /* Wine.swift */,
+			);
+			path = Wine;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -279,7 +423,6 @@
 			name = Whisky;
 			packageProductDependencies = (
 				EB58FB542A499896002DC184 /* SemanticVersion */,
-				8C2AEFC72AED79B700CB568F /* WhiskyKit */,
 			);
 			productName = Whisky;
 			productReference = 6E40495229CCA19C006E3F1B /* Whisky.app */;
@@ -314,7 +457,6 @@
 				EB58FB532A499896002DC184 /* XCRemoteSwiftPackageReference "SemanticVersion" */,
 				6E5967682A9A421800D64F70 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
 				6E95F66E2AB3F33C00D585D1 /* XCRemoteSwiftPackageReference "SwiftyTextTable" */,
-				8C2AEFC62AED79B700CB568F /* XCLocalSwiftPackageReference "WhiskyKit" */,
 			);
 			productRefGroup = 6E40495329CCA19C006E3F1B /* Products */;
 			projectDirPath = "";
@@ -330,7 +472,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				8CB681E52AED7C6F0018D319 /* WhiskyKit in Resources */,
 				6E40495D29CCA19C006E3F1B /* Preview Assets.xcassets in Resources */,
 				6EB58AC92AEACE5E00B1ED3F /* Localizable.xcstrings in Resources */,
 				6E40495A29CCA19C006E3F1B /* Assets.xcassets in Resources */,
@@ -344,6 +485,37 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				82B1F4EEACD905C1B5239897 /* Bundle+Extensions.swift in Sources */,
+				529BC38F3FB447368FC70A80 /* FileHandle+Extensions.swift in Sources */,
+				8FA1845FA9996351B8552365 /* Logger+Extensions.swift in Sources */,
+				35E2FC2247405310E2209796 /* Process+Extensions.swift in Sources */,
+				C1E5BE4ABCFC17A8F280197C /* Program+Extensions.swift in Sources */,
+				D4569C536C1CEBC2C00D1821 /* URL+Extensions.swift in Sources */,
+				6C0B8D63E62536469A091AB6 /* COFFFileHeader.swift in Sources */,
+				8380A0BFC1C2F6C25BF0588F /* Magic.swift in Sources */,
+				3F131CB6D8B8951EA236764E /* OptionalHeader.swift in Sources */,
+				6F986F6B6D49D55A5E52B375 /* PortableExecutable.swift in Sources */,
+				9EB3F163AD85E014CCD55FF7 /* Section.swift in Sources */,
+				53FEAAEE8AA78612BB5AD0A8 /* ResourceDataEntry.swift in Sources */,
+				7C22963AA77D54393F340078 /* ResourceDirectoryEntry.swift in Sources */,
+				5E3F412B3FF9FAB267E12C96 /* ResourceDirectoryTable.swift in Sources */,
+				694231E2C7DAAF0AEF9B50ED /* ResourceType.swift in Sources */,
+				7F0B7B1843181761D819CDDF /* BitmapInfo.swift in Sources */,
+				F7C64121AF96C2802E0D7229 /* Rosetta2.swift in Sources */,
+				A3ACBC21DF80A7EBD1E159D4 /* SystemProxy.swift in Sources */,
+				69AEF33480BE0D63C698DA22 /* WhiskyWineInstaller.swift in Sources */,
+				B19660F865EA41388665E691 /* Bottle.swift in Sources */,
+				836C547958F33CF113FE70D2 /* BottleData.swift in Sources */,
+				FFEDC84836F13A0152C3F5CA /* BottleSettings.swift in Sources */,
+				4C537B04FB9244FEE6476891 /* GamingPlatform.swift in Sources */,
+				3C3E6AA8CA348F003564CD6D /* GogGalaxy.swift in Sources */,
+				01DCA29918C0AB266EC03F28 /* Program.swift in Sources */,
+				94C185A340F410EF6270FF46 /* ProgramSettings.swift in Sources */,
+				33EFA8F00FF77A05F09DCB1D /* StaleLocks.swift in Sources */,
+				590C554C717484BDAAD52BCA /* Steam+LaunchGuard.swift in Sources */,
+				F2DB57ABCAE58E6F03C0E015 /* Steam.swift in Sources */,
+				F9C8C7FE9F3DF6ED2ED3784E /* WineProcesses.swift in Sources */,
+				0A89FDB153BBE1D67A663DA3 /* Wine.swift in Sources */,
 				EEA5A2462A31DD65008274AE /* AppDelegate.swift in Sources */,
 				6763D8F62BC6314100651D27 /* Constants.swift in Sources */,
 				6E40495829CCA19C006E3F1B /* ContentView.swift in Sources */,
@@ -591,10 +763,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		8C2AEFC62AED79B700CB568F /* XCLocalSwiftPackageReference "WhiskyKit" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = WhiskyKit;
-		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -639,19 +807,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 6E95F66E2AB3F33C00D585D1 /* XCRemoteSwiftPackageReference "SwiftyTextTable" */;
 			productName = SwiftyTextTable;
-		};
-		8C2AEFC72AED79B700CB568F /* WhiskyKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = WhiskyKit;
-		};
-		8C2AEFC92AED79CD00CB568F /* WhiskyKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 8C2AEFC62AED79B700CB568F /* XCLocalSwiftPackageReference "WhiskyKit" */;
-			productName = WhiskyKit;
-		};
-		8CB681E62AED7CD00018D319 /* WhiskyKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = WhiskyKit;
 		};
 		EB58FB542A499896002DC184 /* SemanticVersion */ = {
 			isa = XCSwiftPackageProductDependency;

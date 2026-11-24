@@ -17,18 +17,10 @@
 //
 
 import SwiftUI
-import WhiskyKit
 
 struct ConfigView: View {
-    /// Apple family 9 GPUs (A17, M3, M4) support hardware ray tracing. The
-    /// capability is fixed for the machine, so resolve it once instead of
-    /// allocating a Metal device on every body re-render.
-    private static let supportsRaytracing =
-        MTLCreateSystemDefaultDevice()?.supportsFamily(.apple9) ?? false
-
     @ObservedObject var bottle: Bottle
     @AppStorage("wineSectionExpanded") private var wineSectionExpanded: Bool = true
-    @AppStorage("advancedSectionExpanded") private var advancedSectionExpanded: Bool = false
 
     var body: some View {
         Form {
@@ -38,18 +30,9 @@ struct ConfigView: View {
                     Text("config.followSystemProxy.info")
                 }
             }
-            if Self.supportsRaytracing {
-                Section("config.title.advanced", isExpanded: $advancedSectionExpanded) {
-                    Toggle(isOn: $bottle.settings.dxrEnabled) {
-                        Text("config.dxr")
-                        Text("config.dxr.info")
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
         .animation(.whiskyDefault, value: wineSectionExpanded)
-        .animation(.whiskyDefault, value: advancedSectionExpanded)
         .navigationTitle("tab.config")
     }
 }

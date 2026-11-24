@@ -17,7 +17,6 @@
 //
 
 import SwiftUI
-import WhiskyKit
 
 struct FileOpenView: View {
     var fileURL: URL

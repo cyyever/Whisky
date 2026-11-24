@@ -17,7 +17,6 @@
 //
 
 import SwiftUI
-import WhiskyKit
 
 struct SettingsView: View {
     @AppStorage("killOnTerminate") var killOnTerminate = true

@@ -17,7 +17,6 @@
 //
 
 import SwiftUI
-import WhiskyKit
 
 struct ProgramView: View {
     @ObservedObject var program: Program

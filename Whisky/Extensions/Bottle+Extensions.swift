@@ -18,7 +18,6 @@
 
 import AppKit
 import Foundation
-import WhiskyKit
 
 extension Bottle {
     func openCDrive() {

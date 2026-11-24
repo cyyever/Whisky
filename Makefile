@@ -208,10 +208,10 @@ install-app:
 # A static check should not be able to veto a working build.
 # `lint` checks formatting; `lint-swiftlint` runs the strict checks used by CI.
 lint:  ## Lint the Swift sources with swift-format (never runs during a build)
-	@swift format lint --strict -r Whisky WhiskyKit && echo "swift-format: clean"
+	@swift format lint --strict -r Whisky && echo "swift-format: clean"
 
 format:  ## Reformat the Swift sources in place (swift-format)
-	@swift format --in-place -r Whisky WhiskyKit && echo "swift-format: reformatted"
+	@swift format --in-place -r Whisky && echo "swift-format: reformatted"
 
 lint-swiftlint:  ## Run the strict SwiftLint checks used by CI (SwiftLint 0.65.1)
 	@$(SWIFTLINT) lint --strict

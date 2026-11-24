@@ -17,7 +17,6 @@
 //
 
 import SwiftUI
-import WhiskyKit
 
 struct BottleListEntry: View {
     let bottle: Bottle

@@ -17,7 +17,6 @@
 //
 
 import SwiftUI
-import WhiskyKit
 
 struct BottleCreationView: View {
     @Binding var newlyCreatedBottleURL: URL?

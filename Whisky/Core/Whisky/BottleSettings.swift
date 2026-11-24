@@ -113,29 +113,16 @@ public struct BottleWineConfig: Codable, Equatable {
     }
 }
 
-public struct BottleMetalConfig: Codable, Equatable {
-    var dxrEnabled: Bool = false
-
-    public init() {}
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.dxrEnabled = container.decodeResilient(Bool.self, forKey: .dxrEnabled, default: false)
-    }
-}
-
 public struct BottleSettings: Codable, Equatable {
     static let defaultFileVersion = SemanticVersion(1, 0, 0)
 
     var fileVersion: SemanticVersion = Self.defaultFileVersion
     private var info: BottleInfo
     private var wineConfig: BottleWineConfig
-    private var metalConfig: BottleMetalConfig
 
     public init() {
         self.info = BottleInfo()
         self.wineConfig = BottleWineConfig()
-        self.metalConfig = BottleMetalConfig()
     }
 
     public init(from decoder: Decoder) throws {
@@ -145,8 +132,6 @@ public struct BottleSettings: Codable, Equatable {
         self.info = container.decodeResilient(BottleInfo.self, forKey: .info, default: BottleInfo())
         self.wineConfig = container.decodeResilient(
             BottleWineConfig.self, forKey: .wineConfig, default: BottleWineConfig())
-        self.metalConfig = container.decodeResilient(
-            BottleMetalConfig.self, forKey: .metalConfig, default: BottleMetalConfig())
     }
 
     /// The name of this bottle
@@ -184,11 +169,6 @@ public struct BottleSettings: Codable, Equatable {
     public var blocklist: [URL] {
         get { return info.blocklist }
         set { info.blocklist = newValue }
-    }
-
-    public var dxrEnabled: Bool {
-        get { return metalConfig.dxrEnabled }
-        set { metalConfig.dxrEnabled = newValue }
     }
 
     @discardableResult
@@ -238,10 +218,6 @@ public struct BottleSettings: Codable, Equatable {
         // explicit path too. What an env cannot defend against is a *stale
         // registry* entry, which is consulted whether or not anyone set an env —
         // and that is what 0017 is for.
-
-        if dxrEnabled {
-            wineEnv.updateValue("1", forKey: "D3DM_SUPPORT_DXR")
-        }
 
         if followSystemProxy {
             for (key, value) in SystemProxy.environmentVariables() {

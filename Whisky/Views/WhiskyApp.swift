@@ -17,7 +17,6 @@
 //
 
 import SwiftUI
-import WhiskyKit
 
 @main
 struct WhiskyApp: App {
