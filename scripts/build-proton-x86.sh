@@ -248,6 +248,9 @@ done
 clang -arch arm64 -o "$WINE_STAGE/bin/wineserver" "$WS_OBJ"/*.o
 rm -rf "$WS_OBJ"
 
+# Remove Wine SDK/build-time tools not used at runtime
+rm -f "$WINE_STAGE/bin/"{widl,winebuild,winecpp,winedump,wineg++,winegcc,winemaker,wmc,wrc,function_grep.pl}
+
 # Create wine64 symlink for Whisky compatibility
 cd "$WINE_STAGE/bin"
 [ ! -f wine64 ] && ln -s wine wine64
