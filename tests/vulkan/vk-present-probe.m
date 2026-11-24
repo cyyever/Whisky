@@ -267,6 +267,32 @@ static void *render_thread(void *arg)
     VK(vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surf, &fmtn, fmts));
     VkSurfaceFormatKHR fmt = fmts[0];
 
+    /* Verify non-opaque + IMMEDIATE swapchain sets opaque=NO and displaySyncEnabled=NO,
+     * so transparent overlays and uncapped present modes still behave as requested. */
+    {
+        VkSwapchainCreateInfoKHR probe_sc = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
+        probe_sc.surface = surf;
+        probe_sc.minImageCount = caps.minImageCount > 3 ? caps.minImageCount : 3;
+        probe_sc.imageFormat = fmt.format; probe_sc.imageColorSpace = fmt.colorSpace;
+        probe_sc.imageExtent = (VkExtent2D){ W, H };
+        probe_sc.imageArrayLayers = 1;
+        probe_sc.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        probe_sc.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        probe_sc.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        probe_sc.compositeAlpha = VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
+        probe_sc.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        probe_sc.clipped = VK_TRUE;
+        VkSwapchainKHR probe_swap; VK(vkCreateSwapchainKHR(dev, &probe_sc, NULL, &probe_swap));
+        if (layer.opaque || layer.displaySyncEnabled) {
+            fprintf(stderr,
+                    "FAIL  PRE_MULTIPLIED+IMMEDIATE swapchain: expected opaque=0 displaySyncEnabled=0, "
+                    "got opaque=%d displaySyncEnabled=%d\n",
+                    (int)layer.opaque, (int)layer.displaySyncEnabled);
+            exit(1);
+        }
+        vkDestroySwapchainKHR(dev, probe_swap, NULL);
+    }
+
     VkSwapchainCreateInfoKHR sc = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
     sc.surface = surf;
     sc.minImageCount = caps.minImageCount > 3 ? caps.minImageCount : 3;
