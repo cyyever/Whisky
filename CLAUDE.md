@@ -14,12 +14,14 @@ Keep this file high-level. Details live in `docs/`, the build scripts, `patches/
 ```bash
 make x86-deps         # one-time: cross-build Wine's x86_64 libraries (freetype, gnutls, SDL2, Vulkan loader)
 make llvm-x86         # build LLVM 23 x86_64 static libraries for Mullion
+make ffmpeg           # minimal x86_64 FFmpeg for winedmo + gst-libav
 make gstreamer        # x86_64 GStreamer for winegstreamer (WMV); make proton needs it
-make proton          # Proton plus Mullion D3D10/11/12 + DXGI builtins
-make dxvk            # DXVK d3d9/d3d8 builtins
+make kosmickrisp      # x86_64 KosmicKrisp Vulkan-on-Metal driver
+make proton           # Proton plus Mullion D3D10/11/12 + DXGI builtins
+make dxvk             # DXVK d3d9/d3d8 builtins
 make app / make run   # build / run the app
 ```
-Fresh-machine order: ARM brew deps (`autoconf automake bison cmake meson ninja nasm glslang pkg-config mingw-w64 ccache llvm libclc spirv-llvm-translator spirv-tools`, plus `mako pyyaml` for brew's python3) → Rosetta 2 → `git submodule update --init --recursive vendor/mullion` → `make llvm-x86` → `vendor/proton-wine` at the base hash in `scripts/build-proton-x86.sh` → `make x86-deps` → `scripts/build-ffmpeg-x86.sh` + `scripts/build-kosmickrisp-x86.sh` → `make proton` (builds GStreamer first — Wine is configured `--with-gstreamer` and configure hard-errors without it) → `make dxvk`. Set `WHISKY_MULLION_LLVM` for a different LLVM prefix.
+Fresh-machine order: ARM brew deps (`autoconf automake bison cmake meson ninja nasm glslang pkg-config mingw-w64 ccache llvm libclc spirv-llvm-translator spirv-tools`, plus `mako pyyaml` for brew's python3) → Rosetta 2 → `git submodule update --init --recursive vendor/mullion` → `make llvm-x86` → `vendor/proton-wine` at the base hash in `scripts/build-proton-x86.sh` → `make x86-deps` → `make kosmickrisp` → `make proton` (builds `ffmpeg` + `gstreamer` first — Wine is configured `--with-gstreamer` and configure hard-errors without it) → `make dxvk`. Set `WHISKY_MULLION_LLVM` for a different LLVM prefix.
 
 ## Key paths
 - Wine install: `~/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/`

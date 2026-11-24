@@ -51,4 +51,40 @@ struct BottleWineConfigTests {
         let fields = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         #expect(fields["avxEnabled"] == nil)
     }
+
+    @Test func retinaConfigurationMatchesWineUserRegSections() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "whisky-retina-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let userReg = tempDir.appending(path: "user.reg")
+        let missing = Wine.retinaConfigurationState(in: userReg, dpi: 192)
+        #expect(!missing.retinaModeConfigured)
+        #expect(!missing.logPixelsConfigured)
+
+        let regContents = """
+            WINE REGISTRY Version 2
+
+            [Software\\\\Fonts] 1793862220
+            "LogPixels"=dword:000000c0
+
+            [Control Panel\\\\Desktop] 1794311625
+            #time=1dd710a23be3b06
+            "LogPixels"=dword:000000c0
+
+            [Software\\\\Wine\\\\Mac Driver] 1793862220
+            #time=1dd6cf3c9849ad2
+            "RetinaMode"="y"
+            """
+        try regContents.write(to: userReg, atomically: true, encoding: .utf8)
+
+        let matched = Wine.retinaConfigurationState(in: userReg, dpi: 192)
+        #expect(matched.retinaModeConfigured)
+        #expect(matched.logPixelsConfigured)
+
+        let differentScale = Wine.retinaConfigurationState(in: userReg, dpi: 96)
+        #expect(differentScale.retinaModeConfigured)
+        #expect(!differentScale.logPixelsConfigured)
+    }
 }

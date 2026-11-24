@@ -34,8 +34,8 @@ SWIFTLINT ?= swiftlint
 # interleave, and none of it is the slow part -- the scripts parallelise inside.
 .NOTPARALLEL:
 
-.PHONY: all help x86-deps llvm-x86 proton proton-debug clean-proton \
-        gstreamer dxvk mullion proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
+.PHONY: all help x86-deps llvm-x86 ffmpeg gstreamer kosmickrisp proton proton-debug clean-proton \
+        dxvk mullion proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -56,7 +56,14 @@ llvm-x86:  ## Build LLVM 23 static libraries for Mullion's x86_64 Wine bridge
 $(X86_DEPS_STAMP): $(SCRIPTS_DIR)/build-x86-deps.sh
 	$(SCRIPTS_DIR)/build-x86-deps.sh
 
-# === GStreamer (winegstreamer's backend, for WMV) ===
+# === FFmpeg & GStreamer (winedmo + winegstreamer backends) ===
+
+FFMPEG_STAMP := $(CURDIR)/vendor/ffmpeg-x86/lib/libavcodec.dylib
+
+ffmpeg: $(FFMPEG_STAMP)  ## Build minimal x86_64 FFmpeg into vendor/ffmpeg-x86 (needed by gstreamer + proton)
+
+$(FFMPEG_STAMP): $(SCRIPTS_DIR)/build-ffmpeg-x86.sh $(SCRIPTS_DIR)/lib/common.sh
+	$(SCRIPTS_DIR)/build-ffmpeg-x86.sh
 
 # Wine is configured --with-gstreamer and configure hard-errors without it, so
 # this is a prerequisite of the Wine build rather than an optional extra.
@@ -76,8 +83,20 @@ gstreamer: $(GST_STAMP)  ## Build x86_64 GStreamer into vendor/gstreamer-x86 (ne
 GST_SRC_HEAD := $(firstword $(wildcard $(CURDIR)/vendor/gstreamer/.git/HEAD \
                                        $(CURDIR)/.git/modules/vendor/gstreamer/HEAD))
 
-$(GST_STAMP): $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh $(GST_SRC_HEAD)
+$(GST_STAMP): $(FFMPEG_STAMP) $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh $(GST_SRC_HEAD)
 	$(SCRIPTS_DIR)/build-gstreamer-x86.sh
+
+# === KosmicKrisp (Vulkan-on-Metal driver for DXVK & Vulkan apps) ===
+
+KK_STAMP := $(CURDIR)/vendor/kosmickrisp/libvulkan_kosmickrisp.dylib
+MESA_SRC_HEAD := $(firstword $(wildcard $(CURDIR)/vendor/mesa/.git/HEAD \
+                                        $(CURDIR)/.git/modules/vendor/mesa/HEAD))
+
+kosmickrisp: $(KK_STAMP)  ## Build Mesa's x86_64 KosmicKrisp Vulkan-on-Metal driver into vendor/kosmickrisp
+
+$(KK_STAMP): $(X86_DEPS_STAMP) $(SCRIPTS_DIR)/build-kosmickrisp-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
+             $(wildcard $(CURDIR)/patches/mesa/*.patch) $(MESA_SRC_HEAD)
+	$(SCRIPTS_DIR)/build-kosmickrisp-x86.sh
 
 # === Proton (the shipped Wine backend) ===
 
@@ -100,7 +119,7 @@ WINE_INPUTS := $(SCRIPTS_DIR)/build-proton-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
                $(wildcard $(CURDIR)/vendor/dxvk/build.w64/src/d3d8/d3d8.dll) \
                $(SCRIPTS_DIR)/lib/mullion.sh
 
-$(WINE_STAMP): $(X86_DEPS_STAMP) $(GST_STAMP) $(WINE_INPUTS) | check-proton-src
+$(WINE_STAMP): $(X86_DEPS_STAMP) $(FFMPEG_STAMP) $(GST_STAMP) $(WINE_INPUTS) | check-proton-src
 	$(SCRIPTS_DIR)/build-proton-x86.sh
 	@touch $@
 
@@ -118,7 +137,7 @@ check-proton-src:
 
 proton-debug:  ## Reinstall Proton keeping PE debug info (for winedbg sessions)
 	WHISKY_WINE_BUILD=debug $(SCRIPTS_DIR)/build-proton-x86.sh
-	$(SCRIPTS_DIR)/build-mullion.sh
+	WHISKY_WINE_BUILD=debug $(SCRIPTS_DIR)/build-mullion.sh
 	@touch $(WINE_STAMP)
 
 clean-proton:  ## Remove Proton build artifacts (keeps installed Wine)

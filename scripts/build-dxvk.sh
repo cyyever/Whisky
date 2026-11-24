@@ -33,6 +33,8 @@ echo "=== Building DXVK from $DXVK_SRC ==="
 check_submodule_pin vendor/dxvk DXVK
 
 MESON_OPTS=(
+    -Dcpp_std=c++26
+    -Ddxbc-spirv:cpp_std=c++26
     # Manufacturer names from hwdata's pnp.ids are diagnostic-only and not
     # needed to enumerate displays or render games. The macOS build host has
     # no hwdata package, so disable this build-time lookup table explicitly.

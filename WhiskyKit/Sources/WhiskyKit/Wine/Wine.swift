@@ -344,30 +344,72 @@ extension Wine {
 }
 
 extension Wine {
+    static func retinaConfigurationState(
+        in userRegURL: URL, dpi: Int
+    ) -> (retinaModeConfigured: Bool, logPixelsConfigured: Bool) {
+        guard let contents = try? String(contentsOf: userRegURL, encoding: .utf8) else {
+            return (false, false)
+        }
+        let expectedLogPixels = String(format: "dword:%08x", dpi)
+        var currentSection: Substring?
+        var retinaModeConfigured = false
+        var logPixelsConfigured = false
+
+        for rawLine in contents.split(whereSeparator: \.isNewline) {
+            let line = rawLine.drop(while: { $0 == " " || $0 == "\t" })
+            if line.first == "[", let closingBracket = line.firstIndex(of: "]") {
+                currentSection = line[line.index(after: line.startIndex)..<closingBracket]
+                continue
+            }
+            guard let section = currentSection else { continue }
+            if section.caseInsensitiveCompare(#"Software\\Wine\\Mac Driver"#) == .orderedSame {
+                if line.caseInsensitiveCompare(#""RetinaMode"="y""#) == .orderedSame {
+                    retinaModeConfigured = true
+                } else if line.lowercased().hasPrefix(#""retinamode"="#) {
+                    retinaModeConfigured = false
+                }
+            } else if section.caseInsensitiveCompare(#"Control Panel\\Desktop"#) == .orderedSame {
+                let target = #""LogPixels"=\#(expectedLogPixels)"#
+                if line.caseInsensitiveCompare(target) == .orderedSame {
+                    logPixelsConfigured = true
+                } else if line.lowercased().hasPrefix(#""logpixels"="#) {
+                    logPixelsConfigured = false
+                }
+            }
+        }
+        return (retinaModeConfigured, logPixelsConfigured)
+    }
+
     /// Keep Retina pixels and the primary display's logical UI size in sync.
     public static func enableRetinaMode(bottle: Bottle) async throws {
         let dpi = await MainActor.run {
             Int((96 * (NSScreen.screens.first?.backingScaleFactor ?? 1)).rounded())
         }
-        let commands = [
-            [
+        let state = Self.retinaConfigurationState(
+            in: bottle.url.appending(path: "user.reg"), dpi: dpi
+        )
+        var commands: [[String]] = []
+        if !state.retinaModeConfigured {
+            commands.append([
                 "reg", "add", #"HKCU\Software\Wine\Mac Driver"#, "/v", "RetinaMode",
                 "/t", "REG_SZ", "/d", "y", "/f",
-            ],
-            [
+            ])
+        }
+        if !state.logPixelsConfigured {
+            commands.append([
                 "reg", "add", #"HKCU\Control Panel\Desktop"#, "/v", "LogPixels",
                 "/t", "REG_DWORD", "/d", String(dpi), "/f",
-            ],
-        ]
+            ])
+        }
+        if commands.isEmpty { return }
         for command in commands {
-            for await output in try runWineProcess(args: command, bottle: bottle) {
+            for await output in try Self.runWineProcess(args: command, bottle: bottle) {
                 if case .terminated(let process) = output, process.terminationStatus != 0 {
+                    let message =
+                        "Configuring Retina scaling failed with exit code \(process.terminationStatus)."
                     throw NSError(
                         domain: "WhiskyKit.Wine", code: Int(process.terminationStatus),
-                        userInfo: [
-                            NSLocalizedDescriptionKey:
-                                "Configuring Retina scaling failed with exit code \(process.terminationStatus).",
-                        ]
+                        userInfo: [NSLocalizedDescriptionKey: message]
                     )
                 }
             }

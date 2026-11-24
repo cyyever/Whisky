@@ -101,7 +101,7 @@ unpack() {
 # Shared by the autotools and cmake builds. -headerpad_max_install_names so the
 # install_name_tool rewrites in build-proton-x86.sh always fit.
 CC_CMD="clang -arch x86_64"
-CXX_CMD="clang++ -arch x86_64"
+CXX_CMD="clang++ -arch x86_64 -std=c++26"
 if whisky_ccache_on; then CC_CMD="ccache $CC_CMD"; CXX_CMD="ccache $CXX_CMD"; fi
 X86_LDFLAGS="-L$PREFIX/lib -Wl,-headerpad_max_install_names"
 
@@ -133,6 +133,7 @@ cmake_build() {
     rm -rf "$build"
     cmake -S "$src" -B "$build" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_STANDARD=26 \
         -DCMAKE_OSX_ARCHITECTURES=x86_64 \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DCMAKE_PREFIX_PATH="$PREFIX" \

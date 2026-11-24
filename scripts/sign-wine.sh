@@ -16,3 +16,10 @@ for relative in bin/wine lib/wine/x86_64-unix/wine; do
     codesign --force --sign - --identifier org.whisky.wine --timestamp=none "$launcher"
     codesign --verify --strict "$launcher"
 done
+
+# Re-sign winemetal.so after install_name_tool adds @loader_path/../.. to its LC_RPATH.
+winemetal_so="$1/lib/wine/x86_64-unix/winemetal.so"
+if [ -f "$winemetal_so" ]; then
+    codesign --force --sign - --timestamp=none "$winemetal_so"
+    codesign --verify --strict "$winemetal_so"
+fi

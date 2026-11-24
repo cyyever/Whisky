@@ -312,7 +312,7 @@ wine_clean_path() {
 # slice, and conftest binaries still run inside the x86_64 clean room, so
 # configure keeps concluding "not cross compiling".
 wine_cc_cmd()  { if whisky_ccache_on; then echo "ccache clang -arch x86_64"; else echo "clang -arch x86_64"; fi; }
-wine_cxx_cmd() { if whisky_ccache_on; then echo "ccache clang++ -arch x86_64"; else echo "clang++ -arch x86_64"; fi; }
+wine_cxx_cmd() { if whisky_ccache_on; then echo "ccache clang++ -arch x86_64 -std=gnu++26"; else echo "clang++ -arch x86_64 -std=gnu++26"; fi; }
 
 # wine_configure <build_dir> [extra_configure_flags...] — cd into build_dir and
 # run Wine's ../configure for the x86_64/Rosetta build inside an `env -i` clean
@@ -457,4 +457,38 @@ relocate_to_rpath() {
             esac
         done
     done
+}
+
+# Pre-warm Rosetta 2's AOT cache (/var/db/oah) for x86_64 Mach-O modules at
+# their final installed paths. Rosetta keys its cache on vnode identity
+# (inode + mtime), so every fresh `cp` invalidates it; without warming here,
+# the first Wine child process to dlopen a large module (such as Mullion's
+# winemetal.so during Steam's GpuTopology query) blocks in oahd and exceeds
+# Steam's child-process query timeout.
+prewarm_rosetta_aot() {
+    [ "$(uname -m)" = "arm64" ] || return 0
+    [ "$#" -gt 0 ] || return 0
+    local existing=() f tmpdir helper
+    for f in "$@"; do
+        [ -f "$f" ] && existing+=("$f")
+    done
+    [ "${#existing[@]}" -gt 0 ] || return 0
+    tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/whisky-rosetta-warm.XXXXXX")"
+    helper="$tmpdir/warm"
+    cat > "$tmpdir/warm.c" <<'EOF'
+#include <dlfcn.h>
+int main(int argc, char **argv) {
+    for (int i = 1; i < argc; ++i) {
+        void *h = dlopen(argv[i], RTLD_LAZY);
+        if (h) dlclose(h);
+    }
+    return 0;
+}
+EOF
+    if xcrun clang -arch x86_64 -O2 "$tmpdir/warm.c" -o "$helper" 2>/dev/null; then
+        echo "=== Pre-warming Rosetta AOT cache (${#existing[@]} module(s)) ==="
+        DYLD_FALLBACK_LIBRARY_PATH="$INSTALL_DIR/Wine/lib" \
+            arch -x86_64 "$helper" "${existing[@]}" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$tmpdir"
 }

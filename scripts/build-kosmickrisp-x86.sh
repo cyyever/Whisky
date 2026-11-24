@@ -36,6 +36,7 @@ if [ -n "${WHISKY_BUILD_JOBS:-}" ]; then NINJA_JOBS=(-j "$(whisky_ncpu)"); fi
 # This payload only needs the Vulkan-on-Metal driver. Media playback is
 # provided separately by Wine/GStreamer, not Mesa video drivers.
 minimal_options=(
+    -Dcpp_std=c++26
     -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dglx=disabled
     -Dgbm=disabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
     -Dbuild-tests=false
@@ -166,7 +167,18 @@ ninja -C "$DRIVER_BUILD" "${NINJA_JOBS[@]}"
 echo "=== Installing to $OUT_DIR ==="
 mkdir -p "$OUT_DIR"
 DYLIB="$DRIVER_BUILD/src/kosmickrisp/vulkan/libvulkan_kosmickrisp.dylib"
-cp "$DYLIB" "$OUT_DIR/"
+STAGE_DYLIB="$OUT_DIR/.libvulkan_kosmickrisp.dylib.$$"
+cp "$DYLIB" "$STAGE_DYLIB"
+if [ "${WHISKY_KK_DEBUG:-0}" != 1 ]; then
+    strip -x "$STAGE_DYLIB"
+fi
+codesign --force --sign - --timestamp=none "$STAGE_DYLIB"
+if ! cmp -s "$STAGE_DYLIB" "$OUT_DIR/libvulkan_kosmickrisp.dylib"; then
+    mv "$STAGE_DYLIB" "$OUT_DIR/libvulkan_kosmickrisp.dylib"
+    prewarm_rosetta_aot "$OUT_DIR/libvulkan_kosmickrisp.dylib"
+else
+    rm -f "$STAGE_DYLIB"
+fi
 # Homebrew does not always leave an unversioned python3 symlink in bin (this
 # machine has only python3.12 and python3.14), so resolve an interpreter
 # instead of hardcoding one. Any python3 will do --

@@ -118,13 +118,12 @@ if [ -f "$DXVK_SRC_DIR/build.w64/src/d3d9/d3d9.dll" ]; then
 fi
 
 # Restore the Mullion builtins after Wine installs its Direct3D DLLs.
+# Meson already strips and signs these in vendor/mullion-install-x86_64.
 MULLION_STAGE="$PROJECT_DIR/vendor/mullion-install-x86_64"
 if [ -d "$MULLION_STAGE/x86_64-windows" ] && [ -d "$MULLION_STAGE/x86_64-unix" ]; then
     echo "=== Restoring Mullion builtins over Wine's Direct3D implementation ==="
-    for mullion_dll in "$MULLION_STAGE/x86_64-windows/"*.dll; do
-        cp "$mullion_dll" "$WINE_STAGE/lib/wine/x86_64-windows/"
-    done
-    cp "$MULLION_STAGE/x86_64-unix/winemetal.so" "$WINE_STAGE/lib/wine/x86_64-unix/"
+    cp "$MULLION_STAGE/x86_64-windows/"*.dll "$WINE_STAGE/lib/wine/x86_64-windows/"
+    cp "$MULLION_STAGE/x86_64-unix/winemetal.so" "$WINE_STAGE/lib/wine/x86_64-unix/winemetal.so"
 fi
 
 # Preserve versioned dylib symlinks when bundling runtime dependencies.
@@ -279,6 +278,14 @@ mv "$WINE_STAGE" "$INSTALL_DIR/Wine"
 WINE_STAGE=""
 mv "$VERSION_STAGE" "$INSTALL_DIR/WhiskyWineVersion.plist"
 INSTALL_COMMITTED=1
+
+prewarm_rosetta_aot \
+    "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/ntdll.so" \
+    "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/win32u.so" \
+    "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/winemac.so" \
+    "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/winevulkan.so" \
+    "$INSTALL_DIR/Wine/lib/wine/x86_64-unix/winemetal.so" \
+    "$KK_DYLIB"
 
 echo "=== Done! ==="
 echo "Wine version: $WINE_VER"

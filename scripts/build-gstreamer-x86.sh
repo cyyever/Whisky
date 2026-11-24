@@ -92,6 +92,8 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     --cross-file "$CROSS_FILE"
     --prefix "$OUT_DIR"
     -Dbuildtype=release
+    -Dcpp_std=c++26
+    -Dglib:tests=false
     -Dauto_features=disabled
     # The subprojects we need, and every other one off.
     -Dbase=enabled -Dugly=enabled -Dlibav=enabled
