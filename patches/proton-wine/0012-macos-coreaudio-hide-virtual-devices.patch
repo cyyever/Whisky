@@ -1,17 +1,18 @@
 Subject: winecoreaudio: hide virtual audio devices from games (macOS)
 
-Ports Whisky wine patch 0005. Skips virtual audio devices (Teams/Steam streaming) when WHISKY_HIDE_VIRTUAL_AUDIO is set, fixing device-enumeration hangs.
+Ports Whisky wine patch 0005. Skips virtual audio devices (Teams/Steam streaming) by default (set WHISKY_HIDE_VIRTUAL_AUDIO=0 to disable), fixing device-enumeration hangs.
 
 diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
 --- a/dlls/mmdevapi/devenum.c
 +++ b/dlls/mmdevapi/devenum.c
-@@ -769,6 +769,11 @@ HRESULT load_devices_from_reg(void)
+@@ -769,6 +769,12 @@ HRESULT load_devices_from_reg(void)
          return E_FAIL;
      }
  
 +    /* Keep the property-store keys initialized even when cached devices are
 +     * hidden. Live devices still need these keys for their properties. */
-+    if (getenv("WHISKY_HIDE_VIRTUAL_AUDIO"))
++    const char *hide_virtual = getenv("WHISKY_HIDE_VIRTUAL_AUDIO");
++    if (!hide_virtual || strcmp(hide_virtual, "0") != 0)
 +        return S_OK;
 +
      do {
@@ -25,10 +26,10 @@ index b9c6e70..5d803e1 100644
      return STATUS_SUCCESS;
  }
  
-+/* When the WHISKY_HIDE_VIRTUAL_AUDIO env var is set, hide virtual audio devices
-+ * (Steam Streaming, Teams, loopback, ...) from apps. Some games hang forever
-+ * enumerating them. Physical (built-in/USB/Bluetooth) and aggregate devices are
-+ * left untouched, and the whole thing is a no-op when the var is unset. */
++/* Hide virtual audio devices (Steam Streaming, Teams, loopback, ...) from apps
++ * by default. Some games hang forever enumerating them. Physical
++ * (built-in/USB/Bluetooth) and aggregate devices are left untouched; set
++ * WHISKY_HIDE_VIRTUAL_AUDIO=0 to disable. */
 +static BOOL device_is_hidden_virtual(AudioDeviceID device)
 +{
 +    static int hide = -1;
@@ -36,7 +37,7 @@ index b9c6e70..5d803e1 100644
 +    UInt32 transport, size;
 +    OSStatus sc;
 +
-+    if(hide == -1) hide = getenv("WHISKY_HIDE_VIRTUAL_AUDIO") ? 1 : 0;
++    if(hide == -1) { const char *e = getenv("WHISKY_HIDE_VIRTUAL_AUDIO"); hide = (!e || strcmp(e, "0") != 0) ? 1 : 0; }
 +    if(!hide) return FALSE;
 +
 +    addr.mSelector = kAudioDevicePropertyTransportType;

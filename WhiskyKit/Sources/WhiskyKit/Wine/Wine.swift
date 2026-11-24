@@ -271,12 +271,12 @@ public class Wine {
         let wineLibPath = WhiskyWineInstaller.libraryFolder
             .appending(path: "Wine").appending(path: "lib").path
         // Only what the launcher alone can know. The constants that used to sit
-        // here — WINE_DISABLE_IPV6, WINE_NX_COMPAT, WINEMSYNC_NO_MANUALEVENT,
-        // PROTON_DISABLE_LSTEAMCLIENT, SDL_JOYSTICK_MFI — are now defaults in the
-        // code that reads them (patches 0011, 0019, 0008, 0031, 0032), each still
-        // overridable by setting the variable to "0". A constant set here has to
-        // be mirrored by hand in every harness that stands in for a GUI launch,
-        // and those mirrors drift.
+        // here — WINE_DISABLE_IPV6, WHISKY_HIDE_VIRTUAL_AUDIO, WINE_NX_COMPAT,
+        // WINEMSYNC_NO_MANUALEVENT, PROTON_DISABLE_LSTEAMCLIENT, SDL_JOYSTICK_MFI
+        // — are now defaults in the code that reads them (patches 0011, 0012,
+        // 0019, 0008, 0031, 0032), each still overridable by setting the variable
+        // to "0". A constant set here has to be mirrored by hand in every harness
+        // that stands in for a GUI launch, and those mirrors drift.
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,
             "WINEDEBUG": "-all",
@@ -311,15 +311,8 @@ public class Wine {
             "ROSETTA_ADVERTISE_AVX": "1",
             "GST_DEBUG": "1",
         ]
-        // The same bottle settings the clients get. WINEMSYNC is the one that
-        // must not diverge: server/msync.c has its own do_msync(), so leaving
-        // this out let a bottle with enhanced sync set to none run clients on
-        // server-sync while the wineserver still believed msync was on. Neither
-        // half is wrong on its own, which is what makes it easy to miss --
-        // and it silently invalidates any msync A/B run through this path,
-        // because only one side of the pair actually changed. Everything else
-        // here is inert server-side but is inherited by the processes wineserver
-        // spawns.
+        // Inherit the same bottle settings as clients so wineserver and any
+        // processes it spawns stay consistent.
         bottle.settings.environmentVariables(wineEnv: &result)
         result.merge(environment, uniquingKeysWith: { $1 })
         return result

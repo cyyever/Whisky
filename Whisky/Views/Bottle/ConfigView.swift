@@ -33,9 +33,6 @@ struct ConfigView: View {
     var body: some View {
         Form {
             Section("config.title.wine", isExpanded: $wineSectionExpanded) {
-                // Enhanced Sync selector removed: the backend is locked to msync on
-                // this stack (macOS has no eventfd for esync). `enhancedSync` stays in
-                // the model at its `.msync` default for decode compat.
                 Toggle(isOn: $bottle.settings.followSystemProxy) {
                     Text("config.followSystemProxy")
                     Text("config.followSystemProxy.info")

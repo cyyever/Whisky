@@ -94,15 +94,10 @@ public enum WinVersion: String, CaseIterable, Codable, Sendable {
     case win11 = "win11"
 }
 
-public enum EnhancedSync: Codable, Equatable {
-    case none, esync, msync
-}
-
 public struct BottleWineConfig: Codable, Equatable {
     static let defaultWineVersion = SemanticVersion(11, 11, 0)
     var wineVersion: SemanticVersion = Self.defaultWineVersion
     var windowsVersion: WinVersion = .win11
-    var enhancedSync: EnhancedSync = .none
     var followSystemProxy: Bool = true
 
     public init() {}
@@ -114,9 +109,6 @@ public struct BottleWineConfig: Codable, Equatable {
         // Keep the stored version until runProgram updates Wine's registry.
         // Changing metadata alone would leave it out of sync with the prefix.
         self.windowsVersion = container.decodeResilient(WinVersion.self, forKey: .windowsVersion, default: .win11)
-        // Legacy esync is unavailable on macOS; use server synchronization.
-        let sync = container.decodeResilient(EnhancedSync.self, forKey: .enhancedSync, default: .none)
-        self.enhancedSync = sync == .esync ? .none : sync
         self.followSystemProxy = container.decodeResilient(Bool.self, forKey: .followSystemProxy, default: true)
     }
 }
@@ -194,11 +186,6 @@ public struct BottleSettings: Codable, Equatable {
         set { info.blocklist = newValue }
     }
 
-    public var enhancedSync: EnhancedSync {
-        get { return wineConfig.enhancedSync }
-        set { wineConfig.enhancedSync = newValue }
-    }
-
     public var dxrEnabled: Bool {
         get { return metalConfig.dxrEnabled }
         set { metalConfig.dxrEnabled = newValue }
@@ -252,19 +239,9 @@ public struct BottleSettings: Codable, Equatable {
         // registry* entry, which is consulted whether or not anyone set an env —
         // and that is what 0017 is for.
 
-        switch enhancedSync {
-        case .none, .esync:
-            wineEnv.updateValue("0", forKey: "WINEMSYNC")
-        case .msync:
-            wineEnv.updateValue("1", forKey: "WINEMSYNC")
-        }
-
         if dxrEnabled {
             wineEnv.updateValue("1", forKey: "D3DM_SUPPORT_DXR")
         }
-
-        // Keep virtual audio devices hidden to avoid game enumeration hangs.
-        wineEnv.updateValue("1", forKey: "WHISKY_HIDE_VIRTUAL_AUDIO")
 
         if followSystemProxy {
             for (key, value) in SystemProxy.environmentVariables() {

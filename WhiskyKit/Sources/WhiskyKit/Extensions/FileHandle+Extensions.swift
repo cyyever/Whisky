@@ -96,8 +96,7 @@ extension FileHandle {
                 "Wine patch series \(installed) != app's \(skew.expected); run 'make proton'"
             )
         }
-        header += "Windows Version: \(bottle.settings.windowsVersion)\n"
-        header += "Enhanced Sync: \(bottle.settings.enhancedSync)\n\n"
+        header += "Windows Version: \(bottle.settings.windowsVersion)\n\n"
 
         write(line: header)
     }
