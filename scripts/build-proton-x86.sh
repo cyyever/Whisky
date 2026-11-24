@@ -230,6 +230,24 @@ INFEOF
     ' "$WINE_INF" > "$WINE_INF.new" && mv "$WINE_INF.new" "$WINE_INF"
 fi
 
+# Build wineserver as native arm64: it is an independent daemon that executes
+# no x86 Windows code and communicates with Rosetta x86_64 wine64 clients over
+# LP64 little-endian Unix sockets / shared memory (patch 0045 advertises AMD64).
+echo "=== Building native arm64 wineserver ==="
+WS_OBJ="$WINE_SRC/build/server-arm64"
+rm -rf "$WS_OBJ" && mkdir -p "$WS_OBJ"
+for f in "$WINE_SRC"/server/*.c; do
+    base=$(basename "$f" .c)
+    ccache clang -arch arm64 -O2 -c -o "$WS_OBJ/${base}.o" "$f" \
+        -I"$WINE_SRC/build/server" -I"$WINE_SRC/server" \
+        -I"$WINE_SRC/build/include" -I"$WINE_SRC/include" \
+        -D__WINESRC__ -DWINE_UNIX_LIB \
+        -DBINDIR='"/usr/local/bin"' -DDATADIR='"/usr/local/share"' \
+        -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing
+done
+clang -arch arm64 -o "$WINE_STAGE/bin/wineserver" "$WS_OBJ"/*.o
+rm -rf "$WS_OBJ"
+
 # Create wine64 symlink for Whisky compatibility
 cd "$WINE_STAGE/bin"
 [ ! -f wine64 ] && ln -s wine wine64
@@ -291,3 +309,4 @@ echo "=== Done! ==="
 echo "Wine version: $WINE_VER"
 echo "Installed to: $INSTALL_DIR"
 file "$INSTALL_DIR/Wine/bin/wine64"
+file "$INSTALL_DIR/Wine/bin/wineserver"
