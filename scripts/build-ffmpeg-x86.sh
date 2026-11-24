@@ -9,10 +9,13 @@ set -e
 # Tahoe and its source build is gated on the newest Xcode.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+whisky_ccache_guard   # honor WHISKY_CCACHE=0
 whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 FFMPEG_SRC="$PROJECT_DIR/vendor/ffmpeg"
 FFMPEG_PREFIX="$PROJECT_DIR/vendor/ffmpeg-x86"
 FFMPEG_TAG=n9.0.2
+FFMPEG_CC="clang -arch x86_64"
+if whisky_ccache_on; then FFMPEG_CC="ccache $FFMPEG_CC"; fi
 
 BUILD_DIR="$FFMPEG_SRC/build-x86_64"
 if [ ! -d "$FFMPEG_SRC" ]; then
@@ -37,11 +40,12 @@ echo "=== Configuring FFmpeg (x86_64, minimal) ==="
 ../configure \
     --prefix="$FFMPEG_PREFIX" \
     --arch=x86_64 \
-    --cc="clang -arch x86_64" \
+    --cc="$FFMPEG_CC" \
     --enable-shared \
     --disable-static \
     --disable-programs \
     --disable-doc \
+    --disable-debug \
     --disable-avdevice \
     `# avfilter is for gst-libav, not winedmo: its meson requires libavfilter` \
     `# >= 7.16.100 with no wrap fallback, so a build without it stops at` \
@@ -49,6 +53,7 @@ echo "=== Configuring FFmpeg (x86_64, minimal) ==="
     --enable-avfilter \
     --disable-encoders \
     --disable-muxers \
+    --disable-hwaccels \
     --disable-network
 
 echo "=== Building FFmpeg ==="

@@ -29,9 +29,8 @@ whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 XCODE_CLANG="$(xcrun --find clang)"
 XCODE_CLANGXX="$(xcrun --find clang++)"
 MACOS_SDK="$(xcrun --show-sdk-path)"
-# WHISKY_BUILD_JOBS caps ninja; unset, ninja keeps its own default.
-NINJA_JOBS=()
-if [ -n "${WHISKY_BUILD_JOBS:-}" ]; then NINJA_JOBS=(-j "$(whisky_ncpu)"); fi
+# Cap ninja to whisky_ncpu (performance cores by default; WHISKY_BUILD_JOBS overrides).
+NINJA_JOBS=(-j "$(whisky_ncpu)")
 
 # This payload only needs the Vulkan-on-Metal driver. Media playback is
 # provided separately by Wine/GStreamer, not Mesa video drivers.
@@ -127,14 +126,15 @@ EOF
 echo "=== Phase 2: x86_64 KosmicKrisp driver ==="
 export PATH="$TOOLS_BIN:$PATH"
 # LIBDIR, not PATH: PKG_CONFIG_PATH only puts these first, and anything missing
-# from them then resolves from the ARM brew -- an arm64 spirv-tools that the
-# x86_64 kk_clc cannot link ("_spvTextDestroy ... not found for architecture
-# x86_64"). With LIBDIR an absent x86_64 library fails at configure instead.
+# from them then resolves from the ARM brew. With LIBDIR an absent x86_64
+# library fails at configure instead. Phase 2 passes -Dspirv-tools=disabled
+# (only vtn_debug's assembly dump uses SPIRV-Tools; phase 1's arm64 mesa_clc
+# already resolved SPIRV-Tools from the ARM64 brew).
 export PKG_CONFIG_LIBDIR="$X86_DEPS/lib/pkgconfig:$X86_DEPS/share/pkgconfig"
 meson_args=( "$DRIVER_BUILD" "$MESA_SRC" --cross-file "$CROSS_FILE"
     -Dbuildtype=release -Dplatforms=macos
     -Dvulkan-drivers=kosmickrisp -Dgallium-drivers= -Dopengl=false
-    -Dmesa-clc=system -Dzstd=disabled "${minimal_options[@]}" )
+    -Dmesa-clc=system -Dspirv-tools=disabled -Dzstd=disabled "${minimal_options[@]}" )
 # meson records the cross-file's absolute path in meson-private/cmd_line.txt and
 # re-reads it on every regeneration -- including from `ninja`, before it can be
 # told a new one. So a build dir configured against a cross-file that has since

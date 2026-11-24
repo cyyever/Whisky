@@ -136,12 +136,14 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     -Dgst-plugins-base:gl_api=opengl
     -Dgst-plugins-base:gl_platform=cgl
     -Dgst-plugins-base:gl_winsys=cocoa
-    # glvideoflip is compiled only when graphene is found -- see
-    # gst-plugins-base/ext/gl/meson.build. NOTE: since proton-wine patch 0035
-    # (no GL display on macOS) winegstreamer's GL element chain is never built
-    # here, so this exists only to keep the plugin set complete for a future
-    # re-enable; Wine's configure needs just the gstreamer-gl-1.0 LIBRARY.
-    -Dgst-plugins-base:gl-graphene=enabled
+    # Since proton-wine patch 0035 (no GL display on macOS) winegstreamer's GL
+    # element chain is never built; Wine's configure needs only libgstgl-1.0,
+    # so skip gl-graphene and avoid building the entire graphene wrap subproject.
+    -Dgst-plugins-base:gl-graphene=disabled
+    -Dgst-plugins-bad:mse=disabled
+    -Dgst-plugins-bad:vulkan=disabled
+    -Dgst-plugins-bad:wayland=disabled
+    -Dgst-plugins-bad:va=disabled
     -Dgst-plugins-ugly:asfdemux=enabled
     -Dgst-plugins-ugly:gpl=enabled
     # winegstreamer instantiates these by name (create_element / factory_make in
@@ -200,8 +202,9 @@ else
     meson setup "${meson_args[@]}"
 fi
 
-echo "=== Building ==="
-ninja -C "$BUILD_DIR"
+NCPU=$(whisky_ncpu)
+echo "=== Building GStreamer with $NCPU jobs ==="
+ninja -C "$BUILD_DIR" -j "$NCPU"
 
 # meson install adds and overwrites; it never removes. A libintl.8.dylib from a
 # configuration that still built proxy-libintl survives here and gets bundled
@@ -213,6 +216,29 @@ ninja -C "$BUILD_DIR"
 # GStreamer and says nothing about it.
 rm -rf "$OUT_DIR"
 meson install -C "$BUILD_DIR"
+# Prune GObject-Introspection and unused gst-plugins-bad helper libraries that
+# Meson installs unconditionally even with -Dauto_features=disabled, keeping
+# Wine/lib lean when build-proton-x86.sh bundles vendor/gstreamer-x86/lib/*.dylib.
+rm -f "$OUT_DIR"/lib/libgirepository-* \
+      "$OUT_DIR"/lib/libgstadaptivedemux-* \
+      "$OUT_DIR"/lib/libgstanalytics-* \
+      "$OUT_DIR"/lib/libgstbadaudio-* \
+      "$OUT_DIR"/lib/libgstbasecamerabinsrc-* \
+      "$OUT_DIR"/lib/libgstcodecs-* \
+      "$OUT_DIR"/lib/libgstcuda-* \
+      "$OUT_DIR"/lib/libgstinsertbin-* \
+      "$OUT_DIR"/lib/libgstisoff-* \
+      "$OUT_DIR"/lib/libgstmpegts-* \
+      "$OUT_DIR"/lib/libgstmse-* \
+      "$OUT_DIR"/lib/libgstphotography-* \
+      "$OUT_DIR"/lib/libgstplay-* \
+      "$OUT_DIR"/lib/libgstplayer-* \
+      "$OUT_DIR"/lib/libgstsctp-* \
+      "$OUT_DIR"/lib/libgsttranscoder-* \
+      "$OUT_DIR"/lib/libgsturidownloader-* \
+      "$OUT_DIR"/lib/libgstvulkan-* \
+      "$OUT_DIR"/lib/libgstwayland-* \
+      "$OUT_DIR"/lib/libgstwebrtc*
 
 echo "=== Done ==="
 echo "Installed to: $OUT_DIR"

@@ -25,7 +25,8 @@ APP_PRODUCTS := $(HOME)/Library/Developer/Xcode/DerivedData/Whisky-*/Build/Produ
 DEVELOPER_DIR ?= $(shell xcodebuild -version >/dev/null 2>&1 && xcode-select -p || echo /Applications/Xcode.app/Contents/Developer)
 export DEVELOPER_DIR
 
-XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky
+BUILD_JOBS ?= $(shell sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || echo 4)
+XCODEBUILD := xcodebuild -project Whisky.xcodeproj -scheme Whisky -jobs $(BUILD_JOBS)
 CODESIGN_OFF := CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 SWIFTLINT ?= swiftlint
 

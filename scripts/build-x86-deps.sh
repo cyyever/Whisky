@@ -21,14 +21,14 @@ set -euo pipefail
 #   SDL2         linked by winebus.so for controllers (vendor/sdl2)
 #   Vulkan loader  winevulkan dlopens it; build-proton-x86.sh installs it at the
 #                leaf names winevulkan looks for and points it at KosmicKrisp
-#   SPIRV-Tools  static, for build-kosmickrisp-x86.sh: the x86_64 driver and its
-#                kk_clc link it (mesa's vtn disassembler)
 #
-# Not built, because nothing needs an x86_64 copy: gettext (msgfmt is a build
-# tool, the ARM one serves; every library here is built without NLS, so no
-# libintl), MoltenVK (KosmicKrisp is the Vulkan driver), and the libraries
-# gnutls can carry inside itself (libtasn1, libunistring) or does not need
-# (p11-kit, libidn2, trousers).
+# Not built, because nothing needs an x86_64 copy: SPIRV-Tools (phase 1 of
+# build-kosmickrisp-x86.sh uses the ARM64 brew's spirv-tools for mesa_clc, while
+# phase 2 disables spirv-tools since only debug disassembly uses it), gettext
+# (msgfmt is a build tool, the ARM one serves; every library here is built
+# without NLS, so no libintl), MoltenVK (KosmicKrisp is the Vulkan driver), and
+# the libraries gnutls can carry inside itself (libtasn1, libunistring) or does
+# not need (p11-kit, libidn2, trousers).
 #
 # Sources are pinned release tarballs, checked against the sha256 below and
 # cached in build/downloads. Output: vendor/x86-deps/{lib,include}. Every
@@ -59,8 +59,6 @@ FREETYPE_SHA=93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5
 VULKAN_VER=vulkan-sdk-1.4.363.0
 VULKAN_HEADERS_SHA=4a078be12bef21cfebc09d878b77a63cff9d68f899254a0b00d0e37ef73e7f7e
 VULKAN_LOADER_SHA=941eff558fc74f248745fb7df367640cf89a8457f216dae498a74ae14b6ba6f7
-SPIRV_HEADERS_SHA=5b3a0d099f5c7649e29c0938476c462e71d66ad89a0bde42fa1ba3eb476956c9
-SPIRV_TOOLS_SHA=e6c83a215538fbfd265ccf398d3877985055df1273dbed73912bd05307664688
 
 # GNU's own servers (ftp.gnu.org, ftpmirror.gnu.org, savannah) time out from
 # here -- that is where the brew build stalled -- so the GNU tarballs come from
@@ -145,7 +143,7 @@ cmake_build() {
         `# step in build-proton-x86.sh rewrites these to @rpath anyway.` \
         -DCMAKE_INSTALL_NAME_DIR="$PREFIX/lib" \
         "$@"
-    cmake --build "$build"
+    cmake --build "$build" --parallel "$(whisky_ncpu)"
     cmake --install "$build"
 }
 
@@ -160,10 +158,6 @@ fetch "Vulkan-Headers-$VULKAN_VER.tar.gz" "$VULKAN_HEADERS_SHA" \
     "https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/refs/tags/$VULKAN_VER"
 fetch "Vulkan-Loader-$VULKAN_VER.tar.gz" "$VULKAN_LOADER_SHA" \
     "https://codeload.github.com/KhronosGroup/Vulkan-Loader/tar.gz/refs/tags/$VULKAN_VER"
-fetch "SPIRV-Headers-$VULKAN_VER.tar.gz" "$SPIRV_HEADERS_SHA" \
-    "https://codeload.github.com/KhronosGroup/SPIRV-Headers/tar.gz/refs/tags/$VULKAN_VER"
-fetch "SPIRV-Tools-$VULKAN_VER.tar.gz" "$SPIRV_TOOLS_SHA" \
-    "https://codeload.github.com/KhronosGroup/SPIRV-Tools/tar.gz/refs/tags/$VULKAN_VER"
 
 echo "=== GMP $GMP_VER ==="
 unpack "gmp-$GMP_VER.tar.xz" "$WORK_DIR/gmp"
@@ -199,12 +193,18 @@ cmake_build "$WORK_DIR/freetype-src" "$WORK_DIR/freetype-build" \
     -DFT_REQUIRE_ZLIB=ON -DFT_DISABLE_BZIP2=ON -DFT_DISABLE_PNG=ON \
     -DFT_DISABLE_HARFBUZZ=ON -DFT_DISABLE_BROTLI=ON
 
-echo "=== SDL2 (vendor/sdl2) ==="
+echo "=== SDL2 (vendor/sdl2, controller/haptic subsystems only) ==="
 git -C "$PROJECT_DIR" submodule update --init --depth 1 vendor/sdl2
 # Build dir outside the submodule, so the parent repo does not report untracked
-# content in vendor/sdl2.
+# content in vendor/sdl2. Only winebus.sys loads SDL2 (for gamecontroller +
+# haptic); drop Cocoa/audio/render/video/GPU backends that Wine never calls.
 cmake_build "$PROJECT_DIR/vendor/sdl2" "$WORK_DIR/sdl2-build" \
-    -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF -DSDL_TESTS=OFF -DSDL_INSTALL_TESTS=OFF
+    -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL2_DISABLE_SDL2MAIN=ON \
+    -DSDL_TEST=OFF -DSDL_TESTS=OFF -DSDL_INSTALL_TESTS=OFF \
+    -DSDL_AUDIO=OFF -DSDL_VIDEO=OFF -DSDL_RENDER=OFF \
+    -DSDL_POWER=OFF -DSDL_SENSOR=OFF -DSDL_LOCALE=OFF -DSDL_MISC=OFF \
+    -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF -DSDL_METAL=OFF -DSDL_VULKAN=OFF \
+    -DSDL_COCOA=OFF -DSDL_DUMMYVIDEO=OFF -DSDL_OFFSCREEN=OFF
 
 echo "=== Vulkan headers + loader ($VULKAN_VER) ==="
 unpack "Vulkan-Headers-$VULKAN_VER.tar.gz" "$WORK_DIR/vulkan-headers-src"
@@ -213,16 +213,9 @@ unpack "Vulkan-Loader-$VULKAN_VER.tar.gz" "$WORK_DIR/vulkan-loader-src"
 cmake_build "$WORK_DIR/vulkan-loader-src" "$WORK_DIR/vulkan-loader-build" \
     -DVULKAN_HEADERS_INSTALL_DIR="$PREFIX" -DBUILD_TESTS=OFF
 
-echo "=== SPIRV-Headers + SPIRV-Tools ($VULKAN_VER) ==="
-unpack "SPIRV-Headers-$VULKAN_VER.tar.gz" "$WORK_DIR/spirv-headers-src"
-cmake_build "$WORK_DIR/spirv-headers-src" "$WORK_DIR/spirv-headers-build"
-unpack "SPIRV-Tools-$VULKAN_VER.tar.gz" "$WORK_DIR/spirv-tools-src"
-# Static only: what links it is the KosmicKrisp driver, so there is no extra
-# dylib to bundle. Its generators run on the build machine's python3.
-cmake_build "$WORK_DIR/spirv-tools-src" "$WORK_DIR/spirv-tools-build" \
-    -DSPIRV-Headers_SOURCE_DIR="$WORK_DIR/spirv-headers-src" \
-    -DSPIRV_SKIP_TESTS=ON -DSPIRV_SKIP_EXECUTABLES=ON -DSPIRV_WERROR=OFF \
-    -DBUILD_SHARED_LIBS=OFF -DSPIRV_TOOLS_BUILD_STATIC=ON
+# Clean up any legacy SPIRV-Tools artifacts from older x86-deps runs so
+# build-proton-x86.sh never bundles a stray libSPIRV-Tools-shared.dylib.
+rm -f "$PREFIX"/lib/libSPIRV-Tools* "$PREFIX"/lib/pkgconfig/SPIRV-Tools*
 
 touch "$PREFIX/.built"   # the Makefile's stamp: written only once everything is in
 echo "=== Done: $PREFIX ==="

@@ -199,12 +199,18 @@ bottle_shellenv() {
     fi
 }
 
-# whisky_ncpu — parallelism for make/ninja (physical CPU count). A function, not
-# a source-time variable, so sourcing stays subprocess-free per the header.
+# whisky_ncpu — bounded parallelism for make/ninja/cmake/xcodebuild so heavy
+# C++26 / LLVM / Wine builds stay responsive and never saturate all cores or
+# memory: defaults to the performance-core count (4 on an 8-core M-series Mac,
+# else half of hw.ncpu, minimum 2). Override explicitly via WHISKY_BUILD_JOBS.
 whisky_ncpu() {
-    local jobs="${WHISKY_BUILD_JOBS:-}"
+    local jobs="${WHISKY_BUILD_JOBS:-}" total
     if [ -z "$jobs" ]; then
-        jobs=$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+        jobs=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || true)
+        if [ -z "$jobs" ] || [ "$jobs" -le 0 ] 2>/dev/null; then
+            total=$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+            jobs=$(( total / 2 > 1 ? total / 2 : 2 ))
+        fi
     fi
     case "$jobs" in ''|*[!0-9]*|0) echo "ERROR: invalid build parallelism: $jobs" >&2; return 1 ;; esac
     printf '%s\n' "$jobs"
@@ -369,7 +375,20 @@ wine_configure() {
             --with-gstreamer \
             "$@" \
             --disable-win16 \
+            --disable-winebth.sys \
             --without-x \
+            --without-wayland \
+            --without-opencl \
+            --without-alsa \
+            --without-oss \
+            --without-pulse \
+            --without-dbus \
+            --without-inotify \
+            --without-udev \
+            --without-capi \
+            --without-sane \
+            --without-netapi \
+            --without-fontconfig \
             --without-cups \
             --without-krb5 \
             --without-gssapi \
