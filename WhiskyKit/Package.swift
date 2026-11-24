@@ -25,10 +25,7 @@ let package = Package(
         .macOS("26.0")
     ],
     products: [
-        .library(
-            name: "WhiskyKit",
-            targets: ["WhiskyKit"]
-        ),
+        .library(name: "WhiskyKit", targets: ["WhiskyKit"])
     ],
     dependencies: [
         .package(url: "git@github.com:SwiftPackageIndex/SemanticVersion.git", from: "0.4.0")

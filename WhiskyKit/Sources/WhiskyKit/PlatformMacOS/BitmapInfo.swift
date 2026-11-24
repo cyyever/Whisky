@@ -182,11 +182,9 @@ public struct BitmapInfoHeader: Hashable {
             let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue)
             let quadStride = MemoryLayout<ColorQuad>.stride
 
-            if let providerRef = CGDataProvider(
-                data: Data(
-                    bytes: &pixels,
-                    count: pixels.count * quadStride) as CFData) {
-                if let cgImg = CGImage(
+            let pixelData = Data(bytes: &pixels, count: pixels.count * quadStride) as CFData
+            if let providerRef = CGDataProvider(data: pixelData) {
+                let cgImg = CGImage(
                     width: Int(width),
                     height: Int(height / 2),
                     bitsPerComponent: 8,
@@ -197,7 +195,9 @@ public struct BitmapInfoHeader: Hashable {
                     provider: providerRef,
                     decode: nil,
                     shouldInterpolate: true,
-                    intent: .defaultIntent) {
+                    intent: .defaultIntent,
+                )
+                if let cgImg {
                     return NSImage(cgImage: cgImg, size: .zero)
                 }
             }

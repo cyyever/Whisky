@@ -17,7 +17,7 @@
 //
 
 import Foundation
-import os.log
+import OSLog
 import SemanticVersion
 
 /// Decode-time resilience for the bottle-settings structs below.

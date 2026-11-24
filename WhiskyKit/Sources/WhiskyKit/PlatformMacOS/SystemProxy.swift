@@ -76,10 +76,11 @@ public enum SystemProxy {
         }
 
         // Hosts the system never proxies (loopback, RFC1918, *.local, …).
-        if let settingsDict = settings as? [String: Any],
-            let exceptions = settingsDict[kCFNetworkProxiesExceptionsList as String] as? [String],
-            !exceptions.isEmpty {
-            result["no_proxy"] = exceptions.joined(separator: ",")
+        if let settingsDict = settings as? [String: Any] {
+            let exceptionsKey = kCFNetworkProxiesExceptionsList as String
+            if let exceptions = settingsDict[exceptionsKey] as? [String], !exceptions.isEmpty {
+                result["no_proxy"] = exceptions.joined(separator: ",")
+            }
         }
 
         // Some clients only look for the uppercase spellings; provide both.
@@ -207,8 +208,8 @@ public enum SystemProxy {
         var resolved: [[String: Any]] = []
         for proxy in raw {
             let type = proxy[kCFProxyTypeKey as String] as? String
-            if type == (kCFProxyTypeAutoConfigurationURL as String),
-                let pacURL = proxy[kCFProxyAutoConfigurationURLKey as String] {
+            let autoConfigType = kCFProxyTypeAutoConfigurationURL as String
+            if type == autoConfigType, let pacURL = proxy[kCFProxyAutoConfigurationURLKey as String] {
                 // swiftlint:disable:next force_cast
                 resolved.append(contentsOf: executePAC(scriptURL: pacURL as! CFURL, targetURL: url))
             } else {
