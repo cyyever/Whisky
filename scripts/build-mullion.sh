@@ -69,7 +69,9 @@ done
 
 winemetal_updated=0
 if ! cmp -s "$MULLION_STAGE/x86_64-unix/winemetal.so" "$WINE_LIB/x86_64-unix/winemetal.so"; then
+    rm -f "$WINE_LIB/x86_64-unix/winemetal.so"
     cp "$MULLION_STAGE/x86_64-unix/winemetal.so" "$WINE_LIB/x86_64-unix/winemetal.so"
+    codesign --force --sign - "$WINE_LIB/x86_64-unix/winemetal.so"
     winemetal_updated=1
 fi
 
