@@ -30,6 +30,26 @@ public final class Bottle: ObservableObject, Equatable, Hashable, Identifiable, 
     }
     @Published public var inFlight: Bool = false
     @Published public var isAvailable: Bool = false
+    @Published public var launchingPrograms: Set<URL> = []
+    @Published public var launchingStatus: String?
+
+    @MainActor public func beginLaunching(_ programURL: URL, status: String) {
+        launchingPrograms.insert(programURL)
+        launchingStatus = status
+    }
+
+    @MainActor public func updateLaunchingStatus(_ status: String) {
+        if !launchingPrograms.isEmpty {
+            launchingStatus = status
+        }
+    }
+
+    @MainActor public func endLaunching(_ programURL: URL) {
+        launchingPrograms.remove(programURL)
+        if launchingPrograms.isEmpty {
+            launchingStatus = nil
+        }
+    }
 
     public struct PinnedProgramEntry: Identifiable {
         public let pin: PinnedProgram

@@ -29,6 +29,10 @@ struct PinView: View {
     @State private var showRenameSheet = false
     @State private var name: String = ""
 
+    private var isLaunching: Bool {
+        bottle.launchingPrograms.contains(program.url)
+    }
+
     var body: some View {
         VStack {
             Group {
@@ -41,8 +45,11 @@ struct PinView: View {
                 }
             }
             .frame(width: 45, height: 45)
+            .opacity(isLaunching ? 0.55 : 1.0)
+            .scaleEffect(isLaunching ? 0.94 : 1.0)
             Spacer()
-            Text(name)
+            Text(isLaunching ? String(localized: "launch.startingShort") : name)
+                .foregroundStyle(isLaunching ? .secondary : .primary)
                 .multilineTextAlignment(.center)
                 .lineLimit(2, reservesSpace: true)
         }
@@ -51,14 +58,22 @@ struct PinView: View {
         .overlay {
             HStack {
                 Spacer()
-                Image(systemName: "play.fill")
-                    .resizable()
-                    .foregroundColor(.green)
-                    .frame(width: 16, height: 16)
+                if isLaunching {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(3)
+                        .background(.ultraThinMaterial, in: Circle())
+                } else {
+                    Image(systemName: "play.fill")
+                        .resizable()
+                        .foregroundColor(.green)
+                        .frame(width: 16, height: 16)
+                }
             }
             .frame(width: 45, height: 45)
             .padding(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
         }
+        .animation(.whiskyDefault, value: isLaunching)
         .contextMenu {
             ProgramMenuView(program: program, path: $path)
 
@@ -72,6 +87,7 @@ struct PinView: View {
             .labelStyle(.titleAndIcon)
         }
         .onTapGesture(count: 2) {
+            guard !isLaunching else { return }
             program.run()
         }
         .accessibilityElement(children: .combine)

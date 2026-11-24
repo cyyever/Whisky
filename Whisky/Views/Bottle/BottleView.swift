@@ -65,11 +65,11 @@ struct BottleView: View {
                         bottle.openCDrive()
                     }
                     .accessibilityIdentifier("bottle.cDrive")
-                    if programLoading {
+                    if programLoading || !bottle.launchingPrograms.isEmpty {
                         Spacer()
                             .frame(width: 10)
-                        if let loadingStatus {
-                            Text(loadingStatus)
+                        if let statusText = loadingStatus ?? bottle.launchingStatus {
+                            Text(statusText)
                                 .foregroundStyle(.secondary)
                                 .font(.footnote)
                         }
@@ -102,7 +102,7 @@ struct BottleView: View {
                 ConfigView(bottle: bottle)
             }
             .navigationDestination(for: Program.self) { program in
-                ProgramView(program: program)
+                ProgramView(program: program, bottle: bottle)
             }
         }
     }

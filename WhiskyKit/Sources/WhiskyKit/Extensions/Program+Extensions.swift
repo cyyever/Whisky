@@ -33,17 +33,33 @@ extension Program {
     /// bottle preparation (Steam's CEF wrapper, DXVK auto-drop) happens exactly
     /// once, and there is only one way to run a program.
     public func launch() async {
+        let alreadyLaunching = await MainActor.run { bottle.launchingPrograms.contains(url) }
+        if alreadyLaunching { return }
+
+        let isSteam = Steam.isSteamClient(url)
         // Steam is single-instance: if a client is already running, warn and do not
         // start a second (their CEF trees would fight over the one -steampid). If
         // none is running, reap any orphaned Steam processes — crash / wineserver-kill
         // leftovers, including the background service — so the new one starts clean.
-        if Steam.isSteamClient(url) {
+        if isSteam {
             if Steam.isSteamRunning() {
                 await showSteamAlreadyRunningAlert()
                 return
             }
+            await bottle.beginLaunching(
+                url,
+                status: String(localized: "launch.preparingSteam", defaultValue: "Preparing Steam…")
+            )
             await Steam.reapSteamProcesses(in: bottle)
+            await bottle.updateLaunchingStatus(
+                String(localized: "launch.startingSteam", defaultValue: "Starting Steam…")
+            )
+        } else {
+            let displayName = url.deletingPathExtension().lastPathComponent
+            let format = NSLocalizedString("launch.startingProgram", value: "Starting %@…", comment: "")
+            await bottle.beginLaunching(url, status: String(format: format, displayName))
         }
+
         // GOG Galaxy is single-instance too, but decides that from lock files that
         // outlive a killed process — leaving every later launch to quit silently
         // (exit 0, nothing on screen). Clear them when no client is running.
@@ -54,9 +70,27 @@ extension Program {
             try await Wine.runProgram(
                 at: url, bottle: bottle, environment: generateEnvironment()
             )
+            if isSteam {
+                let targetBottle = bottle
+                await Steam.waitForWindowAfterLaunch(in: targetBottle) {
+                    await targetBottle.updateLaunchingStatus(
+                        String(localized: "launch.loadingSteamUI", defaultValue: "Loading Steam UI…")
+                    )
+                }
+            } else {
+                // Keep feedback visible briefly until a window maps (bounded ~3s) so
+                // double-clicking an exe never feels unresponsive.
+                for _ in 0..<12 {
+                    if Steam.hasVisibleBottleWindow(in: bottle) { break }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+            }
         } catch {
+            await bottle.endLaunching(url)
             await showRunError(message: error.localizedDescription)
+            return
         }
+        await bottle.endLaunching(url)
     }
 
     @MainActor private func showRunError(message: String) {

@@ -16,6 +16,7 @@
 //  If not, see https://www.gnu.org/licenses/.
 //
 
+import CoreGraphics
 import Darwin
 import Foundation
 
@@ -133,6 +134,68 @@ extension Steam {
             .appending(path: "htmlcache")
         StaleLocks.remove(htmlCache.appending(path: "lockfile"), describing: "Steam CEF lockfile")
         StaleLocks.removeAll(named: "LOCK", under: htmlCache, describing: "Steam LevelDB LOCK file(s)")
+    }
+
+    /// True when any Wine process running inside `bottle` has mapped a visible,
+    /// normal-layer window onto the macOS screen. Uses `CGWindowListCopyWindowInfo`
+    /// (window metadata only — no Screen Recording or Accessibility permission needed).
+    public static func hasVisibleBottleWindow(in bottle: Bottle) -> Bool {
+        let prefix = bottle.url.path(percentEncoded: false)
+        let pids = Set(WineProcesses.withWorkingDirectory(under: prefix))
+        guard !pids.isEmpty,
+            let raw = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+            ) as? [[String: Any]]
+        else {
+            return false
+        }
+        for entry in raw {
+            guard let ownerPID = entry[kCGWindowOwnerPID as String] as? pid_t,
+                pids.contains(ownerPID),
+                let layer = entry[kCGWindowLayer as String] as? Int,
+                layer == 0
+            else { continue }
+            if let boundsDict = entry[kCGWindowBounds as String] as? NSDictionary,
+                let rect = CGRect(dictionaryRepresentation: boundsDict),
+                rect.width >= 80, rect.height >= 60
+            {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Wait after `wine start Steam.exe` returns until Steam actually maps a window
+    /// (or exits early / reaches a ~45s bound), invoking `onLoadingUI` once CEF
+    /// (`steamwebhelper`) starts up.
+    public static func waitForWindowAfterLaunch(
+        in bottle: Bottle,
+        onLoadingUI: @Sendable () async -> Void
+    ) async {
+        var sawSteam = false
+        var reportedWebHelper = false
+        var missingTicksAfterSawSteam = 0
+        for _ in 0..<180 {  // ~45s at 250ms
+            if hasVisibleBottleWindow(in: bottle) {
+                return
+            }
+            if !reportedWebHelper, !WineProcesses.matching(patterns: ["steamwebhelper"], in: bottle).isEmpty {
+                reportedWebHelper = true
+                await onLoadingUI()
+            }
+            let running = !WineProcesses.matching(patterns: ["steam.exe"], in: bottle).isEmpty
+            if running {
+                sawSteam = true
+                missingTicksAfterSawSteam = 0
+            } else if sawSteam {
+                // Allow a brief gap (~1.5s) in case Steam's bootstrapper restarts steam.exe.
+                missingTicksAfterSawSteam += 1
+                if missingTicksAfterSawSteam >= 6 {
+                    return
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
     }
 }
 

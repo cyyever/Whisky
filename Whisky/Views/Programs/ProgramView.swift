@@ -21,10 +21,14 @@ import WhiskyKit
 
 struct ProgramView: View {
     @ObservedObject var program: Program
-    @State private var programLoading: Bool = false
+    @ObservedObject var bottle: Bottle
     @State private var cachedIconImage: Image?
     @AppStorage("configSectionExapnded") private var configSectionExpanded: Bool = true
     @AppStorage("envArgsSectionExpanded") private var envArgsSectionExpanded: Bool = true
+
+    private var isLaunching: Bool {
+        bottle.launchingPrograms.contains(program.url)
+    }
 
     var body: some View {
         Form {
@@ -44,13 +48,17 @@ struct ProgramView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([program.url])
                 }
                 Button("button.run") {
-                    programLoading = true
                     program.run()
                 }
-                .disabled(programLoading)
-                if programLoading {
+                .disabled(isLaunching)
+                if isLaunching {
                     Spacer()
                         .frame(width: 10)
+                    if let statusText = bottle.launchingStatus {
+                        Text(statusText)
+                            .foregroundStyle(.secondary)
+                            .font(.footnote)
+                    }
                     ProgressView()
                         .controlSize(.small)
                 }
