@@ -1,0 +1,379 @@
+Subject: ntdll: normalize macOS BSD getsockopt/setsockopt booleans and option lengths
+
+On macOS XNU, BSD socket options diverge from Windows/Linux in three ways that
+break Winsock callers (and fail 50+ assertions in ws2_32:sock):
+1. Boolean getsockopt() calls return internal kernel bitflags (e.g.
+   SO_BROADCAST=0x20, SO_OOBINLINE=0x100, SO_KEEPALIVE=0x08, TCP_NODELAY=0x04)
+   instead of 0/1. For 1-byte reads of SO_OOBINLINE, 0x100 even truncates to
+   0x00 (FALSE) when enabled. Normalize boolean options to 0/1.
+2. IP_MULTICAST_LOOP and IP_MULTICAST_TTL take 1-byte u_char on XNU, rejecting
+   2/3-byte lengths with EINVAL and truncating 4-byte 0x100 to 0x00. Adapt
+   1..4-byte Windows inputs and return 1- or 4-byte Windows outputs.
+3. IP_TOS, IP_TTL, IPV6_RECVHOPLIMIT, IPV6_RECVPKTINFO, IPV6_RECVTCLASS enforce
+   exact sizeof(int) on XNU (rejecting 1-, 2-, and 8-byte Windows buffers), and
+   TCP_KEEPCNT allows values > 255. Normalize widths and bounds to match
+   Windows Winsock semantics.
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 96e81525..2b089108 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -1595,6 +1595,79 @@ static NTSTATUS do_getsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
+     return STATUS_SUCCESS;
+ }
+ 
++static NTSTATUS do_getsockopt_bool( HANDLE handle, IO_STATUS_BLOCK *io, int level,
++                                    int option, void *out_buffer, ULONG out_size )
++{
++    int fd, needs_close = FALSE;
++    int val = 0;
++    socklen_t len = sizeof(val);
++    NTSTATUS status;
++    int ret;
++
++    if (!out_size) return STATUS_BUFFER_TOO_SMALL;
++    if ((status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, NULL )))
++        return status;
++
++    ret = getsockopt( fd, level, option, &val, &len );
++    if (needs_close) close( fd );
++    if (ret) return sock_errno_to_status( errno );
++
++    /* macOS/BSD returns kernel bitmasks (e.g. SO_BROADCAST=0x20, SO_OOBINLINE=0x100,
++     * SO_KEEPALIVE=0x8, TCP_NODELAY=0x4) instead of 0/1. Normalize to boolean so
++     * callers comparing == 1 or reading 1-byte buffers (where 0x100 truncates to 0)
++     * match Windows/Linux semantics. */
++    val = !!val;
++    len = min( out_size, (ULONG)sizeof(val) );
++    memcpy( out_buffer, &val, len );
++    if (io)
++    {
++        io->Status = STATUS_SUCCESS;
++        io->Information = len;
++    }
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS do_getsockopt_byte_or_int( HANDLE handle, IO_STATUS_BLOCK *io, int level,
++                                           int option, void *out_buffer, ULONG out_size,
++                                           BOOL unix_is_uchar, BOOL is_bool )
++{
++    int fd, needs_close = FALSE;
++    int val = 0;
++    NTSTATUS status;
++    int ret;
++
++    if (!out_size) return STATUS_BUFFER_TOO_SMALL;
++    if ((status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, NULL )))
++        return status;
++
++    if (unix_is_uchar)
++    {
++        unsigned char uc = 0;
++        socklen_t len = sizeof(uc);
++        ret = getsockopt( fd, level, option, &uc, &len );
++        val = uc;
++    }
++    else
++    {
++        socklen_t len = sizeof(val);
++        ret = getsockopt( fd, level, option, &val, &len );
++    }
++    if (needs_close) close( fd );
++    if (ret) return sock_errno_to_status( errno );
++
++    if (is_bool) val = !!val;
++    {
++        ULONG out_len = (out_size >= sizeof(int)) ? (ULONG)sizeof(int) : 1;
++        memcpy( out_buffer, &val, out_len );
++        if (io)
++        {
++            io->Status = STATUS_SUCCESS;
++            io->Information = out_len;
++        }
++    }
++    return STATUS_SUCCESS;
++}
++
+ 
+ static NTSTATUS do_setsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
+                                int option, const void *optval, socklen_t optlen )
+@@ -1613,6 +1686,25 @@ static NTSTATUS do_setsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
+     return STATUS_SUCCESS;
+ }
+ 
++static NTSTATUS do_setsockopt_int_flex( HANDLE handle, IO_STATUS_BLOCK *io, int level,
++                                        int option, const void *in_buffer, ULONG in_size,
++                                        BOOL is_bool, unsigned int max_val )
++{
++    unsigned int val = 0;
++    int v;
++
++    if (!in_size) return STATUS_BUFFER_TOO_SMALL;
++    memcpy( &val, in_buffer, min( in_size, (ULONG)sizeof(val) ) );
++    if (is_bool)
++        v = !!val;
++    else
++    {
++        if (max_val && val > max_val) return STATUS_INVALID_PARAMETER;
++        v = (int)val;
++    }
++    return do_setsockopt( handle, io, level, option, &v, sizeof(v) );
++}
++
+ 
+ static int get_sock_type( HANDLE handle )
+ {
+@@ -2087,13 +2179,13 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+             break;
+ 
+         case IOCTL_AFD_WINE_GET_SO_BROADCAST:
+-            return do_getsockopt( handle, io, SOL_SOCKET, SO_BROADCAST, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, SOL_SOCKET, SO_BROADCAST, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_SO_BROADCAST:
+             return do_setsockopt( handle, io, SOL_SOCKET, SO_BROADCAST, in_buffer, in_size );
+ 
+         case IOCTL_AFD_WINE_GET_SO_KEEPALIVE:
+-            return do_getsockopt( handle, io, SOL_SOCKET, SO_KEEPALIVE, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, SOL_SOCKET, SO_KEEPALIVE, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_SO_KEEPALIVE:
+             return do_setsockopt( handle, io, SOL_SOCKET, SO_KEEPALIVE, in_buffer, in_size );
+@@ -2133,7 +2225,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         }
+ 
+         case IOCTL_AFD_WINE_GET_SO_OOBINLINE:
+-            return do_getsockopt( handle, io, SOL_SOCKET, SO_OOBINLINE, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, SOL_SOCKET, SO_OOBINLINE, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_SO_OOBINLINE:
+             return do_setsockopt( handle, io, SOL_SOCKET, SO_OOBINLINE, in_buffer, in_size );
+@@ -2246,28 +2338,59 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
++#ifdef __APPLE__
++            return do_getsockopt_byte_or_int( handle, io, IPPROTO_IP, IP_MULTICAST_LOOP, out_buffer, out_size, TRUE, TRUE );
++#else
+             return do_getsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_LOOP, out_buffer, out_size );
++#endif
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IP_MULTICAST_LOOP:
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
++#ifdef __APPLE__
++            {
++                unsigned int val = 0;
++                unsigned char v;
++                if (!in_size) return STATUS_BUFFER_TOO_SMALL;
++                memcpy( &val, in_buffer, min( in_size, (ULONG)sizeof(val) ) );
++                v = !!val;
++                return do_setsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_LOOP, &v, sizeof(v) );
++            }
++#else
+             return do_setsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_LOOP, in_buffer, in_size );
++#endif
+         }
+ 
+         case IOCTL_AFD_WINE_GET_IP_MULTICAST_TTL:
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
++#ifdef __APPLE__
++            return do_getsockopt_byte_or_int( handle, io, IPPROTO_IP, IP_MULTICAST_TTL, out_buffer, out_size, TRUE, FALSE );
++#else
+             return do_getsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_TTL, out_buffer, out_size );
++#endif
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IP_MULTICAST_TTL:
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
++#ifdef __APPLE__
++            {
++                unsigned int val = 0;
++                unsigned char v;
++                if (!in_size) return STATUS_BUFFER_TOO_SMALL;
++                memcpy( &val, in_buffer, min( in_size, (ULONG)sizeof(val) ) );
++                if (val > 255) return STATUS_INVALID_PARAMETER;
++                v = (unsigned char)val;
++                return do_setsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_TTL, &v, sizeof(v) );
++            }
++#else
+             return do_setsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_TTL, in_buffer, in_size );
++#endif
+         }
+ 
+         case IOCTL_AFD_WINE_GET_IP_OPTIONS:
+@@ -2281,7 +2404,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
+-            return do_getsockopt( handle, io, IPPROTO_IP, IP_PKTINFO, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_IP, IP_PKTINFO, out_buffer, out_size );
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IP_PKTINFO:
+@@ -2295,7 +2418,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
+-            return do_getsockopt( handle, io, IPPROTO_IP, IP_RECVDSTADDR, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_IP, IP_RECVDSTADDR, out_buffer, out_size );
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IP_PKTINFO:
+@@ -2311,7 +2434,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
+-            return do_getsockopt( handle, io, IPPROTO_IP, IP_RECVTOS, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_IP, IP_RECVTOS, out_buffer, out_size );
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IP_RECVTOS:
+@@ -2327,7 +2450,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
+-            return do_getsockopt( handle, io, IPPROTO_IP, IP_RECVTTL, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_IP, IP_RECVTTL, out_buffer, out_size );
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IP_RECVTTL:
+@@ -2339,16 +2462,32 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+ #endif
+ 
+         case IOCTL_AFD_WINE_GET_IP_TOS:
++#ifdef __APPLE__
++            return do_getsockopt_byte_or_int( handle, io, IPPROTO_IP, IP_TOS, out_buffer, out_size, FALSE, FALSE );
++#else
+             return do_getsockopt( handle, io, IPPROTO_IP, IP_TOS, out_buffer, out_size );
++#endif
+ 
+         case IOCTL_AFD_WINE_SET_IP_TOS:
++#ifdef __APPLE__
++            return do_setsockopt_int_flex( handle, io, IPPROTO_IP, IP_TOS, in_buffer, in_size, FALSE, 255 );
++#else
+             return do_setsockopt( handle, io, IPPROTO_IP, IP_TOS, in_buffer, in_size );
++#endif
+ 
+         case IOCTL_AFD_WINE_GET_IP_TTL:
++#ifdef __APPLE__
++            return do_getsockopt_byte_or_int( handle, io, IPPROTO_IP, IP_TTL, out_buffer, out_size, FALSE, FALSE );
++#else
+             return do_getsockopt( handle, io, IPPROTO_IP, IP_TTL, out_buffer, out_size );
++#endif
+ 
+         case IOCTL_AFD_WINE_SET_IP_TTL:
++#ifdef __APPLE__
++            return do_setsockopt_int_flex( handle, io, IPPROTO_IP, IP_TTL, in_buffer, in_size, FALSE, 255 );
++#else
+             return do_setsockopt( handle, io, IPPROTO_IP, IP_TTL, in_buffer, in_size );
++#endif
+ 
+ #ifdef IP_UNBLOCK_SOURCE
+         case IOCTL_AFD_WINE_SET_IP_UNBLOCK_SOURCE:
+@@ -2463,7 +2602,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
+-            return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, out_buffer, out_size );
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_MULTICAST_LOOP:
+@@ -2478,14 +2617,18 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
+-            return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, out_buffer, out_size );
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_RECVHOPLIMIT:
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
++#ifdef __APPLE__
++            return do_setsockopt_int_flex( handle, io, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, in_buffer, in_size, TRUE, 0 );
++#else
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, in_buffer, in_size );
++#endif
+         }
+ #endif
+ 
+@@ -2494,14 +2637,18 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
+-            return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVPKTINFO, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_IPV6, IPV6_RECVPKTINFO, out_buffer, out_size );
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_RECVPKTINFO:
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
++#ifdef __APPLE__
++            return do_setsockopt_int_flex( handle, io, IPPROTO_IPV6, IPV6_RECVPKTINFO, in_buffer, in_size, TRUE, 0 );
++#else
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVPKTINFO, in_buffer, in_size );
++#endif
+         }
+ #endif
+ 
+@@ -2510,14 +2657,18 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
+-            return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVTCLASS, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_IPV6, IPV6_RECVTCLASS, out_buffer, out_size );
+         }
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_RECVTCLASS:
+         {
+             int sock_type = get_sock_type( handle );
+             if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
++#ifdef __APPLE__
++            return do_setsockopt_int_flex( handle, io, IPPROTO_IPV6, IPV6_RECVTCLASS, in_buffer, in_size, TRUE, 0 );
++#else
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVTCLASS, in_buffer, in_size );
++#endif
+         }
+ #endif
+ 
+@@ -2536,7 +2687,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+ #endif
+ 
+         case IOCTL_AFD_WINE_GET_IPV6_V6ONLY:
+-            return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_V6ONLY, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_IPV6, IPV6_V6ONLY, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_V6ONLY:
+         {
+@@ -2645,7 +2796,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+ #endif
+ 
+         case IOCTL_AFD_WINE_GET_TCP_NODELAY:
+-            return do_getsockopt( handle, io, IPPROTO_TCP, TCP_NODELAY, out_buffer, out_size );
++            return do_getsockopt_bool( handle, io, IPPROTO_TCP, TCP_NODELAY, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_TCP_NODELAY:
+             return do_setsockopt( handle, io, IPPROTO_TCP, TCP_NODELAY, in_buffer, in_size );
+@@ -2676,7 +2827,11 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+             return do_getsockopt( handle, io, IPPROTO_TCP, TCP_KEEPCNT, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_TCP_KEEPCNT:
++#ifdef __APPLE__
++            return do_setsockopt_int_flex( handle, io, IPPROTO_TCP, TCP_KEEPCNT, in_buffer, in_size, FALSE, 255 );
++#else
+             return do_setsockopt( handle, io, IPPROTO_TCP, TCP_KEEPCNT, in_buffer, in_size );
++#endif
+ 
+         default:
+         {
