@@ -36,7 +36,7 @@ SWIFTLINT ?= swiftlint
 .NOTPARALLEL:
 
 .PHONY: all help x86-deps llvm-x86 ffmpeg gstreamer kosmickrisp proton proton-debug clean-proton \
-        dxvk mullion proxychains app app-release install-app lint format lint-swiftlint run submodule clean check-proton-src
+        dxvk mullion proxychains app app-release install-app lint format lint-swiftlint test run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -215,6 +215,9 @@ format:  ## Reformat the Swift sources in place (swift-format)
 
 lint-swiftlint:  ## Run the strict SwiftLint checks used by CI (SwiftLint 0.65.1)
 	@$(SWIFTLINT) lint --strict
+
+test:  ## Run Whisky automated regression test suite
+	@$(CURDIR)/tests/run-all.sh
 
 
 run: app  ## Build, install and run Whisky

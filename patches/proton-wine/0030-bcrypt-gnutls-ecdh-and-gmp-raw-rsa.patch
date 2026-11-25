@@ -1,0 +1,144 @@
+Subject: bcrypt: use GnuTLS 3.8+ privkey_derive_secret for ECDH and GMP for BCRYPT_PAD_NONE RSA
+
+Proton's bcrypt/gnutls.c relied on libgcrypt (not shipped on macOS) for two
+operations, causing 27 failures in bcrypt:bcrypt:
+1. ECDH P-256/P-384/P-521 secret agreement (BCryptDeriveKey) returned
+   STATUS_NOT_IMPLEMENTED even though gnutls.c already dynamically loads
+   gnutls_privkey_derive_secret (GnuTLS >= 3.8.2; Whisky ships 3.8.13).
+2. RSA BCRYPT_PAD_NONE raw encrypt/decrypt fell through to GnuTLS PKCS#1 v1.5
+   padding instead of raw modular exponentiation. Implement raw RSA using GMP
+   (libgmp is already loaded in gnutls.c for DH).
+
+diff --git a/dlls/bcrypt/gnutls.c b/dlls/bcrypt/gnutls.c
+index 4603c7d4..76ce11ab 100644
+--- a/dlls/bcrypt/gnutls.c
++++ b/dlls/bcrypt/gnutls.c
+@@ -3018,6 +3018,80 @@ static NTSTATUS privkey_set_rsa_oaep_params( gnutls_privkey_t key, gnutls_digest
+ 
+ static NTSTATUS key_asymmetric_decrypt_gcrypt( void *args );
+ 
++#if defined(HAVE_GMP_H) && defined(SONAME_LIBGMP)
++static NTSTATUS key_rsa_raw_crypt( struct key *key, BOOL is_decrypt, const UCHAR *input, ULONG input_len,
++                                   UCHAR *output, ULONG output_len, ULONG *ret_len )
++{
++    ULONG key_len = len_from_bitlen( key->u.a.bitlen );
++    gnutls_datum_t m = { 0 }, e = { 0 }, d = { 0 }, p = { 0 }, q = { 0 }, u = { 0 }, e1 = { 0 }, e2 = { 0 };
++    mpz_t mod, exp, msg, res;
++    int ret;
++
++    if (!libgmp_handle) return STATUS_NOT_IMPLEMENTED;
++    if (input_len != key_len)
++    {
++        WARN( "Invalid input_len %u for BCRYPT_PAD_NONE (expected %u).\n", (int)input_len, (int)key_len );
++        return STATUS_INVALID_PARAMETER;
++    }
++
++    *ret_len = key_len;
++    if (!output) return STATUS_SUCCESS;
++    if (output_len < key_len) return STATUS_BUFFER_TOO_SMALL;
++
++    if (is_decrypt)
++    {
++        if (!key_data(key)->a.privkey) return STATUS_INVALID_HANDLE;
++        ret = pgnutls_privkey_export_rsa_raw( key_data(key)->a.privkey, &m, &e, &d, &p, &q, &u, &e1, &e2 );
++    }
++    else
++    {
++        if (!key_data(key)->a.pubkey) return STATUS_INVALID_HANDLE;
++        ret = pgnutls_pubkey_export_rsa_raw( key_data(key)->a.pubkey, &m, &e );
++    }
++    if (ret < 0)
++    {
++        pgnutls_perror( ret );
++        return STATUS_INTERNAL_ERROR;
++    }
++
++    pmpz_init( mod );
++    pmpz_init( exp );
++    pmpz_init( msg );
++    pmpz_init( res );
++
++    import_mpz( mod, m.data, m.size );
++    import_mpz( exp, is_decrypt ? d.data : e.data, is_decrypt ? d.size : e.size );
++    import_mpz( msg, input, input_len );
++
++    free( m.data );
++    free( e.data );
++    free( d.data );
++    free( p.data );
++    free( q.data );
++    free( u.data );
++    free( e1.data );
++    free( e2.data );
++
++    if (pmpz_cmp( msg, mod ) >= 0)
++    {
++        pmpz_clear( mod );
++        pmpz_clear( exp );
++        pmpz_clear( msg );
++        pmpz_clear( res );
++        return STATUS_INVALID_PARAMETER;
++    }
++
++    pmpz_powm( res, msg, exp, mod );
++    export_mpz( output, key_len, res );
++
++    pmpz_clear( mod );
++    pmpz_clear( exp );
++    pmpz_clear( msg );
++    pmpz_clear( res );
++    return STATUS_SUCCESS;
++}
++#endif
++
+ static NTSTATUS key_asymmetric_decrypt( void *args )
+ {
+     const struct key_asymmetric_decrypt_params *params = args;
+@@ -3028,6 +3102,12 @@ static NTSTATUS key_asymmetric_decrypt( void *args )
+     if (gcrypt_available && (params->flags == BCRYPT_PAD_NONE || params->flags == BCRYPT_PAD_OAEP))
+         return key_asymmetric_decrypt_gcrypt( args );
+ 
++#if defined(HAVE_GMP_H) && defined(SONAME_LIBGMP)
++    if (params->key->alg_id == ALG_ID_RSA && params->flags == BCRYPT_PAD_NONE)
++        return key_rsa_raw_crypt( params->key, TRUE, params->input, params->input_len,
++                                  params->output, params->output_len, params->ret_len );
++#endif
++
+     if (params->key->alg_id == ALG_ID_RSA && params->flags & BCRYPT_PAD_OAEP)
+     {
+         BCRYPT_OAEP_PADDING_INFO *pad = params->padding;
+@@ -3406,6 +3486,12 @@ static NTSTATUS key_asymmetric_encrypt( void *args )
+     if (gcrypt_available && (params->flags == BCRYPT_PAD_NONE || params->flags == BCRYPT_PAD_OAEP))
+         return key_asymmetric_encrypt_gcrypt( args );
+ 
++#if defined(HAVE_GMP_H) && defined(SONAME_LIBGMP)
++    if (params->key->alg_id == ALG_ID_RSA && params->flags == BCRYPT_PAD_NONE)
++        return key_rsa_raw_crypt( params->key, FALSE, params->input, params->input_len,
++                                  params->output, params->output_len, params->ret_len );
++#endif
++
+     if (params->key->alg_id == ALG_ID_RSA && params->flags & BCRYPT_PAD_OAEP)
+     {
+         BCRYPT_OAEP_PADDING_INFO *pad = params->padding;
+@@ -3577,6 +3663,21 @@ static NTSTATUS key_asymmetric_derive_key( void *args )
+         case ALG_ID_ECDH_P256:
+         case ALG_ID_ECDH_P384:
+         case ALG_ID_ECDH_P521:
++        if (pgnutls_privkey_derive_secret != compat_gnutls_privkey_derive_secret)
++        {
++            int ret;
++
++            if (!key_data(priv_key)->a.privkey || !key_data(peer_key)->a.pubkey)
++                return STATUS_INVALID_HANDLE;
++
++            if ((ret = pgnutls_privkey_derive_secret( key_data(priv_key)->a.privkey,
++                                                      key_data(peer_key)->a.pubkey, NULL, &s, 0 )))
++            {
++                pgnutls_perror( ret );
++                return STATUS_INTERNAL_ERROR;
++            }
++            break;
++        }
+ /* this is necessary since GNUTLS doesn't support ECDH public key encryption, maybe we can replace this when it does:
+    https://github.com/gnutls/gnutls/blob/cdc4fc288d87f91f974aa23b6e8595a53970ce00/lib/nettle/pk.c#L495 */
+ #if defined(HAVE_GCRYPT_H) && defined(SONAME_LIBGCRYPT)

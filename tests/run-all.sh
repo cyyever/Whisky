@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+#
+# tests/run-all.sh — Run Whisky's non-interactive automated regression suite.
+#
+# Exercises host unit tests, environment/loadorder contracts, GStreamer
+# VideoToolbox hardware decode, Vulkan/D3D12, CoreAudio WASAPI, MSync mixed
+# waits, SteamAppId Unix env propagation, foreign-thread VEH fault guard, and
+# macOS BSD socket option normalization.
+#
+# Usage:
+#   tests/run-all.sh
+#   make test
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WINE_PREFIX_BIN="${WHISKY_WINE_BIN:-$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin}"
+WINE="$WINE_PREFIX_BIN/wine64"
+WS="$WINE_PREFIX_BIN/wineserver"
+
+PASS=0
+FAIL=0
+SKIP=0
+FAILED_NAMES=()
+
+run_case() {
+    local name="$1"
+    shift
+    printf "\n==================== [TEST] %s ====================\n" "$name"
+    local rc=0
+    "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo ">>> PASS: $name"
+        PASS=$((PASS + 1))
+    else
+        echo ">>> FAIL: $name (exit=$rc)"
+        FAIL=$((FAIL + 1))
+        FAILED_NAMES+=("$name")
+    fi
+}
+
+# 1. Host & script-based regression suites
+run_case "env-contract"           bash "$PROJECT_DIR/tests/env-contract-test.sh"
+run_case "gstreamer-videotoolbox" bash "$PROJECT_DIR/tests/gstreamer/videotoolbox-test.sh"
+if [ "${WHISKY_SLOW_TESTS:-0}" = "1" ]; then
+    run_case "vulkan-strip-cull"  bash "$PROJECT_DIR/tests/vulkan/strip-cull-test.sh"
+else
+    echo "SKIP: vulkan-strip-cull (multi-minute GPU stress; set WHISKY_SLOW_TESTS=1 to include)"
+    SKIP=$((SKIP + 1))
+fi
+
+if [ -x "$WINE" ]; then
+    run_case "loadorder-builtins"            bash "$PROJECT_DIR/tests/loadorder/run.sh"
+    run_case "audio-coreaudio-vol-route-ev"  bash "$PROJECT_DIR/tests/audio/coreaudio-volume-and-routing-test.sh"
+    run_case "audio-name-growth"             bash "$PROJECT_DIR/tests/audio/audio-name-growth-test.sh"
+    if [ -f "$PROJECT_DIR/scripts/lib/vkd3d.sh" ]; then
+        run_case "d3d12-builtins"            bash "$PROJECT_DIR/tests/d3d12/run.sh"
+    fi
+
+    # 2. Standalone Win64 PE regression tests in a fresh disposable prefix
+    if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+        TMPDIR_PE="$(mktemp -d /tmp/whisky-reg-pe.XXXXXX)"
+        cleanup_pe() {
+            WINEPREFIX="$TMPDIR_PE/prefix" "$WS" -k >/dev/null 2>&1 || true
+            rm -rf "$TMPDIR_PE"
+        }
+        trap cleanup_pe EXIT
+        mkdir -p "$TMPDIR_PE/prefix"
+
+        run_pe() {
+            local name="$1" src="$2" extra_libs="$3" extra_env="${4:-}"
+            local exe="$TMPDIR_PE/${name}.exe"
+            # shellcheck disable=SC2086
+            x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/$src" $extra_libs
+            if [ -n "$extra_env" ]; then
+                # shellcheck disable=SC2086
+                env $extra_env WINEPREFIX="$TMPDIR_PE/prefix" WINEDEBUG=-all \
+                    perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe"
+            else
+                WINEPREFIX="$TMPDIR_PE/prefix" WINEDEBUG=-all \
+                    perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe"
+            fi
+        }
+
+        run_case "msync-mixed-wait" \
+            run_pe "msync-mixed-wait" "tests/msync-mixed-wait-test.c" "" "WINEMSYNC=1"
+        run_case "steam-appid-unix-env" \
+            run_pe "steam-appid-unix-env" "tests/steam-appid-unix-env-test.c" "" "-u SteamGameId -u SteamAppId -u STEAM_COMPAT_APP_ID"
+        run_case "ws2_32-sockopt" \
+            run_pe "ws2_32-sockopt" "tests/ws2_32-sockopt-test.c" "-lws2_32" ""
+        run_case "bcrypt-ecdh-rsa" \
+            run_pe "bcrypt-ecdh-rsa" "tests/bcrypt-ecdh-rsa-test.c" "-lbcrypt" ""
+        run_case "signal-thread-guard" \
+            run_pe "signal-thread-guard" "tests/signal-thread-guard-test.c" "" ""
+    else
+        echo "SKIP: x86_64-w64-mingw32-gcc not found; skipping standalone PE regression tests"
+        SKIP=$((SKIP + 4))
+    fi
+else
+    echo "SKIP: Wine not found at $WINE; skipping Wine-dependent tests"
+    SKIP=$((SKIP + 8))
+fi
+
+echo ""
+echo "================================================================"
+echo "Whisky Regression Summary: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
+if [ "$FAIL" -gt 0 ]; then
+    echo "Failed: ${FAILED_NAMES[*]}"
+    exit 1
+fi
