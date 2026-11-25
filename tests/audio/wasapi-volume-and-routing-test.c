@@ -17,6 +17,7 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <audiopolicy.h>
+#include <propsys.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -296,6 +297,53 @@ done:
     if (ev) CloseHandle(ev);
 }
 
+static void exercise_endpoint_properties(IMMDevice *dev)
+{
+    static const PROPERTYKEY pkey_form_factor = {
+        { 0x1da5d803, 0xd492, 0x4edd, { 0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e } }, 0
+    };
+    static const PROPERTYKEY pkey_physical_speakers = {
+        { 0x1da5d803, 0xd492, 0x4edd, { 0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e } }, 3
+    };
+    IPropertyStore *store = NULL;
+    IAudioClient *client = NULL;
+    WAVEFORMATEX *mix_fmt = NULL;
+    PROPVARIANT pv;
+    DWORD expected_mask = 0;
+    HRESULT hr;
+
+    hr = IMMDevice_OpenPropertyStore(dev, STGM_READ, &store);
+    CHECK(SUCCEEDED(hr) && store, "[propstore] OpenPropertyStore (hr=0x%08lx)", (unsigned long)hr);
+    if (FAILED(hr) || !store) return;
+
+    PropVariantInit(&pv);
+    hr = IPropertyStore_GetValue(store, &pkey_form_factor, &pv);
+    CHECK(SUCCEEDED(hr) && pv.vt == VT_UI4 && pv.ulVal < EndpointFormFactor_enum_count,
+          "[propstore] PKEY_AudioEndpoint_FormFactor=%lu (vt=%u hr=0x%08lx)",
+          pv.vt == VT_UI4 ? (unsigned long)pv.ulVal : 0UL, pv.vt, (unsigned long)hr);
+    PropVariantClear(&pv);
+
+    if (SUCCEEDED(IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&client)) && client) {
+        if (SUCCEEDED(IAudioClient_GetMixFormat(client, &mix_fmt)) && mix_fmt) {
+            if (mix_fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+                expected_mask = ((WAVEFORMATEXTENSIBLE *)mix_fmt)->dwChannelMask;
+            CoTaskMemFree(mix_fmt);
+        }
+        IAudioClient_Release(client);
+    }
+
+    PropVariantInit(&pv);
+    hr = IPropertyStore_GetValue(store, &pkey_physical_speakers, &pv);
+    CHECK(SUCCEEDED(hr) && pv.vt == VT_UI4 && pv.ulVal != 0 &&
+          (!expected_mask || pv.ulVal == expected_mask),
+          "[propstore] PKEY_AudioEndpoint_PhysicalSpeakers=0x%lx (expected 0x%lx, vt=%u hr=0x%08lx)",
+          pv.vt == VT_UI4 ? (unsigned long)pv.ulVal : 0UL, (unsigned long)expected_mask,
+          pv.vt, (unsigned long)hr);
+    PropVariantClear(&pv);
+
+    IPropertyStore_Release(store);
+}
+
 int main(void)
 {
     IMMDeviceEnumerator *enumerator = NULL;
@@ -330,6 +378,7 @@ int main(void)
     exercise_stream(dev, "pcm16-stereo", &pcm16);
 
     exercise_event_clock_and_rate(dev);
+    exercise_endpoint_properties(dev);
 
 exit:
     if (dev) IMMDevice_Release(dev);

@@ -1,4 +1,4 @@
-Subject: winecoreaudio: per-stream volume, DefaultOutput routing, callback-driven events, GetDevicePosition, SetSampleRate, and channel layouts
+Subject: winecoreaudio: per-stream volume, DefaultOutput routing, callback-driven events, GetDevicePosition, SetSampleRate, layouts, and endpoint properties
 
 1. Replace hardware kAudioDevicePropertyVolumeScalar calls in unix_set_volumes()
    with per-stream software PCM scaling (volume_scale.h, applied in ca_render_cb)
@@ -28,8 +28,12 @@ Subject: winecoreaudio: per-stream volume, DefaultOutput routing, callback-drive
    wired in both 64-bit and WoW64 unix call tables) with live AudioUnit
    reconfiguration, error recovery, and synchronized unix_get_frequency().
 8. Parse CoreAudio kAudioChannelLayoutTag_* (bitmap, Mono, Stereo/Headphones/
-   Binaural, Quad, 5.1, 7.1, and generic channel-count tags) in
-   unix_get_mix_format().
+   Binaural, Quad, 5.1, 7.1, and generic channel-count tags) via shared
+   get_device_channel_layout().
+9. Implement unix_get_prop_value() for PKEY_AudioEndpoint_FormFactor (mapped
+   from CoreAudio data source and transport type: headphones/headset/speakers/
+   HDMI/DP/line/SPDIF/microphone) and PKEY_AudioEndpoint_PhysicalSpeakers
+   (speaker channel mask from get_device_channel_layout()).
 
 diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaudio.c
 --- a/dlls/winecoreaudio.drv/coreaudio.c
@@ -67,10 +71,12 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      REFERENCE_TIME period;
      UINT32 period_frames;
      UINT32 bufsize_frames, resamp_bufsize_frames;
-@@ -412,6 +422,75 @@
+@@ -410,8 +420,77 @@
+         memset(buffer, 128, frames * stream->fmt->nBlockAlign);
+     else
          memset(buffer, 0, frames * stream->fmt->nBlockAlign);
- }
- 
++}
++
 +static enum ca_sample_format ca_sample_format_from_wave(const WAVEFORMATEX *fmt)
 +{
 +    const WAVEFORMATEXTENSIBLE *fmtex = (const WAVEFORMATEXTENSIBLE *)fmt;
@@ -93,8 +99,8 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        }
 +    }
 +    return CA_FMT_OTHER;
-+}
-+
+ }
+ 
 +static AudioDeviceID get_default_device(EDataFlow flow)
 +{
 +    AudioDeviceID dev_id = kAudioObjectUnknown;
@@ -268,19 +274,16 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      }
  
      return unit;
-@@ -760,9 +876,17 @@
- 
-     stream->fmt = clone_format(params->fmt);
-     if(!stream->fmt){
-+        params->result = E_OUTOFMEMORY;
-+        goto end;
-+    }
-+    stream->sample_fmt = ca_sample_format_from_wave(stream->fmt);
-+    stream->channel_volumes = malloc(stream->fmt->nChannels * sizeof(float));
-+    if(!stream->channel_volumes){
+@@ -763,6 +879,14 @@
          params->result = E_OUTOFMEMORY;
          goto end;
      }
++    stream->sample_fmt = ca_sample_format_from_wave(stream->fmt);
++    stream->channel_volumes = malloc(stream->fmt->nChannels * sizeof(float));
++    if(!stream->channel_volumes){
++        params->result = E_OUTOFMEMORY;
++        goto end;
++    }
 +    ca_compute_channel_gains(stream->fmt->nChannels, 1.0f, NULL, NULL,
 +            stream->channel_volumes, &stream->volume_unity, &stream->volume_muted);
  
@@ -390,62 +393,186 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      free(stream->resamp_buffer);
      free(stream->wrap_buffer);
      free(stream->cap_buffer);
-@@ -1053,10 +1213,51 @@
+@@ -1024,85 +1184,144 @@
+     return 0;
+ }
  
-             if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelDescriptions){
-                 convert_channel_layout(layout, params->fmt);
-+            }else if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelBitmap){
-+                unsigned int nch = (unsigned int)__builtin_popcount(layout->mChannelBitmap);
-+                params->fmt->Format.nChannels = nch;
-+                params->fmt->dwChannelMask = layout->mChannelBitmap;
+-static NTSTATUS unix_get_mix_format(void *args)
++static HRESULT get_device_channel_layout(AudioDeviceID dev_id, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt)
+ {
+-    struct get_mix_format_params *params = args;
+     AudioObjectPropertyAddress addr;
+     AudioChannelLayout *layout;
+     AudioBufferList *buffers;
+-    Float64 rate;
+     UInt32 size;
+     OSStatus sc;
+     int i;
+-    const AudioDeviceID dev_id = dev_id_from_device(params->device);
+ 
+-    params->fmt->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
++    fmt->Format.nChannels = 0;
++    fmt->dwChannelMask = 0;
+ 
+-    addr.mScope = get_scope(params->flow);
++    addr.mScope = get_scope(flow);
+     addr.mElement = 0;
+     addr.mSelector = kAudioDevicePropertyPreferredChannelLayout;
+ 
+     sc = AudioObjectGetPropertyDataSize(dev_id, &addr, 0, NULL, &size);
+     if(sc == noErr){
+         layout = malloc(size);
+-        sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, layout);
+-        if(sc == noErr){
+-            TRACE("Got channel layout: {tag: 0x%x, bitmap: 0x%x, num_descs: %u}\n",
+-                  (unsigned int)layout->mChannelLayoutTag, (unsigned int)layout->mChannelBitmap,
+-                  (unsigned int)layout->mNumberChannelDescriptions);
++        if(layout){
++            sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, layout);
++            if(sc == noErr){
++                TRACE("Got channel layout: {tag: 0x%x, bitmap: 0x%x, num_descs: %u}\n",
++                      (unsigned int)layout->mChannelLayoutTag, (unsigned int)layout->mChannelBitmap,
++                      (unsigned int)layout->mNumberChannelDescriptions);
+ 
+-            if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelDescriptions){
+-                convert_channel_layout(layout, params->fmt);
++                if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelDescriptions){
++                    convert_channel_layout(layout, fmt);
++                }else if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelBitmap){
++                    unsigned int nch = (unsigned int)__builtin_popcount(layout->mChannelBitmap);
++                    fmt->Format.nChannels = nch;
++                    fmt->dwChannelMask = layout->mChannelBitmap;
++                }else{
++                    unsigned int nch = AudioChannelLayoutTag_GetNumberOfChannels(layout->mChannelLayoutTag);
++                    switch(layout->mChannelLayoutTag){
++                    case kAudioChannelLayoutTag_Mono:
++                        fmt->Format.nChannels = 1;
++                        fmt->dwChannelMask = KSAUDIO_SPEAKER_MONO;
++                        break;
++                    case kAudioChannelLayoutTag_Stereo:
++                    case kAudioChannelLayoutTag_StereoHeadphones:
++                    case kAudioChannelLayoutTag_Binaural:
++                        fmt->Format.nChannels = 2;
++                        fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
++                        break;
++                    case kAudioChannelLayoutTag_Quadraphonic:
++                        fmt->Format.nChannels = 4;
++                        fmt->dwChannelMask = KSAUDIO_SPEAKER_QUAD;
++                        break;
++                    case kAudioChannelLayoutTag_MPEG_5_1_A:
++                    case kAudioChannelLayoutTag_MPEG_5_1_B:
++                    case kAudioChannelLayoutTag_MPEG_5_1_C:
++                    case kAudioChannelLayoutTag_MPEG_5_1_D:
++                        fmt->Format.nChannels = 6;
++                        fmt->dwChannelMask = KSAUDIO_SPEAKER_5POINT1_SURROUND;
++                        break;
++                    case kAudioChannelLayoutTag_MPEG_7_1_A:
++                    case kAudioChannelLayoutTag_MPEG_7_1_B:
++                    case kAudioChannelLayoutTag_MPEG_7_1_C:
++                        fmt->Format.nChannels = 8;
++                        fmt->dwChannelMask = KSAUDIO_SPEAKER_7POINT1_SURROUND;
++                        break;
++                    default:
++                        if(nch > 0 && nch <= 8){
++                            fmt->Format.nChannels = nch;
++                            fmt->dwChannelMask = get_channel_mask(nch);
++                        }else{
++                            WARN("Haven't implemented support for this layout tag: 0x%x, guessing at layout\n",
++                                 (unsigned int)layout->mChannelLayoutTag);
++                            fmt->Format.nChannels = 0;
++                        }
++                        break;
++                    }
++                }
              }else{
 -                WARN("Haven't implemented support for this layout tag: 0x%x, guessing at layout\n",
 -                     (unsigned int)layout->mChannelLayoutTag);
 -                params->fmt->Format.nChannels = 0;
-+                unsigned int nch = AudioChannelLayoutTag_GetNumberOfChannels(layout->mChannelLayoutTag);
-+                switch(layout->mChannelLayoutTag){
-+                case kAudioChannelLayoutTag_Mono:
-+                    params->fmt->Format.nChannels = 1;
-+                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_MONO;
-+                    break;
-+                case kAudioChannelLayoutTag_Stereo:
-+                case kAudioChannelLayoutTag_StereoHeadphones:
-+                case kAudioChannelLayoutTag_Binaural:
-+                    params->fmt->Format.nChannels = 2;
-+                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
-+                    break;
-+                case kAudioChannelLayoutTag_Quadraphonic:
-+                    params->fmt->Format.nChannels = 4;
-+                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_QUAD;
-+                    break;
-+                case kAudioChannelLayoutTag_MPEG_5_1_A:
-+                case kAudioChannelLayoutTag_MPEG_5_1_B:
-+                case kAudioChannelLayoutTag_MPEG_5_1_C:
-+                case kAudioChannelLayoutTag_MPEG_5_1_D:
-+                    params->fmt->Format.nChannels = 6;
-+                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_5POINT1_SURROUND;
-+                    break;
-+                case kAudioChannelLayoutTag_MPEG_7_1_A:
-+                case kAudioChannelLayoutTag_MPEG_7_1_B:
-+                case kAudioChannelLayoutTag_MPEG_7_1_C:
-+                    params->fmt->Format.nChannels = 8;
-+                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_7POINT1_SURROUND;
-+                    break;
-+                default:
-+                    if(nch > 0 && nch <= 8){
-+                        params->fmt->Format.nChannels = nch;
-+                        params->fmt->dwChannelMask = get_channel_mask(nch);
-+                    }else{
-+                        WARN("Haven't implemented support for this layout tag: 0x%x, guessing at layout\n",
-+                             (unsigned int)layout->mChannelLayoutTag);
-+                        params->fmt->Format.nChannels = 0;
-+                    }
-+                    break;
-+                }
++                TRACE("Unable to get _PreferredChannelLayout property: %x, guessing at layout\n", (int)sc);
++                fmt->Format.nChannels = 0;
              }
-         }else{
-             TRACE("Unable to get _PreferredChannelLayout property: %x, guessing at layout\n", (int)sc);
-@@ -1135,7 +1336,7 @@
+-        }else{
+-            TRACE("Unable to get _PreferredChannelLayout property: %x, guessing at layout\n", (int)sc);
+-            params->fmt->Format.nChannels = 0;
++            free(layout);
+         }
+-
+-        free(layout);
+     }else{
+         TRACE("Unable to get size for _PreferredChannelLayout property: %x, guessing at layout\n", (int)sc);
+-        params->fmt->Format.nChannels = 0;
++        fmt->Format.nChannels = 0;
+     }
+ 
+-    if(params->fmt->Format.nChannels == 0){
+-        addr.mScope = get_scope(params->flow);
++    if(fmt->Format.nChannels == 0){
++        addr.mScope = get_scope(flow);
+         addr.mElement = 0;
+         addr.mSelector = kAudioDevicePropertyStreamConfiguration;
+ 
+         sc = AudioObjectGetPropertyDataSize(dev_id, &addr, 0, NULL, &size);
+         if(sc != noErr){
+             WARN("Unable to get size for _StreamConfiguration property: %x\n", (int)sc);
+-            params->result = osstatus_to_hresult(sc);
+-            return STATUS_SUCCESS;
++            return osstatus_to_hresult(sc);
+         }
+ 
+         buffers = malloc(size);
+-        if(!buffers){
+-            params->result = E_OUTOFMEMORY;
+-            return STATUS_SUCCESS;
+-        }
++        if(!buffers)
++            return E_OUTOFMEMORY;
+ 
+         sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, buffers);
+         if(sc != noErr){
+             free(buffers);
+             WARN("Unable to get _StreamConfiguration property: %x\n", (int)sc);
+-            params->result = osstatus_to_hresult(sc);
+-            return STATUS_SUCCESS;
++            return osstatus_to_hresult(sc);
+         }
+ 
+         for(i = 0; i < buffers->mNumberBuffers; ++i)
+-            params->fmt->Format.nChannels += buffers->mBuffers[i].mNumberChannels;
++            fmt->Format.nChannels += buffers->mBuffers[i].mNumberChannels;
+ 
+         free(buffers);
+ 
+-        params->fmt->dwChannelMask = get_channel_mask(params->fmt->Format.nChannels);
++        fmt->dwChannelMask = get_channel_mask(fmt->Format.nChannels);
+     }
+ 
++    return S_OK;
++}
++
++static NTSTATUS unix_get_mix_format(void *args)
++{
++    struct get_mix_format_params *params = args;
++    AudioObjectPropertyAddress addr;
++    Float64 rate;
++    UInt32 size;
++    OSStatus sc;
++    HRESULT hr;
++    const AudioDeviceID dev_id = dev_id_from_device(params->device);
++
++    params->fmt->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
++
++    hr = get_device_channel_layout(dev_id, params->flow, params->fmt);
++    if(FAILED(hr)){
++        params->result = hr;
++        return STATUS_SUCCESS;
++    }
++
++    addr.mScope = get_scope(params->flow);
++    addr.mElement = 0;
+     addr.mSelector = kAudioDevicePropertyNominalSampleRate;
+     size = sizeof(Float64);
+     sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, &rate);
+@@ -1135,7 +1354,7 @@
      AudioComponentInstance unit;
      const AudioDeviceID dev_id = dev_id_from_device(params->device);
  
@@ -454,7 +581,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
      converter = NULL;
      params->result = ca_setup_audiounit(params->flow, unit, params->fmt_in, &dev_desc, &converter);
-@@ -1271,7 +1472,7 @@
+@@ -1271,7 +1490,7 @@
      return STATUS_SUCCESS;
  }
  
@@ -463,7 +590,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  {
      AudioObjectPropertyAddress addr;
      AudioStreamID *ids;
-@@ -1279,11 +1480,11 @@
+@@ -1279,11 +1498,11 @@
      OSStatus sc;
      int nstreams, i;
  
@@ -477,7 +604,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(sc != noErr){
          WARN("Unable to get size for _Streams property: %x\n", (int)sc);
          return osstatus_to_hresult(sc);
-@@ -1293,7 +1494,7 @@
+@@ -1293,7 +1512,7 @@
      if(!ids)
          return E_OUTOFMEMORY;
  
@@ -486,7 +613,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(sc != noErr){
          WARN("Unable to get _Streams property: %x\n", (int)sc);
          free(ids);
-@@ -1327,18 +1528,31 @@
+@@ -1327,18 +1546,31 @@
  {
      struct get_latency_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -519,7 +646,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(sc != noErr){
          WARN("Couldn't get _Latency property: %x\n", (int)sc);
          os_unfair_lock_unlock(&stream->lock);
-@@ -1346,7 +1560,7 @@
+@@ -1346,7 +1578,7 @@
          return STATUS_SUCCESS;
      }
  
@@ -528,7 +655,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(FAILED(params->result)){
          os_unfair_lock_unlock(&stream->lock);
          return STATUS_SUCCESS;
-@@ -1374,6 +1588,11 @@
+@@ -1374,6 +1606,11 @@
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
  
      os_unfair_lock_lock(&stream->lock);
@@ -540,7 +667,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      *params->padding = get_current_padding_nolock(stream);
      os_unfair_lock_unlock(&stream->lock);
      params->result = S_OK;
-@@ -1384,20 +1603,45 @@
+@@ -1384,20 +1621,45 @@
  {
      struct start_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -565,7 +692,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      }
  
      os_unfair_lock_unlock(&stream->lock);
- 
++
 +    if(params->result == S_OK && need_start){
 +        sc = AudioOutputUnitStart(stream->unit);
 +        if(sc != noErr){
@@ -580,14 +707,14 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        stream->unit_started = TRUE;
 +        os_unfair_lock_unlock(&stream->lock);
 +    }
-+
+ 
 +    if(params->result == S_OK && has_event && stream->cb_sem_valid)
 +        semaphore_signal(stream->cb_sem);
 +
      return STATUS_SUCCESS;
  }
  
-@@ -1405,6 +1649,7 @@
+@@ -1405,6 +1667,7 @@
  {
      struct stop_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -595,7 +722,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
      os_unfair_lock_lock(&stream->lock);
  
-@@ -1412,11 +1657,23 @@
+@@ -1412,11 +1675,23 @@
          params->result = S_FALSE;
      else{
          stream->playing = FALSE;
@@ -619,7 +746,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      return STATUS_SUCCESS;
  }
  
-@@ -1441,6 +1698,7 @@
+@@ -1441,6 +1716,7 @@
          stream->wri_offs_frames = 0;
          stream->cap_offs_frames = 0;
          stream->cap_held_frames = 0;
@@ -627,7 +754,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          params->result = S_OK;
      }
  
-@@ -1452,28 +1710,82 @@
+@@ -1452,26 +1728,80 @@
  {
      struct timer_loop_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -650,24 +777,16 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 -    while(!stream->please_quit){
 -        NtSetEvent(stream->event, NULL);
 -        NtDelayExecution(FALSE, &delay);
--        NtQueryPerformanceCounter(&last, NULL);
 +        if(idle_ns < 2000000LL) idle_ns = 2000000LL;
 +        if(idle_ns > 100000000LL) idle_ns = 100000000LL;
 +        if(play_ns < 50000000LL) play_ns = 50000000LL;
 +        if(play_ns > 100000000LL) play_ns = 100000000LL;
- 
--        adjust = next.QuadPart - last.QuadPart;
--        if(adjust > stream->period / 2)
--            adjust = stream->period / 2;
--        else if(adjust < -stream->period / 2)
--            adjust = -stream->period / 2;
++
 +        ts_idle.tv_sec = (unsigned int)(idle_ns / 1000000000LL);
 +        ts_idle.tv_nsec = (clock_res_t)(idle_ns % 1000000000LL);
 +        ts_play.tv_sec = (unsigned int)(play_ns / 1000000000LL);
 +        ts_play.tv_nsec = (clock_res_t)(play_ns % 1000000000LL);
- 
--        delay.QuadPart = -(stream->period + adjust);
--        next.QuadPart += stream->period;
++
 +        while(!stream->please_quit){
 +            BOOL is_playing;
 +            kern_return_t kr;
@@ -697,21 +816,28 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +                NtSetEvent(stream->event, NULL);
 +        }
 +        return STATUS_SUCCESS;
-     }
- 
++    }
++
 +    {
 +        LARGE_INTEGER delay, next, last;
 +        int adjust;
 +
 +        delay.QuadPart = -stream->period;
-+        NtQueryPerformanceCounter(&last, NULL);
+         NtQueryPerformanceCounter(&last, NULL);
 +        next.QuadPart = last.QuadPart + stream->period;
-+
+ 
+-        adjust = next.QuadPart - last.QuadPart;
+-        if(adjust > stream->period / 2)
+-            adjust = stream->period / 2;
+-        else if(adjust < -stream->period / 2)
+-            adjust = -stream->period / 2;
 +        while(!stream->please_quit){
 +            NtSetEvent(stream->event, NULL);
 +            NtDelayExecution(FALSE, &delay);
 +            NtQueryPerformanceCounter(&last, NULL);
-+
+ 
+-        delay.QuadPart = -(stream->period + adjust);
+-        next.QuadPart += stream->period;
 +            adjust = next.QuadPart - last.QuadPart;
 +            if(adjust > stream->period / 2)
 +                adjust = stream->period / 2;
@@ -721,12 +847,10 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +            delay.QuadPart = -(stream->period + adjust);
 +            next.QuadPart += stream->period;
 +        }
-+    }
-+
-     return STATUS_SUCCESS;
- }
+     }
  
-@@ -1486,6 +1798,11 @@
+     return STATUS_SUCCESS;
+@@ -1486,6 +1816,11 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -738,7 +862,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      pad = get_current_padding_nolock(stream);
  
      if(stream->getbuf_last){
-@@ -1542,7 +1859,9 @@
+@@ -1542,7 +1877,9 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -749,7 +873,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          stream->getbuf_last = 0;
          params->result = S_OK;
      }else if(!stream->getbuf_last)
-@@ -1588,6 +1907,11 @@
+@@ -1588,6 +1925,11 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -761,7 +885,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(stream->getbuf_last){
          params->result = AUDCLNT_E_OUT_OF_ORDER;
          goto end;
-@@ -1641,7 +1965,9 @@
+@@ -1641,7 +1983,9 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -772,7 +896,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          stream->getbuf_last = 0;
          params->result = S_OK;
      }else if(!stream->getbuf_last)
-@@ -1669,6 +1995,12 @@
+@@ -1669,6 +2013,12 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -785,7 +909,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      capture_resample(stream);
  
      if(stream->held_frames >= stream->period_frames)
-@@ -1688,17 +2020,20 @@
+@@ -1688,17 +2038,20 @@
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
      LARGE_INTEGER stamp;
  
@@ -799,9 +923,9 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
          return STATUS_SUCCESS;
      }
- 
--    os_unfair_lock_lock(&stream->lock);
 -
+-    os_unfair_lock_lock(&stream->lock);
+ 
      *params->pos = stream->written_frames - stream->held_frames;
  
 -    if(stream->share == AUDCLNT_SHAREMODE_SHARED)
@@ -812,7 +936,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          *params->pos *= stream->fmt->nBlockAlign;
  
      if(params->qpctime){
-@@ -1717,10 +2052,12 @@
+@@ -1717,10 +2070,12 @@
      struct get_frequency_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
  
@@ -825,7 +949,131 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
      params->result = S_OK;
      return STATUS_SUCCESS;
-@@ -1752,31 +2089,19 @@
+@@ -1737,14 +2092,122 @@
+         params->result = S_FALSE;
+ 
+     return STATUS_SUCCESS;
++}
++
++static BOOL device_has_scope_channels(AudioDeviceID dev_id, AudioObjectPropertyScope scope)
++{
++    AudioObjectPropertyAddress addr = {
++        kAudioDevicePropertyStreamConfiguration,
++        scope,
++        kAudioObjectPropertyElementMain,
++    };
++    UInt32 size = 0, i;
++    AudioBufferList *buffers;
++    BOOL has_channels = FALSE;
++
++    if(AudioObjectGetPropertyDataSize(dev_id, &addr, 0, NULL, &size) != noErr || !size)
++        return FALSE;
++    buffers = malloc(size);
++    if(!buffers) return FALSE;
++    if(AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, buffers) == noErr){
++        for(i = 0; i < buffers->mNumberBuffers; ++i){
++            if(buffers->mBuffers[i].mNumberChannels > 0){
++                has_channels = TRUE;
++                break;
++            }
++        }
++    }
++    free(buffers);
++    return has_channels;
++}
++
++static EndpointFormFactor get_device_form_factor(AudioDeviceID dev_id, EDataFlow flow)
++{
++    AudioObjectPropertyAddress addr;
++    UInt32 data_source = 0, transport = 0, size;
++
++    addr.mSelector = kAudioDevicePropertyDataSource;
++    addr.mScope = get_scope(flow);
++    addr.mElement = kAudioObjectPropertyElementMain;
++    size = sizeof(data_source);
++    if(AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, &data_source) == noErr){
++        switch(data_source){
++        case 0x6864706e: /* 'hdpn' */
++            return Headphones;
++        case 0x6973706b: /* 'ispk' */
++        case 0x6573706b: /* 'espk' */
++            return Speakers;
++        case 0x6c696e65: /* 'line' */
++            return LineLevel;
++        case 0x73706466: /* 'spdf' */
++            return SPDIF;
++        case 0x696d6963: /* 'imic' */
++        case 0x656d6963: /* 'emic' */
++            return Microphone;
++        }
++    }
++
++    addr.mSelector = kAudioDevicePropertyTransportType;
++    addr.mScope = kAudioObjectPropertyScopeGlobal;
++    addr.mElement = kAudioObjectPropertyElementMain;
++    size = sizeof(transport);
++    if(AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, &transport) == noErr){
++        switch(transport){
++        case kAudioDeviceTransportTypeHDMI:
++        case kAudioDeviceTransportTypeDisplayPort:
++            return DigitalAudioDisplayDevice;
++        case kAudioDeviceTransportTypeBluetooth:
++        case kAudioDeviceTransportTypeBluetoothLE:
++            if(device_has_scope_channels(dev_id, kAudioDevicePropertyScopeInput) &&
++               device_has_scope_channels(dev_id, kAudioDevicePropertyScopeOutput))
++                return Headset;
++            return flow == eCapture ? Headset : Headphones;
++        case kAudioDeviceTransportTypeAirPlay:
++            return Speakers;
++        }
++    }
++
++    return flow == eCapture ? Microphone : Speakers;
+ }
+ 
+ static NTSTATUS unix_get_prop_value(void *args)
+ {
++    static const GUID PKEY_AudioEndpoint_GUID = {
++        0x1da5d803, 0xd492, 0x4edd, {0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e}
++    };
+     struct get_prop_value_params *params = args;
++    AudioDeviceID dev_id;
+ 
+-    params->result = E_NOTIMPL;
++    dev_id = dev_id_from_device(params->device);
++    if(dev_id == kAudioObjectUnknown){
++        params->result = E_FAIL;
++        return STATUS_SUCCESS;
++    }
+ 
++    if(IsEqualGUID(&params->prop->fmtid, &PKEY_AudioEndpoint_GUID)){
++        switch(params->prop->pid){
++        case 0: /* PKEY_AudioEndpoint_FormFactor */
++            params->value->vt = VT_UI4;
++            params->value->ulVal = get_device_form_factor(dev_id, params->flow);
++            params->result = S_OK;
++            return STATUS_SUCCESS;
++        case 3: /* PKEY_AudioEndpoint_PhysicalSpeakers */
++        {
++            WAVEFORMATEXTENSIBLE fmt;
++            memset(&fmt, 0, sizeof(fmt));
++            if(SUCCEEDED(get_device_channel_layout(dev_id, params->flow, &fmt)) && fmt.dwChannelMask){
++                params->value->vt = VT_UI4;
++                params->value->ulVal = fmt.dwChannelMask;
++                params->result = S_OK;
++            }else{
++                params->result = E_FAIL;
++            }
++            return STATUS_SUCCESS;
++        }
++        }
++    }
++
++    params->result = E_NOTIMPL;
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -1752,31 +2215,19 @@
  {
      struct set_volumes_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -868,10 +1116,13 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
      return STATUS_SUCCESS;
  }
-@@ -1802,6 +2127,77 @@
-     return STATUS_SUCCESS;
- }
+@@ -1799,6 +2250,77 @@
+     os_unfair_lock_unlock(&stream->lock);
  
+     params->result = hr;
++    return STATUS_SUCCESS;
++}
++
 +static NTSTATUS unix_set_sample_rate(void *args)
 +{
 +    struct set_sample_rate_params *params = args;
@@ -940,13 +1191,10 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +    os_unfair_lock_unlock(&stream->lock);
 +
 +    params->result = S_OK;
-+    return STATUS_SUCCESS;
-+}
-+
- const unixlib_entry_t __wine_unix_call_funcs[] =
- {
-     unix_process_attach,
-@@ -1830,7 +2226,7 @@
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -1830,7 +2352,7 @@
      unix_get_position,
      unix_set_volumes,
      unix_set_event_handle,
@@ -955,15 +1203,16 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      unix_not_implemented,
      unix_is_started,
      unix_get_prop_value,
-@@ -2286,7 +2682,7 @@
+@@ -2286,8 +2808,8 @@
      unix_wow64_get_position,
      unix_wow64_set_volumes,
      unix_wow64_set_event_handle,
--    unix_not_implemented,
 +    unix_set_sample_rate,
      unix_not_implemented,
+-    unix_not_implemented,
      unix_is_started,
      unix_wow64_get_prop_value,
+     unix_not_implemented,
 diff --git a/dlls/winecoreaudio.drv/volume_scale.h b/dlls/winecoreaudio.drv/volume_scale.h
 new file mode 100644
 index 00000000..00000000
