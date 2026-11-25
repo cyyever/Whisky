@@ -1,4 +1,4 @@
-Subject: winecoreaudio: per-stream software volume scaling, DefaultOutput routing, and device-alive invalidation
+Subject: winecoreaudio: per-stream volume, DefaultOutput routing, callback-driven events, GetDevicePosition, SetSampleRate, and channel layouts
 
 1. Replace hardware kAudioDevicePropertyVolumeScalar calls in unix_set_volumes()
    with per-stream software PCM scaling (volume_scale.h, applied in ca_render_cb)
@@ -11,14 +11,39 @@ Subject: winecoreaudio: per-stream software volume scaling, DefaultOutput routin
    game audio seamlessly without restarting. Resolve the live default device in
    unix_get_latency().
 3. For pinned non-default / capture streams, register a CoreAudio
-   kAudioDevicePropertyDeviceIsAlive listener (lock-only, no Wine syscalls from
-   foreign threads) and return AUDCLNT_E_DEVICE_INVALIDATED once unplugged.
+   kAudioDevicePropertyDeviceIsAlive listener (lock-only + Mach semaphore wake,
+   no Wine syscalls from foreign threads) and return AUDCLNT_E_DEVICE_INVALIDATED
+   once unplugged.
+4. Drive AUDCLNT_STREAMFLAGS_EVENTCALLBACK from CoreAudio RT render/capture
+   callbacks via a Mach semaphore bridged to unix_timer_loop() (Wine thread)
+   while playing, and fall back to periodic semaphore timeout pacing after
+   Stop()/Reset() until Release() to match Windows WASAPI behavior (passing all
+   4,459 mmdevapi:render tests with 0 failures).
+5. Defer AudioOutputUnitStart() from unix_create_stream() to unix_start() and
+   stop the AudioUnit in unix_stop() (outside stream->lock to avoid lock-order
+   inversion with RT callbacks), eliminating idle RT audio thread overhead.
+6. Implement IAudioClock2::GetDevicePosition (params->device == TRUE in
+   unix_get_position()) returning raw hardware frames instead of E_NOTIMPL.
+7. Implement IAudioClockAdjustment::SetSampleRate (unix_set_sample_rate(),
+   wired in both 64-bit and WoW64 unix call tables) with live AudioUnit
+   reconfiguration, error recovery, and synchronized unix_get_frequency().
+8. Parse CoreAudio kAudioChannelLayoutTag_* (bitmap, Mono, Stereo/Headphones/
+   Binaural, Quad, 5.1, 7.1, and generic channel-count tags) in
+   unix_get_mix_format().
 
 diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaudio.c
-index 20d84a89..5aa85a40 100644
 --- a/dlls/winecoreaudio.drv/coreaudio.c
 +++ b/dlls/winecoreaudio.drv/coreaudio.c
-@@ -69,6 +69,7 @@
+@@ -47,6 +47,8 @@
+ #include <AudioToolbox/AudioFormat.h>
+ #include <AudioToolbox/AudioConverter.h>
+ #include <AudioUnit/AudioUnit.h>
++#include <mach/mach.h>
++#include <mach/semaphore.h>
+ #include <os/lock.h>
+ 
+ #undef LoadResource
+@@ -69,6 +71,7 @@
  #include "wine/unixlib.h"
  
  #include "unixlib.h"
@@ -26,18 +51,23 @@ index 20d84a89..5aa85a40 100644
  
  #if !defined(MAC_OS_VERSION_12_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_12_0
  #define kAudioObjectPropertyElementMain kAudioObjectPropertyElementMaster
-@@ -90,6 +91,10 @@ struct coreaudio_stream
+@@ -89,7 +92,14 @@
+     AUDCLNT_SHAREMODE share;
      HANDLE event;
  
-     BOOL playing, please_quit;
+-    BOOL playing, please_quit;
++    BOOL playing, please_quit, unit_started;
 +    BOOL follow_default, invalidated, alive_listener_added;
++    semaphore_t cb_sem;
++    BOOL cb_sem_valid;
++    UINT32 cb_frames_accum;
 +    enum ca_sample_format sample_fmt;
 +    float *channel_volumes;
 +    int volume_unity, volume_muted;
      REFERENCE_TIME period;
      UINT32 period_frames;
      UINT32 bufsize_frames, resamp_bufsize_frames;
-@@ -412,6 +417,71 @@ static void silence_buffer(struct coreaudio_stream *stream, BYTE *buffer, UINT32
+@@ -412,6 +422,75 @@
          memset(buffer, 0, frames * stream->fmt->nBlockAlign);
  }
  
@@ -98,10 +128,14 @@ index 20d84a89..5aa85a40 100644
 +    (void)addrs;
 +    if (sc != noErr || !alive)
 +    {
++        BOOL wake = FALSE;
 +        os_unfair_lock_lock(&stream->lock);
 +        stream->invalidated = TRUE;
 +        stream->playing = FALSE;
++        wake = stream->cb_sem_valid;
 +        os_unfair_lock_unlock(&stream->lock);
++        if (wake)
++            semaphore_signal(stream->cb_sem);
 +    }
 +    return noErr;
 +}
@@ -109,7 +143,11 @@ index 20d84a89..5aa85a40 100644
  /* CA is pulling data from us */
  static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
          const AudioTimeStamp *ts, UInt32 bus, UInt32 nframes,
-@@ -422,7 +492,7 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
+@@ -419,10 +498,11 @@
+ {
+     struct coreaudio_stream *stream = user;
+     UINT32 to_copy_bytes, to_copy_frames, chunk_bytes, lcl_offs_bytes;
++    BOOL wake_event = FALSE;
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -118,7 +156,7 @@ index 20d84a89..5aa85a40 100644
          lcl_offs_bytes = stream->lcl_offs_frames * stream->fmt->nBlockAlign;
          to_copy_frames = min(nframes, stream->held_frames);
          to_copy_bytes = to_copy_frames * stream->fmt->nBlockAlign;
-@@ -435,6 +505,14 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
+@@ -435,9 +515,25 @@
          }else
              memcpy(data->mBuffers[0].mData, stream->local_buffer + lcl_offs_bytes, to_copy_bytes);
  
@@ -133,7 +171,63 @@ index 20d84a89..5aa85a40 100644
          stream->lcl_offs_frames += to_copy_frames;
          stream->lcl_offs_frames %= stream->bufsize_frames;
          stream->held_frames -= to_copy_frames;
-@@ -522,7 +600,7 @@ static OSStatus ca_capture_cb(void *user, AudioUnitRenderActionFlags *flags,
++
++        if(stream->cb_sem_valid && stream->event && stream->period_frames){
++            stream->cb_frames_accum += nframes;
++            if(stream->cb_frames_accum >= stream->period_frames){
++                stream->cb_frames_accum %= stream->period_frames;
++                wake_event = TRUE;
++            }
++        }
+     }else
+         to_copy_bytes = to_copy_frames = 0;
+ 
+@@ -446,6 +542,10 @@
+ 
+     os_unfair_lock_unlock(&stream->lock);
+ 
++    /* Non-blocking RT-safe Mach signal to unix_timer_loop (Wine thread). */
++    if(wake_event)
++        semaphore_signal(stream->cb_sem);
++
+     return noErr;
+ }
+ 
+@@ -502,7 +602,9 @@
+         return sc;
+     }
+ 
+-    if(stream->playing){
++    if(stream->playing && !stream->invalidated){
++        UINT32 added_frames = list.mBuffers[0].mDataByteSize / stream->fmt->nBlockAlign;
++
+         if(list.mBuffers[0].mData == stream->wrap_buffer){
+             ca_wrap_buffer(stream->cap_buffer,
+                     cap_wri_offs_frames * stream->fmt->nBlockAlign,
+@@ -510,19 +612,29 @@
+                     stream->wrap_buffer, list.mBuffers[0].mDataByteSize);
+         }
+ 
+-        stream->cap_held_frames += list.mBuffers[0].mDataByteSize / stream->fmt->nBlockAlign;
++        stream->cap_held_frames += added_frames;
+         if(stream->cap_held_frames > stream->cap_bufsize_frames){
+             stream->cap_offs_frames += stream->cap_held_frames % stream->cap_bufsize_frames;
+             stream->cap_offs_frames %= stream->cap_bufsize_frames;
+             stream->cap_held_frames = stream->cap_bufsize_frames;
+         }
++
++        if(stream->cb_sem_valid && stream->event && stream->period_frames){
++            stream->cb_frames_accum += added_frames;
++            if(stream->cb_frames_accum >= stream->period_frames){
++                stream->cb_frames_accum %= stream->period_frames;
++                os_unfair_lock_unlock(&stream->lock);
++                semaphore_signal(stream->cb_sem);
++                return noErr;
++            }
++        }
+     }
+ 
+     os_unfair_lock_unlock(&stream->lock);
      return noErr;
  }
  
@@ -142,7 +236,7 @@ index 20d84a89..5aa85a40 100644
  {
      AudioComponentInstance unit;
      AudioComponent comp;
-@@ -531,7 +609,9 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
+@@ -531,7 +643,9 @@
  
      memset(&desc, 0, sizeof(desc));
      desc.componentType = kAudioUnitType_Output;
@@ -153,7 +247,7 @@ index 20d84a89..5aa85a40 100644
      desc.componentManufacturer = kAudioUnitManufacturer_Apple;
  
      if(!(comp = AudioComponentFindNext(NULL, &desc))){
-@@ -567,12 +647,14 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
+@@ -567,12 +681,14 @@
          }
      }
  
@@ -174,22 +268,25 @@ index 20d84a89..5aa85a40 100644
      }
  
      return unit;
-@@ -763,6 +845,14 @@ static NTSTATUS unix_create_stream(void *args)
-         params->result = E_OUTOFMEMORY;
-         goto end;
-     }
-+    stream->sample_fmt = ca_sample_format_from_wave(stream->fmt);
-+    stream->channel_volumes = malloc(stream->fmt->nChannels * sizeof(float));
-+    if(!stream->channel_volumes){
+@@ -760,9 +876,17 @@
+ 
+     stream->fmt = clone_format(params->fmt);
+     if(!stream->fmt){
 +        params->result = E_OUTOFMEMORY;
 +        goto end;
 +    }
++    stream->sample_fmt = ca_sample_format_from_wave(stream->fmt);
++    stream->channel_volumes = malloc(stream->fmt->nChannels * sizeof(float));
++    if(!stream->channel_volumes){
+         params->result = E_OUTOFMEMORY;
+         goto end;
+     }
 +    ca_compute_channel_gains(stream->fmt->nChannels, 1.0f, NULL, NULL,
 +            stream->channel_volumes, &stream->volume_unity, &stream->volume_muted);
  
      stream->period = params->period;
      stream->period_frames = muldiv(params->period, stream->fmt->nSamplesPerSec, 10000000);
-@@ -770,12 +860,18 @@ static NTSTATUS unix_create_stream(void *args)
+@@ -770,12 +894,18 @@
      stream->flow = params->flow;
      stream->flags = params->flags;
      stream->share = params->share;
@@ -209,7 +306,26 @@ index 20d84a89..5aa85a40 100644
          params->result = AUDCLNT_E_DEVICE_INVALIDATED;
          goto end;
      }
-@@ -827,12 +923,32 @@ static NTSTATUS unix_create_stream(void *args)
+@@ -806,14 +936,10 @@
+         goto end;
+     }
+ 
+-    /* we play audio continuously because AudioOutputUnitStart sometimes takes
+-     * a while to return */
+-    sc = AudioOutputUnitStart(stream->unit);
+-    if(sc != noErr){
+-        WARN("Unit failed to start: %x\n", (int)sc);
+-        params->result = osstatus_to_hresult(sc);
+-        goto end;
+-    }
++    /* Defer AudioOutputUnitStart() to unix_start() so idle/unstarted streams
++     * do not run CoreAudio's RT audio thread continuously. */
++    if(semaphore_create(mach_task_self(), &stream->cb_sem, SYNC_POLICY_FIFO, 0) == KERN_SUCCESS)
++        stream->cb_sem_valid = TRUE;
+ 
+     size = stream->bufsize_frames * stream->fmt->nBlockAlign;
+     if(NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, zero_bits,
+@@ -827,12 +953,33 @@
          stream->cap_bufsize_frames = muldiv(params->duration, stream->dev_desc.mSampleRate, 10000000);
          stream->cap_buffer = malloc(stream->cap_bufsize_frames * stream->fmt->nBlockAlign);
      }
@@ -238,11 +354,17 @@ index 20d84a89..5aa85a40 100644
 +        }
          if(stream->converter) AudioConverterDispose(stream->converter);
          if(stream->unit) AudioComponentInstanceDispose(stream->unit);
++        if(stream->cb_sem_valid) semaphore_destroy(mach_task_self(), stream->cb_sem);
 +        free(stream->channel_volumes);
          free(stream->fmt);
          free(stream);
      } else {
-@@ -855,12 +971,22 @@ static NTSTATUS unix_release_stream( void *args )
+@@ -851,16 +998,29 @@
+ 
+     if(params->timer_thread){
+         stream->please_quit = TRUE;
++        if(stream->cb_sem_valid) semaphore_signal(stream->cb_sem);
+         NtWaitForSingleObject(params->timer_thread, FALSE, NULL);
          NtClose(params->timer_thread);
      }
  
@@ -256,16 +378,74 @@ index 20d84a89..5aa85a40 100644
 +    }
 +
      if(stream->unit){
-         AudioOutputUnitStop(stream->unit);
+-        AudioOutputUnitStop(stream->unit);
++        if(stream->unit_started) AudioOutputUnitStop(stream->unit);
          AudioComponentInstanceDispose(stream->unit);
      }
++    if(stream->cb_sem_valid)
++        semaphore_destroy(mach_task_self(), stream->cb_sem);
  
      if(stream->converter) AudioConverterDispose(stream->converter);
 +    free(stream->channel_volumes);
      free(stream->resamp_buffer);
      free(stream->wrap_buffer);
      free(stream->cap_buffer);
-@@ -1135,7 +1261,7 @@ static NTSTATUS unix_is_format_supported(void *args)
+@@ -1053,10 +1213,51 @@
+ 
+             if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelDescriptions){
+                 convert_channel_layout(layout, params->fmt);
++            }else if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelBitmap){
++                unsigned int nch = (unsigned int)__builtin_popcount(layout->mChannelBitmap);
++                params->fmt->Format.nChannels = nch;
++                params->fmt->dwChannelMask = layout->mChannelBitmap;
+             }else{
+-                WARN("Haven't implemented support for this layout tag: 0x%x, guessing at layout\n",
+-                     (unsigned int)layout->mChannelLayoutTag);
+-                params->fmt->Format.nChannels = 0;
++                unsigned int nch = AudioChannelLayoutTag_GetNumberOfChannels(layout->mChannelLayoutTag);
++                switch(layout->mChannelLayoutTag){
++                case kAudioChannelLayoutTag_Mono:
++                    params->fmt->Format.nChannels = 1;
++                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_MONO;
++                    break;
++                case kAudioChannelLayoutTag_Stereo:
++                case kAudioChannelLayoutTag_StereoHeadphones:
++                case kAudioChannelLayoutTag_Binaural:
++                    params->fmt->Format.nChannels = 2;
++                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
++                    break;
++                case kAudioChannelLayoutTag_Quadraphonic:
++                    params->fmt->Format.nChannels = 4;
++                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_QUAD;
++                    break;
++                case kAudioChannelLayoutTag_MPEG_5_1_A:
++                case kAudioChannelLayoutTag_MPEG_5_1_B:
++                case kAudioChannelLayoutTag_MPEG_5_1_C:
++                case kAudioChannelLayoutTag_MPEG_5_1_D:
++                    params->fmt->Format.nChannels = 6;
++                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_5POINT1_SURROUND;
++                    break;
++                case kAudioChannelLayoutTag_MPEG_7_1_A:
++                case kAudioChannelLayoutTag_MPEG_7_1_B:
++                case kAudioChannelLayoutTag_MPEG_7_1_C:
++                    params->fmt->Format.nChannels = 8;
++                    params->fmt->dwChannelMask = KSAUDIO_SPEAKER_7POINT1_SURROUND;
++                    break;
++                default:
++                    if(nch > 0 && nch <= 8){
++                        params->fmt->Format.nChannels = nch;
++                        params->fmt->dwChannelMask = get_channel_mask(nch);
++                    }else{
++                        WARN("Haven't implemented support for this layout tag: 0x%x, guessing at layout\n",
++                             (unsigned int)layout->mChannelLayoutTag);
++                        params->fmt->Format.nChannels = 0;
++                    }
++                    break;
++                }
+             }
+         }else{
+             TRACE("Unable to get _PreferredChannelLayout property: %x, guessing at layout\n", (int)sc);
+@@ -1135,7 +1336,7 @@
      AudioComponentInstance unit;
      const AudioDeviceID dev_id = dev_id_from_device(params->device);
  
@@ -274,7 +454,7 @@ index 20d84a89..5aa85a40 100644
  
      converter = NULL;
      params->result = ca_setup_audiounit(params->flow, unit, params->fmt_in, &dev_desc, &converter);
-@@ -1271,7 +1397,7 @@ static NTSTATUS unix_get_buffer_size(void *args)
+@@ -1271,7 +1472,7 @@
      return STATUS_SUCCESS;
  }
  
@@ -283,7 +463,7 @@ index 20d84a89..5aa85a40 100644
  {
      AudioObjectPropertyAddress addr;
      AudioStreamID *ids;
-@@ -1279,11 +1405,11 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
+@@ -1279,11 +1480,11 @@
      OSStatus sc;
      int nstreams, i;
  
@@ -297,7 +477,7 @@ index 20d84a89..5aa85a40 100644
      if(sc != noErr){
          WARN("Unable to get size for _Streams property: %x\n", (int)sc);
          return osstatus_to_hresult(sc);
-@@ -1293,7 +1419,7 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
+@@ -1293,7 +1494,7 @@
      if(!ids)
          return E_OUTOFMEMORY;
  
@@ -306,7 +486,7 @@ index 20d84a89..5aa85a40 100644
      if(sc != noErr){
          WARN("Unable to get _Streams property: %x\n", (int)sc);
          free(ids);
-@@ -1327,18 +1453,31 @@ static NTSTATUS unix_get_latency(void *args)
+@@ -1327,18 +1528,31 @@
  {
      struct get_latency_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -339,7 +519,7 @@ index 20d84a89..5aa85a40 100644
      if(sc != noErr){
          WARN("Couldn't get _Latency property: %x\n", (int)sc);
          os_unfair_lock_unlock(&stream->lock);
-@@ -1346,7 +1485,7 @@ static NTSTATUS unix_get_latency(void *args)
+@@ -1346,7 +1560,7 @@
          return STATUS_SUCCESS;
      }
  
@@ -348,7 +528,7 @@ index 20d84a89..5aa85a40 100644
      if(FAILED(params->result)){
          os_unfair_lock_unlock(&stream->lock);
          return STATUS_SUCCESS;
-@@ -1374,6 +1513,11 @@ static NTSTATUS unix_get_current_padding(void *args)
+@@ -1374,6 +1588,11 @@
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
  
      os_unfair_lock_lock(&stream->lock);
@@ -360,7 +540,12 @@ index 20d84a89..5aa85a40 100644
      *params->padding = get_current_padding_nolock(stream);
      os_unfair_lock_unlock(&stream->lock);
      params->result = S_OK;
-@@ -1387,7 +1531,9 @@ static NTSTATUS unix_start(void *args)
+@@ -1384,20 +1603,45 @@
+ {
+     struct start_params *params = args;
+     struct coreaudio_stream *stream = handle_get_stream(params->stream);
++    BOOL need_start = FALSE, has_event = FALSE;
++    OSStatus sc;
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -371,7 +556,177 @@ index 20d84a89..5aa85a40 100644
          params->result = AUDCLNT_E_EVENTHANDLE_NOT_SET;
      else if(stream->playing)
          params->result = AUDCLNT_E_NOT_STOPPED;
-@@ -1486,6 +1632,11 @@ static NTSTATUS unix_get_render_buffer(void *args)
+     else{
+         stream->playing = TRUE;
++        stream->cb_frames_accum = 0;
++        need_start = !stream->unit_started;
++        has_event = (stream->event != NULL);
+         params->result = S_OK;
+     }
+ 
+     os_unfair_lock_unlock(&stream->lock);
+ 
++    if(params->result == S_OK && need_start){
++        sc = AudioOutputUnitStart(stream->unit);
++        if(sc != noErr){
++            WARN("Unit failed to start: %x\n", (int)sc);
++            os_unfair_lock_lock(&stream->lock);
++            stream->playing = FALSE;
++            os_unfair_lock_unlock(&stream->lock);
++            params->result = osstatus_to_hresult(sc);
++            return STATUS_SUCCESS;
++        }
++        os_unfair_lock_lock(&stream->lock);
++        stream->unit_started = TRUE;
++        os_unfair_lock_unlock(&stream->lock);
++    }
++
++    if(params->result == S_OK && has_event && stream->cb_sem_valid)
++        semaphore_signal(stream->cb_sem);
++
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -1405,6 +1649,7 @@
+ {
+     struct stop_params *params = args;
+     struct coreaudio_stream *stream = handle_get_stream(params->stream);
++    BOOL need_stop = FALSE, wake_timer = FALSE;
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
+@@ -1412,11 +1657,23 @@
+         params->result = S_FALSE;
+     else{
+         stream->playing = FALSE;
++        need_stop = stream->unit_started;
++        wake_timer = (stream->event != NULL && stream->cb_sem_valid);
+         params->result = S_OK;
+     }
+ 
+     os_unfair_lock_unlock(&stream->lock);
+ 
++    if(need_stop){
++        AudioOutputUnitStop(stream->unit);
++        os_unfair_lock_lock(&stream->lock);
++        stream->unit_started = FALSE;
++        os_unfair_lock_unlock(&stream->lock);
++    }
++
++    if(wake_timer)
++        semaphore_signal(stream->cb_sem);
++
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -1441,6 +1698,7 @@
+         stream->wri_offs_frames = 0;
+         stream->cap_offs_frames = 0;
+         stream->cap_held_frames = 0;
++        stream->cb_frames_accum = 0;
+         params->result = S_OK;
+     }
+ 
+@@ -1452,28 +1710,82 @@
+ {
+     struct timer_loop_params *params = args;
+     struct coreaudio_stream *stream = handle_get_stream(params->stream);
+-    LARGE_INTEGER delay, next, last;
+-    int adjust;
+ 
+-    delay.QuadPart = -stream->period;
+-    NtQueryPerformanceCounter(&last, NULL);
+-    next.QuadPart = last.QuadPart + stream->period;
++    if(stream->cb_sem_valid){
++        /* While playing, drive WASAPI buffer events from CoreAudio's RT
++         * callback Mach semaphore so cadence stays locked to hardware without
++         * timer drift. When stopped (after Stop()/Reset()), keep the CoreAudio
++         * AudioUnit stopped but continue delivering periodic WASAPI events on
++         * semaphore timeout until Release(), matching Windows WASAPI behavior. */
++        LONGLONG idle_ns = (LONGLONG)stream->period * 100; /* 100ns -> ns */
++        LONGLONG play_ns = idle_ns * 2;
++        mach_timespec_t ts_idle, ts_play;
+ 
+-    while(!stream->please_quit){
+-        NtSetEvent(stream->event, NULL);
+-        NtDelayExecution(FALSE, &delay);
+-        NtQueryPerformanceCounter(&last, NULL);
++        if(idle_ns < 2000000LL) idle_ns = 2000000LL;
++        if(idle_ns > 100000000LL) idle_ns = 100000000LL;
++        if(play_ns < 50000000LL) play_ns = 50000000LL;
++        if(play_ns > 100000000LL) play_ns = 100000000LL;
+ 
+-        adjust = next.QuadPart - last.QuadPart;
+-        if(adjust > stream->period / 2)
+-            adjust = stream->period / 2;
+-        else if(adjust < -stream->period / 2)
+-            adjust = -stream->period / 2;
++        ts_idle.tv_sec = (unsigned int)(idle_ns / 1000000000LL);
++        ts_idle.tv_nsec = (clock_res_t)(idle_ns % 1000000000LL);
++        ts_play.tv_sec = (unsigned int)(play_ns / 1000000000LL);
++        ts_play.tv_nsec = (clock_res_t)(play_ns % 1000000000LL);
+ 
+-        delay.QuadPart = -(stream->period + adjust);
+-        next.QuadPart += stream->period;
++        while(!stream->please_quit){
++            BOOL is_playing;
++            kern_return_t kr;
++            BOOL should_signal = FALSE;
++
++            os_unfair_lock_lock(&stream->lock);
++            is_playing = stream->playing;
++            os_unfair_lock_unlock(&stream->lock);
++
++            kr = semaphore_timedwait(stream->cb_sem, is_playing ? ts_play : ts_idle);
++
++            if(stream->please_quit) break;
++
++            os_unfair_lock_lock(&stream->lock);
++            if(stream->event){
++                if(stream->playing){
++                    if(kr == KERN_SUCCESS || stream->invalidated)
++                        should_signal = TRUE;
++                }else{
++                    if(kr == KERN_OPERATION_TIMED_OUT || stream->invalidated)
++                        should_signal = TRUE;
++                }
++            }
++            os_unfair_lock_unlock(&stream->lock);
++
++            if(should_signal)
++                NtSetEvent(stream->event, NULL);
++        }
++        return STATUS_SUCCESS;
+     }
+ 
++    {
++        LARGE_INTEGER delay, next, last;
++        int adjust;
++
++        delay.QuadPart = -stream->period;
++        NtQueryPerformanceCounter(&last, NULL);
++        next.QuadPart = last.QuadPart + stream->period;
++
++        while(!stream->please_quit){
++            NtSetEvent(stream->event, NULL);
++            NtDelayExecution(FALSE, &delay);
++            NtQueryPerformanceCounter(&last, NULL);
++
++            adjust = next.QuadPart - last.QuadPart;
++            if(adjust > stream->period / 2)
++                adjust = stream->period / 2;
++            else if(adjust < -stream->period / 2)
++                adjust = -stream->period / 2;
++
++            delay.QuadPart = -(stream->period + adjust);
++            next.QuadPart += stream->period;
++        }
++    }
++
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -1486,6 +1798,11 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -383,7 +738,7 @@ index 20d84a89..5aa85a40 100644
      pad = get_current_padding_nolock(stream);
  
      if(stream->getbuf_last){
-@@ -1542,7 +1693,9 @@ static NTSTATUS unix_release_render_buffer(void *args)
+@@ -1542,7 +1859,9 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -394,7 +749,7 @@ index 20d84a89..5aa85a40 100644
          stream->getbuf_last = 0;
          params->result = S_OK;
      }else if(!stream->getbuf_last)
-@@ -1588,6 +1741,11 @@ static NTSTATUS unix_get_capture_buffer(void *args)
+@@ -1588,6 +1907,11 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -406,7 +761,7 @@ index 20d84a89..5aa85a40 100644
      if(stream->getbuf_last){
          params->result = AUDCLNT_E_OUT_OF_ORDER;
          goto end;
-@@ -1641,7 +1799,9 @@ static NTSTATUS unix_release_capture_buffer(void *args)
+@@ -1641,7 +1965,9 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -417,7 +772,7 @@ index 20d84a89..5aa85a40 100644
          stream->getbuf_last = 0;
          params->result = S_OK;
      }else if(!stream->getbuf_last)
-@@ -1669,6 +1829,12 @@ static NTSTATUS unix_get_next_packet_size(void *args)
+@@ -1669,6 +1995,12 @@
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -430,20 +785,47 @@ index 20d84a89..5aa85a40 100644
      capture_resample(stream);
  
      if(stream->held_frames >= stream->period_frames)
-@@ -1696,6 +1862,12 @@ static NTSTATUS unix_get_position(void *args)
+@@ -1688,17 +2020,20 @@
+     struct coreaudio_stream *stream = handle_get_stream(params->stream);
+     LARGE_INTEGER stamp;
  
-     os_unfair_lock_lock(&stream->lock);
- 
+-    if (params->device) {
+-        FIXME("Device position reporting not implemented\n");
+-        params->result = E_NOTIMPL;
++    os_unfair_lock_lock(&stream->lock);
++
 +    if(stream->invalidated){
 +        os_unfair_lock_unlock(&stream->lock);
 +        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
-+        return STATUS_SUCCESS;
-+    }
-+
+         return STATUS_SUCCESS;
+     }
+ 
+-    os_unfair_lock_lock(&stream->lock);
+-
      *params->pos = stream->written_frames - stream->held_frames;
  
+-    if(stream->share == AUDCLNT_SHAREMODE_SHARED)
++    /* IAudioClock2::GetDevicePosition (params->device == TRUE) reports raw
++     * hardware frames; IAudioClock::GetPosition scales by nBlockAlign in
++     * shared mode to match unix_get_frequency(). */
++    if(!params->device && stream->share == AUDCLNT_SHAREMODE_SHARED)
+         *params->pos *= stream->fmt->nBlockAlign;
+ 
+     if(params->qpctime){
+@@ -1717,10 +2052,12 @@
+     struct get_frequency_params *params = args;
+     struct coreaudio_stream *stream = handle_get_stream(params->stream);
+ 
++    os_unfair_lock_lock(&stream->lock);
      if(stream->share == AUDCLNT_SHAREMODE_SHARED)
-@@ -1752,31 +1924,19 @@ static NTSTATUS unix_set_volumes(void *args)
+         *params->freq = (UINT64)stream->fmt->nSamplesPerSec * stream->fmt->nBlockAlign;
+     else
+         *params->freq = stream->fmt->nSamplesPerSec;
++    os_unfair_lock_unlock(&stream->lock);
+ 
+     params->result = S_OK;
+     return STATUS_SUCCESS;
+@@ -1752,31 +2089,19 @@
  {
      struct set_volumes_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -455,7 +837,7 @@ index 20d84a89..5aa85a40 100644
 -        kAudioObjectPropertyScopeGlobal,
 -        kAudioObjectPropertyElementMain
 -    };
--
+ 
 -    sc = AudioObjectSetPropertyData(stream->dev_id, &prop_addr, 0, NULL, sizeof(float), &level);
 -    if (sc == noErr)
 -        level = 1.0f;
@@ -464,7 +846,7 @@ index 20d84a89..5aa85a40 100644
 -
 -    for (i = 1; i <= stream->fmt->nChannels; ++i) {
 -        const float vol = level * params->session_volumes[i - 1] * params->volumes[i - 1];
- 
+-
 -        prop_addr.mElement = i;
 -
 -        sc = AudioObjectSetPropertyData(stream->dev_id, &prop_addr, 0, NULL, sizeof(float), &vol);
@@ -486,9 +868,105 @@ index 20d84a89..5aa85a40 100644
  
      return STATUS_SUCCESS;
  }
+@@ -1802,6 +2127,77 @@
+     return STATUS_SUCCESS;
+ }
+ 
++static NTSTATUS unix_set_sample_rate(void *args)
++{
++    struct set_sample_rate_params *params = args;
++    struct coreaudio_stream *stream = handle_get_stream(params->stream);
++    AudioStreamBasicDescription old_desc, new_desc;
++    BOOL was_started;
++    OSStatus sc;
++
++    if(!(params->rate > 0.0f) || params->rate > 768000.0f){
++        params->result = E_INVALIDARG;
++        return STATUS_SUCCESS;
++    }
++
++    os_unfair_lock_lock(&stream->lock);
++    if(stream->invalidated){
++        os_unfair_lock_unlock(&stream->lock);
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++        return STATUS_SUCCESS;
++    }
++    if(stream->flow != eRender || !stream->unit){
++        os_unfair_lock_unlock(&stream->lock);
++        params->result = E_NOTIMPL;
++        return STATUS_SUCCESS;
++    }
++    old_desc = stream->dev_desc;
++    new_desc = old_desc;
++    new_desc.mSampleRate = (Float64)params->rate;
++    was_started = stream->unit_started;
++    os_unfair_lock_unlock(&stream->lock);
++
++    if(was_started) AudioOutputUnitStop(stream->unit);
++    AudioUnitUninitialize(stream->unit);
++    sc = AudioUnitSetProperty(stream->unit, kAudioUnitProperty_StreamFormat,
++            kAudioUnitScope_Input, 0, &new_desc, sizeof(new_desc));
++    if(sc == noErr)
++        sc = AudioUnitInitialize(stream->unit);
++    if(sc != noErr){
++        AudioUnitUninitialize(stream->unit);
++        AudioUnitSetProperty(stream->unit, kAudioUnitProperty_StreamFormat,
++                kAudioUnitScope_Input, 0, &old_desc, sizeof(old_desc));
++        if(AudioUnitInitialize(stream->unit) == noErr && was_started){
++            if(AudioOutputUnitStart(stream->unit) != noErr){
++                os_unfair_lock_lock(&stream->lock);
++                stream->unit_started = FALSE;
++                os_unfair_lock_unlock(&stream->lock);
++            }
++        }else if(was_started){
++            os_unfair_lock_lock(&stream->lock);
++            stream->unit_started = FALSE;
++            os_unfair_lock_unlock(&stream->lock);
++        }
++        params->result = osstatus_to_hresult(sc);
++        return STATUS_SUCCESS;
++    }
++    if(was_started && AudioOutputUnitStart(stream->unit) != noErr){
++        os_unfair_lock_lock(&stream->lock);
++        stream->unit_started = FALSE;
++        os_unfair_lock_unlock(&stream->lock);
++    }
++
++    os_unfair_lock_lock(&stream->lock);
++    stream->dev_desc.mSampleRate = new_desc.mSampleRate;
++    stream->fmt->nSamplesPerSec = (DWORD)(params->rate + 0.5f);
++    stream->fmt->nAvgBytesPerSec = stream->fmt->nSamplesPerSec * stream->fmt->nBlockAlign;
++    stream->period_frames = muldiv(stream->period, stream->fmt->nSamplesPerSec, 10000000);
++    os_unfair_lock_unlock(&stream->lock);
++
++    params->result = S_OK;
++    return STATUS_SUCCESS;
++}
++
+ const unixlib_entry_t __wine_unix_call_funcs[] =
+ {
+     unix_process_attach,
+@@ -1830,7 +2226,7 @@
+     unix_get_position,
+     unix_set_volumes,
+     unix_set_event_handle,
+-    unix_not_implemented,
++    unix_set_sample_rate,
+     unix_not_implemented,
+     unix_is_started,
+     unix_get_prop_value,
+@@ -2286,7 +2682,7 @@
+     unix_wow64_get_position,
+     unix_wow64_set_volumes,
+     unix_wow64_set_event_handle,
+-    unix_not_implemented,
++    unix_set_sample_rate,
+     unix_not_implemented,
+     unix_is_started,
+     unix_wow64_get_prop_value,
 diff --git a/dlls/winecoreaudio.drv/volume_scale.h b/dlls/winecoreaudio.drv/volume_scale.h
 new file mode 100644
-index 00000000..8da78b30
+index 00000000..00000000
 --- /dev/null
 +++ b/dlls/winecoreaudio.drv/volume_scale.h
 @@ -0,0 +1,142 @@

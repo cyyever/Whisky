@@ -158,6 +158,144 @@ done:
     if (client) IAudioClient_Release(client);
 }
 
+static void exercise_event_clock_and_rate(IMMDevice *dev)
+{
+    IAudioClient *client = NULL;
+    IAudioRenderClient *render = NULL;
+    IAudioClock *clock = NULL;
+    IAudioClock2 *clock2 = NULL;
+    IAudioClockAdjustment *rate_adj = NULL;
+    WAVEFORMATEX *mix_fmt = NULL;
+    HANDLE ev = NULL;
+    UINT32 buf_frames = 0, pad = 0;
+    UINT64 pos1 = 0, pos2 = 0, qpc1 = 0, qpc2 = 0, freq = 0;
+    int wakes = 0, i;
+    BYTE *data = NULL;
+    HRESULT hr;
+
+    hr = IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&client);
+    CHECK(SUCCEEDED(hr) && client, "[event-clock-rate] Activate IAudioClient (hr=0x%08lx)", (unsigned long)hr);
+    if (FAILED(hr) || !client) return;
+
+    hr = IAudioClient_GetMixFormat(client, &mix_fmt);
+    CHECK(SUCCEEDED(hr) && mix_fmt, "[event-clock-rate] GetMixFormat (hr=0x%08lx)", (unsigned long)hr);
+    if (FAILED(hr) || !mix_fmt) goto done;
+
+    hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_RATEADJUST,
+            1000000, 0, mix_fmt, NULL);
+    CHECK(SUCCEEDED(hr), "[event-clock-rate] Initialize EVENTCALLBACK|RATEADJUST (hr=0x%08lx)", (unsigned long)hr);
+    if (FAILED(hr)) goto done;
+
+    ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+    CHECK(ev != NULL, "[event-clock-rate] CreateEventW");
+    hr = IAudioClient_SetEventHandle(client, ev);
+    CHECK(SUCCEEDED(hr), "[event-clock-rate] SetEventHandle (hr=0x%08lx)", (unsigned long)hr);
+
+    hr = IAudioClient_GetBufferSize(client, &buf_frames);
+    CHECK(SUCCEEDED(hr) && buf_frames > 0, "[event-clock-rate] GetBufferSize=%u", buf_frames);
+
+    hr = IAudioClient_GetService(client, &IID_IAudioRenderClient, (void **)&render);
+    CHECK(SUCCEEDED(hr) && render, "[event-clock-rate] GetService IAudioRenderClient");
+
+    hr = IAudioClient_GetService(client, &IID_IAudioClock, (void **)&clock);
+    CHECK(SUCCEEDED(hr) && clock, "[event-clock-rate] GetService IAudioClock");
+
+    if (clock) {
+        hr = IAudioClock_QueryInterface(clock, &IID_IAudioClock2, (void **)&clock2);
+        CHECK(SUCCEEDED(hr) && clock2, "[event-clock-rate] QueryInterface IAudioClock2 (hr=0x%08lx)", (unsigned long)hr);
+        hr = IAudioClock_GetFrequency(clock, &freq);
+        CHECK(SUCCEEDED(hr) && freq > 0, "[event-clock-rate] GetFrequency=%llu", (unsigned long long)freq);
+    }
+
+    hr = IAudioClient_GetService(client, &IID_IAudioClockAdjustment, (void **)&rate_adj);
+    CHECK(SUCCEEDED(hr) && rate_adj, "[event-clock-rate] GetService IAudioClockAdjustment (hr=0x%08lx)", (unsigned long)hr);
+
+    /* Validate sample-rate adjustment (valid + invalid rates) */
+    if (rate_adj) {
+        hr = IAudioClockAdjustment_SetSampleRate(rate_adj, 0.0f);
+        CHECK(hr == E_INVALIDARG, "[event-clock-rate] SetSampleRate(0) rejected (hr=0x%08lx)", (unsigned long)hr);
+        hr = IAudioClockAdjustment_SetSampleRate(rate_adj, 44100.0f);
+        CHECK(SUCCEEDED(hr), "[event-clock-rate] SetSampleRate(44100) (hr=0x%08lx)", (unsigned long)hr);
+        hr = IAudioClockAdjustment_SetSampleRate(rate_adj, (float)mix_fmt->nSamplesPerSec);
+        CHECK(SUCCEEDED(hr), "[event-clock-rate] SetSampleRate(restore %lu) (hr=0x%08lx)",
+              (unsigned long)mix_fmt->nSamplesPerSec, (unsigned long)hr);
+    }
+
+    /* Before Start(): event must NOT fire while stopped */
+    CHECK(WaitForSingleObject(ev, 50) == WAIT_TIMEOUT, "[event-clock-rate] no spurious event before Start()");
+
+    if (clock2) {
+        hr = IAudioClock2_GetDevicePosition(clock2, &pos1, &qpc1);
+        CHECK(SUCCEEDED(hr) && pos1 == 0 && qpc1 > 0,
+              "[event-clock-rate] GetDevicePosition before Start: pos=%llu qpc=%llu (hr=0x%08lx)",
+              (unsigned long long)pos1, (unsigned long long)qpc1, (unsigned long)hr);
+    }
+
+    hr = IAudioClient_Start(client);
+    CHECK(SUCCEEDED(hr), "[event-clock-rate] Start (hr=0x%08lx)", (unsigned long)hr);
+
+    /* Drive 6 real CoreAudio hardware callback wakeups */
+    for (i = 0; i < 6; ++i) {
+        DWORD wr = WaitForSingleObject(ev, 250);
+        if (wr == WAIT_OBJECT_0) {
+            wakes++;
+            hr = IAudioClient_GetCurrentPadding(client, &pad);
+            if (SUCCEEDED(hr) && buf_frames > pad) {
+                UINT32 avail = buf_frames - pad;
+                if (avail > buf_frames / 4) avail = buf_frames / 4;
+                if (avail > 0 && SUCCEEDED(IAudioRenderClient_GetBuffer(render, avail, &data)) && data) {
+                    memset(data, 0, avail * mix_fmt->nBlockAlign);
+                    IAudioRenderClient_ReleaseBuffer(render, avail, 0);
+                }
+            }
+        }
+    }
+    CHECK(wakes == 6, "[event-clock-rate] CoreAudio callback event wakes=%d/6", wakes);
+
+    /* Check live rate adjustment while playing + synchronized IAudioClock::GetFrequency */
+    if (rate_adj) {
+        UINT64 freq2 = 0;
+        hr = IAudioClockAdjustment_SetSampleRate(rate_adj, 44100.0f);
+        CHECK(SUCCEEDED(hr), "[event-clock-rate] SetSampleRate(44100) while playing (hr=0x%08lx)", (unsigned long)hr);
+        if (clock) {
+            hr = IAudioClock_GetFrequency(clock, &freq2);
+            CHECK(SUCCEEDED(hr) && freq2 == (UINT64)44100 * mix_fmt->nBlockAlign,
+                  "[event-clock-rate] GetFrequency after SetSampleRate(44100)=%llu (expected %llu)",
+                  (unsigned long long)freq2, (unsigned long long)44100 * mix_fmt->nBlockAlign);
+        }
+        Sleep(40);
+    }
+
+    if (clock2) {
+        hr = IAudioClock2_GetDevicePosition(clock2, &pos2, &qpc2);
+        CHECK(SUCCEEDED(hr) && pos2 > pos1 && qpc2 >= qpc1,
+              "[event-clock-rate] GetDevicePosition advanced: %llu -> %llu (hr=0x%08lx)",
+              (unsigned long long)pos1, (unsigned long long)pos2, (unsigned long)hr);
+    }
+
+    hr = IAudioClient_Stop(client);
+    CHECK(SUCCEEDED(hr), "[event-clock-rate] Stop (hr=0x%08lx)", (unsigned long)hr);
+
+    /* Windows WASAPI continues delivering periodic buffer events after Stop()/Reset()
+     * until Release() even though CoreAudio's RT AudioUnit is stopped. */
+    ResetEvent(ev);
+    CHECK(WaitForSingleObject(ev, 100) == WAIT_OBJECT_0, "[event-clock-rate] periodic event continues after Stop()");
+    hr = IAudioClient_Reset(client);
+    CHECK(SUCCEEDED(hr), "[event-clock-rate] Reset (hr=0x%08lx)", (unsigned long)hr);
+    ResetEvent(ev);
+    CHECK(WaitForSingleObject(ev, 100) == WAIT_OBJECT_0, "[event-clock-rate] periodic event continues after Reset()");
+
+done:
+    if (rate_adj) IAudioClockAdjustment_Release(rate_adj);
+    if (clock2) IAudioClock2_Release(clock2);
+    if (clock) IAudioClock_Release(clock);
+    if (render) IAudioRenderClient_Release(render);
+    if (mix_fmt) CoTaskMemFree(mix_fmt);
+    if (client) IAudioClient_Release(client);
+    if (ev) CloseHandle(ev);
+}
+
 int main(void)
 {
     IMMDeviceEnumerator *enumerator = NULL;
@@ -190,6 +328,8 @@ int main(void)
     pcm16.nBlockAlign = pcm16.nChannels * (pcm16.wBitsPerSample / 8);
     pcm16.nAvgBytesPerSec = pcm16.nSamplesPerSec * pcm16.nBlockAlign;
     exercise_stream(dev, "pcm16-stereo", &pcm16);
+
+    exercise_event_clock_and_rate(dev);
 
 exit:
     if (dev) IMMDevice_Release(dev);
