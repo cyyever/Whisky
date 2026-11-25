@@ -1,0 +1,70 @@
+Subject: [PATCH] winemac.drv: scale fullscreen window mask for RetinaMode and sync Retina state on mode changes
+
+1. macdrv_WindowPosChanged computes the fullscreen letterbox/pillarbox mask
+   rect from data->rects.window (in raw Wine coordinates, 2x Cocoa points
+   when RetinaMode is active) and passes it directly to macdrv_set_window_mask,
+   which forwards it to -[WineWindow setMask:] without cgrect_mac_from_win().
+   On a 4K HiDPI display (3840x2160 physical, 1920x1080 logical @ 2x) with
+   Proton's emulate_modeset switching to a 16:10 mode such as 1680x1050,
+   data->rects.window is (192,0)-(3648,2160) inside visible (0,0)-(3840,2160).
+   Passing raw Wine pixels to setMask: (whose shapeLayer.bounds is 1920x1080
+   points) draws a 192pt (384px) left bar — twice as wide as intended — and
+   omits the right bar entirely because 192+3456 >= 1920. Offset the mask
+   rect by data->rects.visible.left/top (for multi-monitor) and convert it
+   with cgrect_mac_from_win() in macdrv_set_window_mask().
+
+2. macdrv_ChangeDisplaySettings() and macdrv_UpdateDisplayDevices() did not
+   call check_retina_status(). When a real display mode switch occurs (with
+   emulate_modeset disabled or via macOS), macdrv_UpdateDisplayDevices()
+   queries macdrv_get_monitors() with a stale retina_on flag, doubling
+   rc_monitor/rc_work relative to the new 1x display mode. Call
+   check_retina_status() before enumerating monitors and after changing
+   display settings.
+
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -3723,7 +3723,7 @@ void macdrv_set_window_mask(macdrv_window w, CGRect rect)
+     WineWindow* window = (WineWindow*)w;
+ 
+     OnMainThread(^{
+-        [window setMask:rect];
++        [window setMask:cgrect_mac_from_win(rect)];
+     });
+ }
+ }
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -804,6 +804,7 @@ LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWN
+     free_display_mode_descriptor(desc);
+     CFRelease(display_modes);
+     macdrv_reset_device_metrics();
++    check_retina_status();
+ 
+     return ret;
+ }
+@@ -1051,6 +1052,8 @@ UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager
+     INT gpu_count, adapter_count, monitor_count, mode_count;
+     DEVMODEW *modes;
+ 
++    check_retina_status();
++
+     /* Initialize GPUs */
+     if (macdrv_get_gpus(&gpus, &gpu_count))
+     {
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1637,7 +1637,13 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
+ 
+     if (fullscreen || fullscreen != data->fullscreen)
+     {
+-        CGRect rect = (fullscreen && !EqualRect(&data->rects.window, &data->rects.visible)) ? cgrect_from_rect(data->rects.window) : CGRectZero;
++        CGRect rect = CGRectZero;
++        if (fullscreen && !EqualRect(&data->rects.window, &data->rects.visible))
++        {
++            RECT mask = data->rects.window;
++            OffsetRect(&mask, -data->rects.visible.left, -data->rects.visible.top);
++            rect = cgrect_from_rect(mask);
++        }
+         macdrv_set_window_mask(data->cocoa_window, rect);
+         data->fullscreen = fullscreen;
+     }

@@ -1140,7 +1140,7 @@ new file mode 100644
 index 0000000..bbcdbb4
 --- /dev/null
 +++ b/dlls/ntdll/unix/msync_select.c
-@@ -0,0 +1,696 @@
+@@ -0,0 +1,678 @@
 +/*
 + * mach semaphore-based synchronization objects
 + *
@@ -1203,7 +1203,7 @@ index 0000000..bbcdbb4
 +    unsigned int server_count = 0, flags, i;
 +    int *apc_addr;
 +    LONGLONG interval = MSYNC_MIXED_POLL_INTERVAL;
-+    LARGE_INTEGER diag_start = {0};
++    BOOL polled_server = FALSE;
 +    NTSTATUS ret;
 +
 +    flags = SELECT_INTERRUPTIBLE | (alertable ? SELECT_ALERTABLE : 0);
@@ -1243,20 +1243,28 @@ index 0000000..bbcdbb4
 +            if (status == STATUS_ABANDONED) return STATUS_ABANDONED_WAIT_0 + i;
 +        }
 +
-+        /* 2. Bound the poll interval by the overall deadline. */
++        /* 2. Bound the poll interval by the overall deadline. Always probe the
++         *    server subset at least once (with a zero timeout if already due)
++         *    so a timeout=0 poll still sees a signaled server handle. */
 +        if (timeout)
 +        {
 +            LARGE_INTEGER now;
 +            NtQuerySystemTime( &now );
 +            left = end - now.QuadPart;
-+            if (left <= 0) return STATUS_TIMEOUT;
-+            if (left > interval) left = interval;
++            if (left <= 0)
++            {
++                if (polled_server) return STATUS_TIMEOUT;
++                left = 0;
++            }
++            else if (left > interval)
++                left = interval;
 +        }
-+        poll.QuadPart = -left; /* relative timeout */
++        poll.QuadPart = -left; /* relative timeout (0 = non-blocking probe) */
 +
 +        /* 3. Let the server wake us if a server object signals. */
 +        ret = server_wait( &select_op,
 +            offsetof( union select_op, wait.handles[server_count] ), flags, &poll );
++        polled_server = TRUE;
 +
 +        if (ret < server_count) return server_map[ret];
 +        if (ret >= STATUS_ABANDONED_WAIT_0 && ret < STATUS_ABANDONED_WAIT_0 + server_count)
@@ -1264,33 +1272,7 @@ index 0000000..bbcdbb4
 +        if (ret == STATUS_USER_APC || ret == STATUS_KERNEL_APC) return ret;
 +        /* Only a poll timeout means "recheck"; propagate any real error. */
 +        if (ret != STATUS_TIMEOUT) return ret;
-+
-+        /* Diagnostic: flag a single mixed wait that never wakes (a lost wakeup,
-+         * as opposed to legitimately blocking) -- logged once per process. This
-+         * is cheap (the poll already backs off) and is the only place a stuck
-+         * msync+server wait would show up, so keep it as a debug aid. */
-+        if (!diag_start.QuadPart)
-+            NtQuerySystemTime( &diag_start );
-+        else
-+        {
-+            LARGE_INTEGER now2;
-+            NtQuerySystemTime( &now2 );
-+            if (now2.QuadPart - diag_start.QuadPart > 50000000 /* 5s */)
-+            {
-+                static int stall_logged;
-+                if (!stall_logged) { stall_logged = 1;
-+                    ERR("mixed wait looping >5s (possible lost wakeup): count=%u server_count=%u\n",
-+                        count, server_count);
-+                    for (i = 0; i < count; i++)
-+                    {
-+                        if (!objs[i])
-+                            ERR("  [%u] SERVER handle=%p\n", i, handles[i]);
-+                        else
-+                            ERR("  [%u] msync type=%d signaled=%d handle=%p\n", i, objs[i]->type,
-+                                __atomic_load_n( (int *)objs[i]->shm, __ATOMIC_SEQ_CST ), handles[i]);
-+                    } }
-+            }
-+        }
++        if (timeout && !left) return STATUS_TIMEOUT;
 +
 +        /* Back off so an idle mixed wait doesn't busy-poll the server forever. */
 +        if (interval < MSYNC_MIXED_POLL_MAX) interval *= 2;
