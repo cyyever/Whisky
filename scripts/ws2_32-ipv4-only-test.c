@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
         return v4 ? 1 : 0;
     }
     if (disabled && v6 > 0) {
-        printf("FAIL: IPv6 not suppressed (patch 0019's default is not in this build)\n");
+        printf("FAIL: IPv6 not suppressed (patch 0013's default is not in this build)\n");
         return 1;
     }
     if (disabled && v4 == 0) {

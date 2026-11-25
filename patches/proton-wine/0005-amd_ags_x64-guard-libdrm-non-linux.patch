@@ -5,6 +5,7 @@ Linux-only. On other platforms (e.g. macOS) there is no libdrm and no
 AMD GPU, so guard the DRM code behind __linux__ and report no device;
 games then fall back to generic, non-AMD rendering paths.
 
+
 diff --git a/dlls/amd_ags_x64/unixlib.c b/dlls/amd_ags_x64/unixlib.c
 index d34a162..fbfaed9 100644
 --- a/dlls/amd_ags_x64/unixlib.c

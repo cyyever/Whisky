@@ -1,0 +1,207 @@
+Subject: winemac.drv: borderless fullscreen snap, activation foreground restore, and Retina mask/mode sync
+
+1. Snap display-sized borderless windows aligned to the work-area top edge up
+   to the monitor origin so they do not sit one menu-bar height too low.
+2. Remember the foreground window yielded on app deactivation and restore it
+   when the application is re-activated.
+3. Offset the fullscreen mask rect by visible.left/top and convert via
+   cgrect_mac_from_win() in macdrv_set_window_mask() for RetinaMode, and call
+   check_retina_status() on ChangeDisplaySettings / UpdateDisplayDevices.
+
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 7d6d704..db11785 100644
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1956,6 +1956,38 @@ - (void) setFrameFromWine:(NSRect)contentRect
+            (left, bottom) in a bottom-up space. */
+         [[WineApplicationController sharedController] flipRect:&contentRect];
+ 
++        BOOL snapped = FALSE;
++
++        /* rcWork and rcMonitor share an origin on Windows -- the taskbar is at
++           the bottom -- but not on macOS, where the menu bar is at the top.  An
++           app that asks for the work-area origin while sizing to the full
++           monitor is therefore self-consistent only on Windows; here it lands
++           one menu-bar height too low, leaving the menu bar visible and hanging
++           the same number of pixels off the bottom.
++
++           Correct exactly that: a window the size of a display whose top edge
++           was aligned to that display's work area.  Matching on "borderless and
++           display-sized and not at the origin" instead would also drag back a
++           window an app deliberately placed elsewhere.
++
++           Still borderless-only: a titled window whose content happened to be
++           display-sized would have its title bar pushed under the menu bar. */
++        if (!([self styleMask] & NSWindowStyleMaskTitled) && !NSIsEmptyRect(contentRect))
++        {
++            for (NSScreen* snapScreen in [NSScreen screens])
++            {
++                NSRect sf = [snapScreen frame], vf = [snapScreen visibleFrame];
++
++                if (!NSEqualSizes(contentRect.size, sf.size)) continue;
++                if (fabs(NSMaxY(contentRect) - NSMaxY(vf)) > 1.0) continue;
++                if (NSEqualPoints(contentRect.origin, sf.origin)) continue;
++
++                contentRect.origin = sf.origin;
++                snapped = TRUE;
++                break;
++            }
++        }
++
+         /* The back end is establishing a new window size and position.  It's
+            not interested in any stale events regarding those that may be sitting
+            in the queue. */
+@@ -1965,6 +1997,7 @@ - (void) setFrameFromWine:(NSRect)contentRect
+         if (!NSIsEmptyRect(contentRect))
+         {
+             NSRect frame, oldFrame;
++            BOOL frameChanged = FALSE;
+ 
+             oldFrame = self.wine_fractionalFrame;
+             frame = [self frameRectForContentRect:contentRect];
+@@ -2016,13 +2049,21 @@ - (void) setFrameFromWine:(NSRect)contentRect
+ 
+                 [self updateFullscreen];
+ 
+-                if ([self isOrderedIn])
+-                {
+-                    /* In case Cocoa adjusted the frame we tried to set, generate a frame-changed
+-                       event.  The back end will ignore it if nothing actually changed. */
+-                    [self windowDidResize:nil skipSizeMove:TRUE];
+-                }
++                frameChanged = TRUE;
+             }
++
++            /* In case Cocoa adjusted the frame we tried to set, generate a frame-changed
++               event.  The back end will ignore it if nothing actually changed.
++
++               Also unconditionally after a snap: that moved the NSWindow somewhere
++               Wine did not ask for, and Wine has to be told or every click lands
++               offset by the menu-bar height.  Neither of the two conditions above
++               covers it -- initial positioning runs before show_window(), so
++               isOrderedIn is false, and once the NSWindow sits at the snapped
++               origin a repeat SetWindowPos with the same rect compares equal to
++               oldFrame, so the desync would never be repaired. */
++            if ((frameChanged && [self isOrderedIn]) || snapped)
++                [self windowDidResize:nil skipSizeMove:TRUE];
+         }
+     }
+ 
+@@ -3682,7 +3723,7 @@ void macdrv_set_window_mask(macdrv_window w, CGRect rect)
+     WineWindow* window = (WineWindow*)w;
+ 
+     OnMainThread(^{
+-        [window setMask:rect];
++        [window setMask:cgrect_mac_from_win(rect)];
+     });
+ }
+ }
+diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
+index cf0dfc0..d464adb 100644
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -804,6 +804,7 @@ LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWN
+     free_display_mode_descriptor(desc);
+     CFRelease(display_modes);
+     macdrv_reset_device_metrics();
++    check_retina_status();
+ 
+     return ret;
+ }
+@@ -1051,6 +1052,8 @@ UINT macdrv_UpdateDisplayDevices(const struct gdi_device_manager *device_manager
+     INT gpu_count, adapter_count, monitor_count, mode_count;
+     DEVMODEW *modes;
+ 
++    check_retina_status();
++
+     /* Initialize GPUs */
+     if (macdrv_get_gpus(&gpus, &gpu_count))
+     {
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index 4f19100..b97b175 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1637,7 +1637,13 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
+ 
+     if (fullscreen || fullscreen != data->fullscreen)
+     {
+-        CGRect rect = (fullscreen && !EqualRect(&data->rects.window, &data->rects.visible)) ? cgrect_from_rect(data->rects.window) : CGRectZero;
++        CGRect rect = CGRectZero;
++        if (fullscreen && !EqualRect(&data->rects.window, &data->rects.visible))
++        {
++            RECT mask = data->rects.window;
++            OffsetRect(&mask, -data->rects.visible.left, -data->rects.visible.top);
++            rect = cgrect_from_rect(mask);
++        }
+         macdrv_set_window_mask(data->cocoa_window, rect);
+         data->fullscreen = fullscreen;
+     }
+@@ -1793,10 +1799,46 @@ void macdrv_window_lost_focus(HWND hwnd, const macdrv_event *event)
+  *
+  * Handler for APP_ACTIVATED events.
+  */
++/* The window this process gave up when macOS deactivated it, so activation can
++ * hand it back.
++ *
++ * winex11 never needs this: its FocusIn event names the window that regained
++ * focus, and focus_out() keeps a last_focus as a fallback when that window
++ * cannot be activated. macOS's APP_ACTIVATED is process-wide and names nothing,
++ * and macdrv_app_deactivated() below drops the foreground unconditionally --
++ * so without a record, nothing ever takes it back and the process runs on with
++ * the desktop as its foreground window for the rest of its life.
++ *
++ * Kept here rather than asked of Cocoa. An earlier version of this read
++ * [NSApp keyWindow] from applicationDidBecomeActive: and got the window that
++ * was key BEFORE the switch, because AppKit posts that notification before the
++ * newly clicked window becomes key; and its fallback walked a keyWindows list
++ * that is only pruned on close, so it could name a window no longer on screen.
++ * The foreground is win32u state, and this is win32u's side of it. */
++static HWND deactivated_foreground;
++
+ void macdrv_app_activated(void)
+ {
++    HWND hwnd = deactivated_foreground;
++
+     TRACE("\n");
+     macdrv_UpdateClipboard();
++
++    if (!hwnd) return;
++    deactivated_foreground = NULL;
++
++    /* The window may have been destroyed, hidden or disabled while we were in
++     * the background; can_window_become_foreground() is the same gate every
++     * other path to the foreground goes through. */
++    if (!can_window_become_foreground(hwnd)) return;
++
++    /* And something else may already have taken the foreground -- a click that
++     * activates a different window arrives as its own focus event, which has
++     * already done the right thing. Only restore what we ourselves cleared. */
++    if (NtUserGetForegroundWindow() != NtUserGetDesktopWindow()) return;
++
++    TRACE("restoring foreground window %p\n", hwnd);
++    NtUserSetForegroundWindowInternal(hwnd);
+ }
+ 
+ 
+@@ -1807,10 +1849,20 @@ void macdrv_app_activated(void)
+  */
+ void macdrv_app_deactivated(void)
+ {
++    HWND foreground = NtUserGetForegroundWindow();
++    DWORD pid = 0;
++
+     NtUserClipCursor(NULL);
+ 
+-    if (get_active_window() == NtUserGetForegroundWindow())
++    /* The guard this replaces compared get_active_window() -- GUITHREADINFO for
++     * the CALLING thread -- against the global foreground window. APP_DEACTIVATED
++     * is process-wide and is handled by whichever thread pumps events first, so
++     * the two matched only when that thread happened to own the foreground.
++     * What matters is whether the foreground window is ours. */
++    if (foreground && NtUserGetWindowThread(foreground, &pid) &&
++        pid == GetCurrentProcessId())
+     {
++        deactivated_foreground = foreground;
+         TRACE("setting fg to desktop\n");
+         NtUserSetForegroundWindowInternal(NtUserGetDesktopWindow());
+     }

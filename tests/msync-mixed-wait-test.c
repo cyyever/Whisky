@@ -249,6 +249,50 @@ static void test_auto_event_and_named_pipe(void)
     CloseHandle(ev);
 }
 
+/*
+ * Test 3: Lowest-index priority in a mixed wait (manual-reset server event at
+ * index 0 + auto-reset msync events at indices 1..3). Mirrors kernel32:sync's
+ * test_WaitForMultipleObjects: index 0 must win while signaled without
+ * consuming the auto-reset events behind it.
+ */
+static void test_lowest_index_priority(void)
+{
+    HANDLE handles[4];
+    DWORD r;
+    int i;
+
+    printf("Test 3: lowest-index priority (server manual-reset [0] + msync auto-reset [1..3])\n");
+    for (i = 0; i < 4; i++) {
+        handles[i] = CreateEventW(NULL, i == 0, TRUE, NULL);
+        CHECK(handles[i] != NULL, "3: CreateEventW[%d] failed", i);
+    }
+
+    r = WaitForMultipleObjects(4, handles, FALSE, 0);
+    CHECK(r == WAIT_OBJECT_0, "3a: timeout=0 expected WAIT_OBJECT_0, got 0x%lx", (unsigned long)r);
+    r = WaitForMultipleObjects(4, handles, FALSE, 0);
+    CHECK(r == WAIT_OBJECT_0, "3b: repeat timeout=0 expected WAIT_OBJECT_0, got 0x%lx", (unsigned long)r);
+    CHECK(ResetEvent(handles[0]), "3c: ResetEvent failed");
+    for (i = 1; i < 4; i++) {
+        r = WaitForMultipleObjects(4, handles, FALSE, 0);
+        CHECK(r == WAIT_OBJECT_0 + (DWORD)i, "3d[%d]: expected WAIT_OBJECT_0+%d, got 0x%lx",
+              i, i, (unsigned long)r);
+    }
+
+    for (i = 0; i < 4; i++) SetEvent(handles[i]);
+    r = WaitForMultipleObjects(4, handles, FALSE, 2000);
+    CHECK(r == WAIT_OBJECT_0, "3e: timed wait expected WAIT_OBJECT_0, got 0x%lx", (unsigned long)r);
+    r = WaitForMultipleObjects(4, handles, FALSE, 2000);
+    CHECK(r == WAIT_OBJECT_0, "3f: repeat timed wait expected WAIT_OBJECT_0, got 0x%lx", (unsigned long)r);
+    CHECK(ResetEvent(handles[0]), "3g: ResetEvent failed");
+    for (i = 1; i < 4; i++) {
+        r = WaitForMultipleObjects(4, handles, FALSE, 2000);
+        CHECK(r == WAIT_OBJECT_0 + (DWORD)i, "3h[%d]: expected WAIT_OBJECT_0+%d, got 0x%lx",
+              i, i, (unsigned long)r);
+    }
+
+    for (i = 0; i < 4; i++) CloseHandle(handles[i]);
+}
+
 int main(int argc, char **argv)
 {
     DWORD long_wait_ms = (argc > 1) ? (DWORD)strtoul(argv[1], NULL, 10) : 5500;
@@ -257,6 +301,7 @@ int main(int argc, char **argv)
     printf("=== msync mixed-wait test (long_wait_ms=%lu) ===\n", (unsigned long)long_wait_ms);
     test_semaphore_and_manual_event(long_wait_ms);
     test_auto_event_and_named_pipe();
+    test_lowest_index_priority();
 
     printf("=== failures: %d ===\n", failures);
     printf("RESULT: %s\n", failures ? "FAIL" : "ok");

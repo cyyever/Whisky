@@ -17,6 +17,7 @@ failure much later, not an obvious error.
 wine64_preloader_OBJS lists preloader_mac.o alongside preloader.o, matching
 loader/Makefile.in; without it the preloader would fail to link on macOS.
 
+
 diff --git a/configure.ac b/configure.ac
 index be6e92b..5788643 100644
 --- a/configure.ac

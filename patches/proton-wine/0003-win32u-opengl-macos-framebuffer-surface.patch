@@ -1,0 +1,57 @@
+Subject: win32u/opengl: macOS framebuffer-surface build and DSA guard
+
+1. Move the EGL-independent framebuffer-surface/fs_hack helpers outside
+   #ifdef SONAME_LIBEGL so win32u compiles on macOS without libEGL.
+2. Require the OpenGL DSA entry points before enabling framebuffer surfaces;
+   macOS OpenGL lacks them and calling a null function pointer escapes
+   wglMakeCurrent with the global lock held.
+
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index c7aeea1..e8c72e3 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -186,7 +186,11 @@ static int get_window_swap_interval( HWND hwnd )
+     return interval;
+ }
+ 
+-#ifdef SONAME_LIBEGL
++/* The framebuffer-surface and fullscreen-hack helpers below are EGL-independent
++ * (they only use the generic opengl_drawable / GL entry points) and are used
++ * unconditionally by the driver-agnostic code further down, so they must be
++ * compiled even without libEGL (e.g. on macOS, where GL comes from winemac.drv).
++ * Only the actual EGL platform code stays behind SONAME_LIBEGL, lower down. */
+ 
+ struct framebuffer_surface
+ {
+@@ -994,6 +998,8 @@ static BOOL needs_framebuffer_surface( HWND hwnd )
+     return get_float_gamma_ramp( gamma_ramp, &gamma_serial );
+ }
+ 
++#ifdef SONAME_LIBEGL
++
+ static const struct opengl_drawable_funcs egldrv_pbuffer_funcs;
+ 
+ static EGLConfig egl_config_for_format( const struct egl_platform *egl, int format )
+@@ -3380,6 +3386,22 @@ static void display_funcs_init(void)
+     USE_GL_FUNC(glViewportIndexedfv)
+ #undef USE_GL_FUNC
+ 
++    /* The framebuffer surface uses direct-state-access entry points. Drivers
++     * such as macOS OpenGL can create native drawables without providing them. */
++    if (fshack_enabled && (!display_funcs.p_glCreateFramebuffers ||
++        !display_funcs.p_glCreateRenderbuffers ||
++        !display_funcs.p_glNamedRenderbufferStorageMultisample ||
++        !display_funcs.p_glNamedFramebufferRenderbuffer ||
++        !display_funcs.p_glNamedFramebufferTexture ||
++        !display_funcs.p_glNamedFramebufferDrawBuffer ||
++        !display_funcs.p_glNamedFramebufferReadBuffer ||
++        !display_funcs.p_glGetNamedFramebufferAttachmentParameteriv ||
++        !display_funcs.p_glCheckNamedFramebufferStatus))
++    {
++        WARN( "Disabling framebuffer surfaces: required OpenGL DSA entry points are unavailable.\n" );
++        fshack_enabled = FALSE;
++    }
++
+     display_funcs.p_wglGetProcAddress = win32u_wglGetProcAddress;
+     display_funcs.p_get_pixel_formats = win32u_get_pixel_formats;
+ 

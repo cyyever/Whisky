@@ -209,15 +209,15 @@ public struct BottleSettings: Codable, Equatable {
 
     public func environmentVariables(wineEnv: inout [String: String]) {
         // No WINEDLLOVERRIDES for the D3D/Vulkan stack: proton-wine's load order
-        // (patches/proton-wine 0017) resolves d3d9/d3d8/d3d11/d3d10core/dxgi/vulkan-1
-        // and d3d12/d3d12core to builtin — DXVK / vkd3d-proton / winevulkan. Nothing to
+        // (patches/proton-wine 0012) resolves d3d9/d3d8/d3d11/d3d10core/dxgi/vulkan-1
+        // and d3d12/d3d12core to builtin — DXVK / Mullion / winevulkan. Nothing to
         // set here.
         //
         // This used to say an env override "cannot" catch an app-directory load,
         // which is not true: get_load_order()'s "*basename" rung runs for loads by
         // explicit path too. What an env cannot defend against is a *stale
         // registry* entry, which is consulted whether or not anyone set an env —
-        // and that is what 0017 is for.
+        // and that is what 0012 is for.
 
         if followSystemProxy {
             for (key, value) in SystemProxy.environmentVariables() {

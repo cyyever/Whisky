@@ -12,6 +12,7 @@ demuxer via a null bitstream filter. Uses only public FFmpeg API
 (ch_layout, av_bsf_get_null_filter), so it also builds against the older
 pinned FFmpeg. Also replaces the removed AVCodecParameters.channels.
 
+
 diff --git a/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c b/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
 index 2237b1e..4eb6b16 100644
 --- a/dlls/winedmo/libavcodec/pcm_byte_order_reverse_bsf.c
@@ -210,7 +211,7 @@ index 2237b1e..4eb6b16 100644
 -
  #endif /* HAVE_FFMPEG */
 diff --git a/dlls/winedmo/unix_demuxer.c b/dlls/winedmo/unix_demuxer.c
-index 24681e2..5ee7932 100644
+index 7b749cd..a2336e2 100644
 --- a/dlls/winedmo/unix_demuxer.c
 +++ b/dlls/winedmo/unix_demuxer.c
 @@ -38,6 +38,7 @@ struct stream
@@ -251,7 +252,7 @@ index 24681e2..5ee7932 100644
          avcodec_parameters_copy( stream->filter->par_in, demuxer->ctx->streams[i]->codecpar );
          avcodec_parameters_copy( stream->filter->par_out, demuxer->ctx->streams[i]->codecpar );
      }
-@@ -344,7 +356,17 @@ static NTSTATUS demuxer_filter_packet( struct demuxer *demuxer, AVPacket **packe
+@@ -347,7 +359,17 @@ static NTSTATUS demuxer_filter_packet( struct demuxer *demuxer, AVPacket **packe
          if (!(stream = demuxer->last_stream)) ret = 0;
          else
          {

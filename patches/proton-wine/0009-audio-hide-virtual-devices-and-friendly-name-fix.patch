@@ -1,0 +1,146 @@
+Subject: mmdevapi, winecoreaudio: hide virtual audio devices and avoid friendly-name rewrap
+
+1. Skip virtual CoreAudio devices (e.g. Teams/Steam streaming) by default on
+   macOS (WHISKY_HIDE_VIRTUAL_AUDIO=0 opts out) to avoid device-enumeration hangs.
+2. Store and reuse the raw driver id in mmdevapi rather than recovering it from
+   the derived "Speakers (%s)" friendly name, preventing unbounded re-wrapping.
+
+diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
+index 7fd518d..1c73feb 100644
+--- a/dlls/mmdevapi/devenum.c
++++ b/dlls/mmdevapi/devenum.c
+@@ -664,6 +664,12 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+     {
+         HKEY keyprop;
+         RegSetValueExW(key, L"DeviceState", 0, REG_DWORD, (const BYTE*)&state, sizeof(DWORD));
++        /* The driver id, kept as itself. Every friendly name in the block below
++         * is derived from it, so it is the one value that must survive a
++         * round-trip through the registry undecorated -- see
++         * load_devices_from_reg. */
++        RegSetValueExW(key, L"DriverId", 0, REG_SZ, (const BYTE*)cur->drv_id,
++                       (wcslen(cur->drv_id) + 1) * sizeof(WCHAR));
+         if (!RegCreateKeyExW(key, L"Properties", 0, NULL, 0, KEY_WRITE|KEY_READ|KEY_WOW64_64KEY, NULL, &keyprop, NULL))
+         {
+             PROPVARIANT pv;
+@@ -706,10 +712,20 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+ 
+             if (FAILED(set_driver_prop_value(id, flow, &PKEY_AudioEndpoint_FormFactor)))
+             {
+-                pv.vt = VT_UI4;
+-                pv.ulVal = (flow == eCapture) ? Microphone : Speakers;
++                PROPVARIANT pv2;
++
++                PropVariantInit(&pv2);
+ 
+-                MMDevice_SetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv);
++                /* make read-write by not overwriting if already set: a device
++                 * that is no longer present has no driver to ask, and the
++                 * generic value would replace whatever it was stored as */
++                if (FAILED(MMDevice_GetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv2)) || pv2.vt != VT_UI4)
++                {
++                    pv.vt = VT_UI4;
++                    pv.ulVal = (flow == eCapture) ? Microphone : Speakers;
++
++                    MMDevice_SetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv);
++                }
+             }
+ 
+             if (flow != eCapture)
+@@ -770,6 +786,12 @@ HRESULT load_devices_from_reg(void)
+         return E_FAIL;
+     }
+ 
++    /* Keep the property-store keys initialized even when cached devices are
++     * hidden. Live devices still need these keys for their properties. */
++    const char *hide_virtual = getenv("WHISKY_HIDE_VIRTUAL_AUDIO");
++    if (!hide_virtual || strcmp(hide_virtual, "0") != 0)
++        return S_OK;
++
+     do {
+         WCHAR guidvalue[39];
+         GUID guid;
+@@ -791,13 +813,36 @@ HRESULT load_devices_from_reg(void)
+         }
+         if (ret != ERROR_SUCCESS)
+             continue;
+-        if (SUCCEEDED(CLSIDFromString(guidvalue, &guid))
+-            && SUCCEEDED(MMDevice_GetPropValue(&guid, curflow, (const PROPERTYKEY*)&DEVPKEY_Device_FriendlyName, &pv))
+-            && pv.vt == VT_LPWSTR)
++        if (SUCCEEDED(CLSIDFromString(guidvalue, &guid)))
+         {
+-            MMDevice_Create(pv.pwszVal, &guid, curflow,
+-                    DEVICE_STATE_NOTPRESENT, FALSE);
+-            CoTaskMemFree(pv.pwszVal);
++            WCHAR *driver_id = NULL;
++            DWORD size = 0;
++
++            /* MMDevice_Create derives the friendly name from the driver id as
++             * "Speakers (%s)". Seeding it from that name instead fed the
++             * derivation its own output, so every enumeration of a device that
++             * is no longer present wrapped the stored name in another layer --
++             * unboundedly, and persisted. Prefer the id kept for this purpose;
++             * fall back to the interface friendly name, which is the id
++             * undecorated, for keys written before it existed. Doing so also
++             * writes DriverId, so a bottle converges after one enumeration. */
++            if (!RegGetValueW(cur, guidvalue, L"DriverId", RRF_RT_REG_SZ, NULL, NULL, &size)
++                && (driver_id = malloc(size))
++                && !RegGetValueW(cur, guidvalue, L"DriverId", RRF_RT_REG_SZ, NULL,
++                                 driver_id, &size))
++            {
++                MMDevice_Create(driver_id, &guid, curflow,
++                        DEVICE_STATE_NOTPRESENT, FALSE);
++            }
++            else if (SUCCEEDED(MMDevice_GetPropValue(&guid, curflow,
++                        (const PROPERTYKEY*)&DEVPKEY_DeviceInterface_FriendlyName, &pv))
++                     && pv.vt == VT_LPWSTR)
++            {
++                MMDevice_Create(pv.pwszVal, &guid, curflow,
++                        DEVICE_STATE_NOTPRESENT, FALSE);
++                CoTaskMemFree(pv.pwszVal);
++            }
++            free(driver_id);
+         }
+     } while (1);
+ 
+diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaudio.c
+index b9c6e70..20d84a8 100644
+--- a/dlls/winecoreaudio.drv/coreaudio.c
++++ b/dlls/winecoreaudio.drv/coreaudio.c
+@@ -221,6 +221,29 @@ static NTSTATUS unix_main_loop(void *args)
+     return STATUS_SUCCESS;
+ }
+ 
++/* Hide virtual audio devices (Steam Streaming, Teams, loopback, ...) from apps
++ * by default. Some games hang forever enumerating them. Physical
++ * (built-in/USB/Bluetooth) and aggregate devices are left untouched; set
++ * WHISKY_HIDE_VIRTUAL_AUDIO=0 to disable. */
++static BOOL device_is_hidden_virtual(AudioDeviceID device)
++{
++    static int hide = -1;
++    AudioObjectPropertyAddress addr;
++    UInt32 transport, size;
++    OSStatus sc;
++
++    if(hide == -1) { const char *e = getenv("WHISKY_HIDE_VIRTUAL_AUDIO"); hide = (!e || strcmp(e, "0") != 0) ? 1 : 0; }
++    if(!hide) return FALSE;
++
++    addr.mSelector = kAudioDevicePropertyTransportType;
++    addr.mScope = kAudioObjectPropertyScopeGlobal;
++    addr.mElement = kAudioObjectPropertyElementMain;
++    size = sizeof(transport);
++    sc = AudioObjectGetPropertyData(device, &addr, 0, NULL, &size, &transport);
++    if(sc != noErr) return FALSE;
++    return transport == kAudioDeviceTransportTypeVirtual;
++}
++
+ static NTSTATUS unix_get_endpoint_ids(void *args)
+ {
+     struct get_endpoint_ids_params *params = args;
+@@ -289,6 +312,7 @@ static NTSTATUS unix_get_endpoint_ids(void *args)
+ 
+     for(i = 0; i < num_devices; i++){
+         if(!device_has_channels(devices[i], params->flow)) continue;
++        if(device_is_hidden_virtual(devices[i])) continue;
+ 
+         addr.mSelector = kAudioObjectPropertyName;
+         size = sizeof(CFStringRef);

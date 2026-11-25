@@ -21,7 +21,7 @@ static void element_added(GstBin *bin, GstElement *element, gpointer unused)
     GstElementFactory *factory = gst_element_get_factory(element);
     const char *name = factory ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)) : "";
     (void)bin; (void)unused;
-    if (!strcmp(name, "vtdec_hw")) g_atomic_int_set(&selected_decoder, 1);
+    if (!strcmp(name, "vtdec_hw") || !strcmp(name, "vth264dec_hw")) g_atomic_int_set(&selected_decoder, 1);
     if (!strcmp(name, "avdec_h264")) g_atomic_int_set(&selected_decoder, 2);
     printf("autoplug=%s\n", name);
 }
@@ -45,7 +45,7 @@ int main(int argc, char **argv)
     int count = 0, failures = 0;
     gst_init(NULL, NULL);
     if (software) {
-        const char *names[] = {"vtdec_hw", "vtdec"};
+        const char *names[] = {"vth264dec_hw", "vth264dec", "vtdec_hw", "vtdec"};
         for (unsigned i = 0; i < G_N_ELEMENTS(names); ++i) {
             GstPluginFeature *feature = gst_registry_find_feature(gst_registry_get(), names[i], GST_TYPE_ELEMENT_FACTORY);
             if (feature) { gst_plugin_feature_set_rank(feature, GST_RANK_NONE); gst_object_unref(feature); }

@@ -23,7 +23,7 @@ set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WINE_SRC="${WHISKY_WINE_SOURCE:-$PROJECT_DIR/vendor/proton-wine}"
-SWIFT="$PROJECT_DIR/WhiskyKit/Sources/WhiskyKit/Wine/Wine.swift"
+SWIFT="$PROJECT_DIR/Whisky/Core/Wine/Wine.swift"
 
 [ -f "$SWIFT" ]     || { echo "ERROR: $SWIFT missing" >&2; exit 1; }
 [ -d "$WINE_SRC" ]  || { echo "ERROR: proton-wine tree missing; run 'make proton' first" >&2; exit 1; }

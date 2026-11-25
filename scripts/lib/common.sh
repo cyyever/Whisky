@@ -54,7 +54,7 @@ export DEVELOPER_DIR
 # that signature (dlls/setupapi/fakedll.c read_file/install_lib_dir). winebuild
 # stamps Wine's own builtins; DXVK is built by mingw and lacks it, so
 # on a fresh bottle LoadLibraryA("d3d9.dll") would fail with STATUS_DLL_NOT_FOUND
-# *before* patch 0017's load order (which forces builtin) ever runs. We overwrite
+# *before* patch 0012's load order (which forces builtin) ever runs. We overwrite
 # only the DOS stub at offset 64 — never executed by the PE loader; e_lfanew (128)
 # is well clear, so the NT header is untouched.
 mark_wine_builtin() {  # <pe-file>
@@ -129,11 +129,11 @@ apply_patches() {
     # A branch-maintained tree already has the whole series applied, as commits,
     # so there is nothing to do -- and the loop below could not do it anyway. Its
     # "is this applied?" test reverse-checks one patch against the working tree,
-    # which cannot hold once a later patch edits a file an earlier one CREATES:
-    # 0008 creates dlls/ntdll/unix/msync_*.c, 0010 adds the MRING tracer to them,
-    # so 0008's new-file section never matches what is on disk. That test only
-    # ever held because `reset` guaranteed an unpatched base, and reset is itself
-    # a no-op here -- the patched state is committed, not a working-tree edit.
+    # which cannot hold whenever a later patch edits a file an earlier one CREATES
+    # (for example, a follow-up patch touching msync_*.c created by 0007). That
+    # test only ever held because `reset` guaranteed an unpatched base, and reset
+    # is itself a no-op here -- the patched state is committed, not a working-tree
+    # edit.
     if [ "$(git -C "$src_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$WHISKY_PATCH_BRANCH" ]; then
         local n dirty
         n="$(git -C "$src_dir" rev-list --count "$WHISKY_PATCH_BASE..HEAD" 2>/dev/null || echo '?')"
@@ -180,7 +180,7 @@ apply_patches() {
 #   * WINEMSYNC is 1 for an explicit msync selection, otherwise 0.
 #     An existing WINEMSYNC override takes precedence for diagnostic runs.
 # Deliberately does NOT emit WINEDLLOVERRIDES (the app no longer sets it — patch
-# 0017's builtin load order handles D3D/Vulkan).
+# 0012's builtin load order handles D3D/Vulkan).
 bottle_shellenv() {
     local bottle_dir="$1"
     if [ -z "$bottle_dir" ] || [ ! -d "$bottle_dir" ]; then

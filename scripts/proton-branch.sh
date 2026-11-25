@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # WHY. The patch files stay the source of truth for a fresh clone -- vendor/
 # proton-wine is gitignored, laid down from a tarball, so a checkout has only the
-# patches. But editing them directly does not scale: patch 0008 CREATES its files
+# patches. But editing them directly does not scale: patch 0007 CREATES its files
 # (`--- /dev/null`), so a change to one of them means rewriting a whole new-file
 # section, and splitting a change across patches means reproducing, by hand, the
 # state each patch sees. That was previously scripted by matching literal source
@@ -24,7 +24,7 @@ set -euo pipefail
 # The build follows the tree: apply_patches() in lib/common.sh sees the branch
 # checked out and applies nothing, so what gets built is the branch, and patches/
 # only matters again after 'export'. (It cannot do anything else -- its per-patch
-# reverse-check is unusable on a series where 0010 edits files 0008 creates.)
+# reverse-check fails whenever a later patch edits files an earlier one creates.)
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
