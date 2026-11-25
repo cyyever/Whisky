@@ -1,0 +1,636 @@
+Subject: winecoreaudio: per-stream software volume scaling, DefaultOutput routing, and device-alive invalidation
+
+1. Replace hardware kAudioDevicePropertyVolumeScalar calls in unix_set_volumes()
+   with per-stream software PCM scaling (volume_scale.h, applied in ca_render_cb)
+   across FLOAT32, PCM16, PCM24, PCM32, and PCM8 with unity/mute fast paths.
+   WASAPI stream volume/mute no longer clobbers macOS host system volume and now
+   works on HDMI/USB/Bluetooth outputs that lack hardware volume controls.
+2. Open kAudioUnitSubType_DefaultOutput (without pinning CurrentDevice) when a
+   render stream targets the current macOS default output device, so connecting
+   or disconnecting AirPods/headphones or switching system output re-routes live
+   game audio seamlessly without restarting. Resolve the live default device in
+   unix_get_latency().
+3. For pinned non-default / capture streams, register a CoreAudio
+   kAudioDevicePropertyDeviceIsAlive listener (lock-only, no Wine syscalls from
+   foreign threads) and return AUDCLNT_E_DEVICE_INVALIDATED once unplugged.
+
+diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaudio.c
+index 20d84a89..5aa85a40 100644
+--- a/dlls/winecoreaudio.drv/coreaudio.c
++++ b/dlls/winecoreaudio.drv/coreaudio.c
+@@ -69,6 +69,7 @@
+ #include "wine/unixlib.h"
+ 
+ #include "unixlib.h"
++#include "volume_scale.h"
+ 
+ #if !defined(MAC_OS_VERSION_12_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_12_0
+ #define kAudioObjectPropertyElementMain kAudioObjectPropertyElementMaster
+@@ -90,6 +91,10 @@ struct coreaudio_stream
+     HANDLE event;
+ 
+     BOOL playing, please_quit;
++    BOOL follow_default, invalidated, alive_listener_added;
++    enum ca_sample_format sample_fmt;
++    float *channel_volumes;
++    int volume_unity, volume_muted;
+     REFERENCE_TIME period;
+     UINT32 period_frames;
+     UINT32 bufsize_frames, resamp_bufsize_frames;
+@@ -412,6 +417,71 @@ static void silence_buffer(struct coreaudio_stream *stream, BYTE *buffer, UINT32
+         memset(buffer, 0, frames * stream->fmt->nBlockAlign);
+ }
+ 
++static enum ca_sample_format ca_sample_format_from_wave(const WAVEFORMATEX *fmt)
++{
++    const WAVEFORMATEXTENSIBLE *fmtex = (const WAVEFORMATEXTENSIBLE *)fmt;
++    BOOL is_float = (fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) ||
++        (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
++         IsEqualGUID(&fmtex->SubFormat, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT));
++    BOOL is_pcm = (fmt->wFormatTag == WAVE_FORMAT_PCM) ||
++        (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
++         IsEqualGUID(&fmtex->SubFormat, &KSDATAFORMAT_SUBTYPE_PCM));
++
++    if (is_float && fmt->wBitsPerSample == 32) return CA_FMT_FLOAT32;
++    if (is_pcm)
++    {
++        switch (fmt->wBitsPerSample)
++        {
++        case 8:  return CA_FMT_PCM8;
++        case 16: return CA_FMT_PCM16;
++        case 24: return CA_FMT_PCM24;
++        case 32: return CA_FMT_PCM32;
++        }
++    }
++    return CA_FMT_OTHER;
++}
++
++static AudioDeviceID get_default_device(EDataFlow flow)
++{
++    AudioDeviceID dev_id = kAudioObjectUnknown;
++    UInt32 size = sizeof(dev_id);
++    AudioObjectPropertyAddress addr = {
++        flow == eCapture ? kAudioHardwarePropertyDefaultInputDevice
++                         : kAudioHardwarePropertyDefaultOutputDevice,
++        kAudioObjectPropertyScopeGlobal,
++        kAudioObjectPropertyElementMain,
++    };
++
++    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, NULL, &size, &dev_id) != noErr)
++        return kAudioObjectUnknown;
++    return dev_id;
++}
++
++/* Native CoreAudio dispatch callback: MUST NOT call Wine Nt* syscalls. */
++static OSStatus ca_device_alive_cb(AudioObjectID obj, UInt32 num_addrs,
++        const AudioObjectPropertyAddress *addrs, void *user)
++{
++    struct coreaudio_stream *stream = user;
++    UInt32 alive = 1, size = sizeof(alive);
++    const AudioObjectPropertyAddress addr = {
++        kAudioDevicePropertyDeviceIsAlive,
++        kAudioObjectPropertyScopeGlobal,
++        kAudioObjectPropertyElementMain,
++    };
++    OSStatus sc = AudioObjectGetPropertyData(obj, &addr, 0, NULL, &size, &alive);
++
++    (void)num_addrs;
++    (void)addrs;
++    if (sc != noErr || !alive)
++    {
++        os_unfair_lock_lock(&stream->lock);
++        stream->invalidated = TRUE;
++        stream->playing = FALSE;
++        os_unfair_lock_unlock(&stream->lock);
++    }
++    return noErr;
++}
++
+ /* CA is pulling data from us */
+ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
+         const AudioTimeStamp *ts, UInt32 bus, UInt32 nframes,
+@@ -422,7 +492,7 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
+-    if(stream->playing){
++    if(stream->playing && !stream->invalidated){
+         lcl_offs_bytes = stream->lcl_offs_frames * stream->fmt->nBlockAlign;
+         to_copy_frames = min(nframes, stream->held_frames);
+         to_copy_bytes = to_copy_frames * stream->fmt->nBlockAlign;
+@@ -435,6 +505,14 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
+         }else
+             memcpy(data->mBuffers[0].mData, stream->local_buffer + lcl_offs_bytes, to_copy_bytes);
+ 
++        if(to_copy_frames && !stream->volume_unity){
++            if(stream->volume_muted)
++                silence_buffer(stream, data->mBuffers[0].mData, to_copy_frames);
++            else
++                ca_scale_pcm_frames(data->mBuffers[0].mData, to_copy_frames,
++                        stream->fmt->nChannels, stream->sample_fmt, stream->channel_volumes);
++        }
++
+         stream->lcl_offs_frames += to_copy_frames;
+         stream->lcl_offs_frames %= stream->bufsize_frames;
+         stream->held_frames -= to_copy_frames;
+@@ -522,7 +600,7 @@ static OSStatus ca_capture_cb(void *user, AudioUnitRenderActionFlags *flags,
+     return noErr;
+ }
+ 
+-static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID adevid)
++static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID adevid, BOOL follow_default)
+ {
+     AudioComponentInstance unit;
+     AudioComponent comp;
+@@ -531,7 +609,9 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
+ 
+     memset(&desc, 0, sizeof(desc));
+     desc.componentType = kAudioUnitType_Output;
+-    desc.componentSubType = kAudioUnitSubType_HALOutput;
++    desc.componentSubType = (dataflow == eRender && follow_default)
++        ? kAudioUnitSubType_DefaultOutput
++        : kAudioUnitSubType_HALOutput;
+     desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+ 
+     if(!(comp = AudioComponentFindNext(NULL, &desc))){
+@@ -567,12 +647,14 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
+         }
+     }
+ 
+-    sc = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+-            kAudioUnitScope_Global, 0, &adevid, sizeof(adevid));
+-    if(sc != noErr){
+-        WARN("Couldn't set audio unit device\n");
+-        AudioComponentInstanceDispose(unit);
+-        return NULL;
++    if(!(dataflow == eRender && follow_default)){
++        sc = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
++                kAudioUnitScope_Global, 0, &adevid, sizeof(adevid));
++        if(sc != noErr){
++            WARN("Couldn't set audio unit device\n");
++            AudioComponentInstanceDispose(unit);
++            return NULL;
++        }
+     }
+ 
+     return unit;
+@@ -763,6 +845,14 @@ static NTSTATUS unix_create_stream(void *args)
+         params->result = E_OUTOFMEMORY;
+         goto end;
+     }
++    stream->sample_fmt = ca_sample_format_from_wave(stream->fmt);
++    stream->channel_volumes = malloc(stream->fmt->nChannels * sizeof(float));
++    if(!stream->channel_volumes){
++        params->result = E_OUTOFMEMORY;
++        goto end;
++    }
++    ca_compute_channel_gains(stream->fmt->nChannels, 1.0f, NULL, NULL,
++            stream->channel_volumes, &stream->volume_unity, &stream->volume_muted);
+ 
+     stream->period = params->period;
+     stream->period_frames = muldiv(params->period, stream->fmt->nSamplesPerSec, 10000000);
+@@ -770,12 +860,18 @@ static NTSTATUS unix_create_stream(void *args)
+     stream->flow = params->flow;
+     stream->flags = params->flags;
+     stream->share = params->share;
++    /* Track macOS default output dynamically via DefaultOutput AudioUnit when
++     * the stream targets the current default render device, so connecting or
++     * disconnecting headphones/AirPods re-routes audio seamlessly mid-game. */
++    stream->follow_default = (stream->flow == eRender &&
++            stream->dev_id != kAudioObjectUnknown &&
++            stream->dev_id == get_default_device(eRender));
+ 
+     stream->bufsize_frames = muldiv(params->duration, stream->fmt->nSamplesPerSec, 10000000);
+     if(params->share == AUDCLNT_SHAREMODE_EXCLUSIVE)
+         stream->bufsize_frames -= stream->bufsize_frames % stream->period_frames;
+ 
+-    if(!(stream->unit = get_audiounit(stream->flow, stream->dev_id))){
++    if(!(stream->unit = get_audiounit(stream->flow, stream->dev_id, stream->follow_default))){
+         params->result = AUDCLNT_E_DEVICE_INVALIDATED;
+         goto end;
+     }
+@@ -827,12 +923,32 @@ static NTSTATUS unix_create_stream(void *args)
+         stream->cap_bufsize_frames = muldiv(params->duration, stream->dev_desc.mSampleRate, 10000000);
+         stream->cap_buffer = malloc(stream->cap_bufsize_frames * stream->fmt->nBlockAlign);
+     }
++
++    if(!stream->follow_default && stream->dev_id != kAudioObjectUnknown){
++        const AudioObjectPropertyAddress alive_addr = {
++            kAudioDevicePropertyDeviceIsAlive,
++            kAudioObjectPropertyScopeGlobal,
++            kAudioObjectPropertyElementMain,
++        };
++        if(AudioObjectAddPropertyListener(stream->dev_id, &alive_addr, ca_device_alive_cb, stream) == noErr)
++            stream->alive_listener_added = TRUE;
++    }
++
+     params->result = S_OK;
+ 
+ end:
+     if(FAILED(params->result)){
++        if(stream->alive_listener_added){
++            const AudioObjectPropertyAddress alive_addr = {
++                kAudioDevicePropertyDeviceIsAlive,
++                kAudioObjectPropertyScopeGlobal,
++                kAudioObjectPropertyElementMain,
++            };
++            AudioObjectRemovePropertyListener(stream->dev_id, &alive_addr, ca_device_alive_cb, stream);
++        }
+         if(stream->converter) AudioConverterDispose(stream->converter);
+         if(stream->unit) AudioComponentInstanceDispose(stream->unit);
++        free(stream->channel_volumes);
+         free(stream->fmt);
+         free(stream);
+     } else {
+@@ -855,12 +971,22 @@ static NTSTATUS unix_release_stream( void *args )
+         NtClose(params->timer_thread);
+     }
+ 
++    if(stream->alive_listener_added){
++        const AudioObjectPropertyAddress alive_addr = {
++            kAudioDevicePropertyDeviceIsAlive,
++            kAudioObjectPropertyScopeGlobal,
++            kAudioObjectPropertyElementMain,
++        };
++        AudioObjectRemovePropertyListener(stream->dev_id, &alive_addr, ca_device_alive_cb, stream);
++    }
++
+     if(stream->unit){
+         AudioOutputUnitStop(stream->unit);
+         AudioComponentInstanceDispose(stream->unit);
+     }
+ 
+     if(stream->converter) AudioConverterDispose(stream->converter);
++    free(stream->channel_volumes);
+     free(stream->resamp_buffer);
+     free(stream->wrap_buffer);
+     free(stream->cap_buffer);
+@@ -1135,7 +1261,7 @@ static NTSTATUS unix_is_format_supported(void *args)
+     AudioComponentInstance unit;
+     const AudioDeviceID dev_id = dev_id_from_device(params->device);
+ 
+-    unit = get_audiounit(params->flow, dev_id);
++    unit = get_audiounit(params->flow, dev_id, FALSE);
+ 
+     converter = NULL;
+     params->result = ca_setup_audiounit(params->flow, unit, params->fmt_in, &dev_desc, &converter);
+@@ -1271,7 +1397,7 @@ static NTSTATUS unix_get_buffer_size(void *args)
+     return STATUS_SUCCESS;
+ }
+ 
+-static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32 *max)
++static HRESULT ca_get_max_stream_latency(AudioDeviceID dev_id, EDataFlow flow, UInt32 *max)
+ {
+     AudioObjectPropertyAddress addr;
+     AudioStreamID *ids;
+@@ -1279,11 +1405,11 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
+     OSStatus sc;
+     int nstreams, i;
+ 
+-    addr.mScope = get_scope(stream->flow);
++    addr.mScope = get_scope(flow);
+     addr.mElement = 0;
+     addr.mSelector = kAudioDevicePropertyStreams;
+ 
+-    sc = AudioObjectGetPropertyDataSize(stream->dev_id, &addr, 0, NULL, &size);
++    sc = AudioObjectGetPropertyDataSize(dev_id, &addr, 0, NULL, &size);
+     if(sc != noErr){
+         WARN("Unable to get size for _Streams property: %x\n", (int)sc);
+         return osstatus_to_hresult(sc);
+@@ -1293,7 +1419,7 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
+     if(!ids)
+         return E_OUTOFMEMORY;
+ 
+-    sc = AudioObjectGetPropertyData(stream->dev_id, &addr, 0, NULL, &size, ids);
++    sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, ids);
+     if(sc != noErr){
+         WARN("Unable to get _Streams property: %x\n", (int)sc);
+         free(ids);
+@@ -1327,18 +1453,31 @@ static NTSTATUS unix_get_latency(void *args)
+ {
+     struct get_latency_params *params = args;
+     struct coreaudio_stream *stream = handle_get_stream(params->stream);
++    AudioDeviceID dev_id;
+     UInt32 latency, stream_latency, size;
+     AudioObjectPropertyAddress addr;
+     OSStatus sc;
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
++    if(stream->invalidated){
++        os_unfair_lock_unlock(&stream->lock);
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++        return STATUS_SUCCESS;
++    }
++
++    dev_id = stream->dev_id;
++    if(stream->follow_default){
++        AudioDeviceID live_def = get_default_device(eRender);
++        if(live_def != kAudioObjectUnknown) dev_id = live_def;
++    }
++
+     addr.mScope = get_scope(stream->flow);
+     addr.mSelector = kAudioDevicePropertyLatency;
+     addr.mElement = 0;
+ 
+     size = sizeof(latency);
+-    sc = AudioObjectGetPropertyData(stream->dev_id, &addr, 0, NULL, &size, &latency);
++    sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, &latency);
+     if(sc != noErr){
+         WARN("Couldn't get _Latency property: %x\n", (int)sc);
+         os_unfair_lock_unlock(&stream->lock);
+@@ -1346,7 +1485,7 @@ static NTSTATUS unix_get_latency(void *args)
+         return STATUS_SUCCESS;
+     }
+ 
+-    params->result = ca_get_max_stream_latency(stream, &stream_latency);
++    params->result = ca_get_max_stream_latency(dev_id, stream->flow, &stream_latency);
+     if(FAILED(params->result)){
+         os_unfair_lock_unlock(&stream->lock);
+         return STATUS_SUCCESS;
+@@ -1374,6 +1513,11 @@ static NTSTATUS unix_get_current_padding(void *args)
+     struct coreaudio_stream *stream = handle_get_stream(params->stream);
+ 
+     os_unfair_lock_lock(&stream->lock);
++    if(stream->invalidated){
++        os_unfair_lock_unlock(&stream->lock);
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++        return STATUS_SUCCESS;
++    }
+     *params->padding = get_current_padding_nolock(stream);
+     os_unfair_lock_unlock(&stream->lock);
+     params->result = S_OK;
+@@ -1387,7 +1531,9 @@ static NTSTATUS unix_start(void *args)
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
+-    if((stream->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) && !stream->event)
++    if(stream->invalidated)
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++    else if((stream->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) && !stream->event)
+         params->result = AUDCLNT_E_EVENTHANDLE_NOT_SET;
+     else if(stream->playing)
+         params->result = AUDCLNT_E_NOT_STOPPED;
+@@ -1486,6 +1632,11 @@ static NTSTATUS unix_get_render_buffer(void *args)
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
++    if(stream->invalidated){
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++        goto end;
++    }
++
+     pad = get_current_padding_nolock(stream);
+ 
+     if(stream->getbuf_last){
+@@ -1542,7 +1693,9 @@ static NTSTATUS unix_release_render_buffer(void *args)
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
+-    if(!params->written_frames){
++    if(stream->invalidated)
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++    else if(!params->written_frames){
+         stream->getbuf_last = 0;
+         params->result = S_OK;
+     }else if(!stream->getbuf_last)
+@@ -1588,6 +1741,11 @@ static NTSTATUS unix_get_capture_buffer(void *args)
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
++    if(stream->invalidated){
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++        goto end;
++    }
++
+     if(stream->getbuf_last){
+         params->result = AUDCLNT_E_OUT_OF_ORDER;
+         goto end;
+@@ -1641,7 +1799,9 @@ static NTSTATUS unix_release_capture_buffer(void *args)
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
+-    if(!params->done){
++    if(stream->invalidated)
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++    else if(!params->done){
+         stream->getbuf_last = 0;
+         params->result = S_OK;
+     }else if(!stream->getbuf_last)
+@@ -1669,6 +1829,12 @@ static NTSTATUS unix_get_next_packet_size(void *args)
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
++    if(stream->invalidated){
++        os_unfair_lock_unlock(&stream->lock);
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++        return STATUS_SUCCESS;
++    }
++
+     capture_resample(stream);
+ 
+     if(stream->held_frames >= stream->period_frames)
+@@ -1696,6 +1862,12 @@ static NTSTATUS unix_get_position(void *args)
+ 
+     os_unfair_lock_lock(&stream->lock);
+ 
++    if(stream->invalidated){
++        os_unfair_lock_unlock(&stream->lock);
++        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++        return STATUS_SUCCESS;
++    }
++
+     *params->pos = stream->written_frames - stream->held_frames;
+ 
+     if(stream->share == AUDCLNT_SHAREMODE_SHARED)
+@@ -1752,31 +1924,19 @@ static NTSTATUS unix_set_volumes(void *args)
+ {
+     struct set_volumes_params *params = args;
+     struct coreaudio_stream *stream = handle_get_stream(params->stream);
+-    Float32 level = params->master_volume;
+-    OSStatus sc;
+-    UINT32 i;
+-    AudioObjectPropertyAddress prop_addr = {
+-        kAudioDevicePropertyVolumeScalar,
+-        kAudioObjectPropertyScopeGlobal,
+-        kAudioObjectPropertyElementMain
+-    };
+-
+-    sc = AudioObjectSetPropertyData(stream->dev_id, &prop_addr, 0, NULL, sizeof(float), &level);
+-    if (sc == noErr)
+-        level = 1.0f;
+-    else
+-        WARN("Couldn't set master volume, applying it directly to the channels: %x\n", (int)sc);
+-
+-    for (i = 1; i <= stream->fmt->nChannels; ++i) {
+-        const float vol = level * params->session_volumes[i - 1] * params->volumes[i - 1];
+ 
+-        prop_addr.mElement = i;
+-
+-        sc = AudioObjectSetPropertyData(stream->dev_id, &prop_addr, 0, NULL, sizeof(float), &vol);
+-        if (sc != noErr) {
+-            WARN("Couldn't set channel #%u volume: %x\n", i, (int)sc);
+-        }
++    /* Apply WASAPI master/session/channel volumes in software per stream
++     * (in ca_render_cb) instead of mutating macOS system hardware volume via
++     * kAudioDevicePropertyVolumeScalar, which clobbered host volume on built-in
++     * speakers and silently failed on HDMI/USB/Bluetooth devices. */
++    os_unfair_lock_lock(&stream->lock);
++    if (stream->channel_volumes && stream->fmt)
++    {
++        ca_compute_channel_gains(stream->fmt->nChannels, params->master_volume,
++                params->session_volumes, params->volumes,
++                stream->channel_volumes, &stream->volume_unity, &stream->volume_muted);
+     }
++    os_unfair_lock_unlock(&stream->lock);
+ 
+     return STATUS_SUCCESS;
+ }
+diff --git a/dlls/winecoreaudio.drv/volume_scale.h b/dlls/winecoreaudio.drv/volume_scale.h
+new file mode 100644
+index 00000000..8da78b30
+--- /dev/null
++++ b/dlls/winecoreaudio.drv/volume_scale.h
+@@ -0,0 +1,142 @@
++/*
++ * Per-stream PCM volume scaling helpers for winecoreaudio.drv.
++ * Kept header-only with zero Wine/CoreAudio dependencies so host unit tests
++ * can exercise the exact production implementation across all PCM formats.
++ */
++#ifndef __WINECOREAUDIO_VOLUME_SCALE_H
++#define __WINECOREAUDIO_VOLUME_SCALE_H
++
++#include <stdint.h>
++
++enum ca_sample_format
++{
++    CA_FMT_OTHER = 0,
++    CA_FMT_FLOAT32,
++    CA_FMT_PCM8,
++    CA_FMT_PCM16,
++    CA_FMT_PCM24,
++    CA_FMT_PCM32,
++};
++
++static inline float ca_clamp_gain(float v)
++{
++    return (v > 0.0f) ? v : 0.0f;
++}
++
++static inline void ca_compute_channel_gains(unsigned int nch, float master,
++        const float *session_vols, const float *stream_vols,
++        float *out_gains, int *out_unity, int *out_muted)
++{
++    int all_unity = 1, all_muted = 1;
++    unsigned int ch;
++
++    master = ca_clamp_gain(master);
++    for (ch = 0; ch < nch; ++ch)
++    {
++        float sv = session_vols ? ca_clamp_gain(session_vols[ch]) : 1.0f;
++        float cv = stream_vols ? ca_clamp_gain(stream_vols[ch]) : 1.0f;
++        float g = master * sv * cv;
++
++        if (!(g > 0.0f)) g = 0.0f;
++        out_gains[ch] = g;
++        if (g != 1.0f) all_unity = 0;
++        if (g != 0.0f) all_muted = 0;
++    }
++    *out_unity = all_unity;
++    *out_muted = all_muted;
++}
++
++static inline void ca_scale_pcm_frames(void *buf, unsigned int frames,
++        unsigned int nch, enum ca_sample_format fmt, const float *gains)
++{
++    unsigned int f, ch;
++
++    if (!frames || !nch || !gains) return;
++
++    switch (fmt)
++    {
++    case CA_FMT_FLOAT32:
++    {
++        float *s = (float *)buf;
++        for (f = 0; f < frames; ++f)
++            for (ch = 0; ch < nch; ++ch)
++                s[f * nch + ch] *= gains[ch];
++        break;
++    }
++    case CA_FMT_PCM16:
++    {
++        int16_t *s = (int16_t *)buf;
++        for (f = 0; f < frames; ++f)
++        {
++            for (ch = 0; ch < nch; ++ch)
++            {
++                unsigned int idx = f * nch + ch;
++                double v = (double)s[idx] * (double)gains[ch];
++                if (v > 32767.0) v = 32767.0;
++                else if (v < -32768.0) v = -32768.0;
++                s[idx] = (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
++            }
++        }
++        break;
++    }
++    case CA_FMT_PCM24:
++    {
++        uint8_t *p = (uint8_t *)buf;
++        for (f = 0; f < frames; ++f)
++        {
++            for (ch = 0; ch < nch; ++ch)
++            {
++                unsigned int off = (f * nch + ch) * 3;
++                int32_t raw = (int32_t)p[off]
++                            | ((int32_t)p[off + 1] << 8)
++                            | ((int32_t)(int8_t)p[off + 2] << 16);
++                double v = (double)raw * (double)gains[ch];
++                int32_t out;
++                if (v > 8388607.0) v = 8388607.0;
++                else if (v < -8388608.0) v = -8388608.0;
++                out = (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
++                p[off]     = (uint8_t)(out & 0xff);
++                p[off + 1] = (uint8_t)((out >> 8) & 0xff);
++                p[off + 2] = (uint8_t)((out >> 16) & 0xff);
++            }
++        }
++        break;
++    }
++    case CA_FMT_PCM32:
++    {
++        int32_t *s = (int32_t *)buf;
++        for (f = 0; f < frames; ++f)
++        {
++            for (ch = 0; ch < nch; ++ch)
++            {
++                unsigned int idx = f * nch + ch;
++                double v = (double)s[idx] * (double)gains[ch];
++                if (v > 2147483647.0) v = 2147483647.0;
++                else if (v < -2147483648.0) v = -2147483648.0;
++                s[idx] = (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
++            }
++        }
++        break;
++    }
++    case CA_FMT_PCM8:
++    {
++        uint8_t *s = (uint8_t *)buf;
++        for (f = 0; f < frames; ++f)
++        {
++            for (ch = 0; ch < nch; ++ch)
++            {
++                unsigned int idx = f * nch + ch;
++                double v = ((double)s[idx] - 128.0) * (double)gains[ch] + 128.0;
++                if (v > 255.0) v = 255.0;
++                else if (v < 0.0) v = 0.0;
++                s[idx] = (uint8_t)(v + 0.5);
++            }
++        }
++        break;
++    }
++    default:
++        break;
++    }
++}
++
++#endif /* __WINECOREAUDIO_VOLUME_SCALE_H */
