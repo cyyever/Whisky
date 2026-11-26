@@ -1,17 +1,24 @@
-Subject: win32u: repair external font registrations after wineboot updates
+Subject: win32u/wineboot: repair external font registrations after wineboot updates
 
 The external-font cache can retain an absolute macOS font path while wine.inf
 resets the public NT Fonts entry to a filename absent from windows/Fonts.
 GDI still resolves the cached font, but DirectWrite omits it. Chromium then
-recurses while initializing its default system font and never opens Steam UI.
+recurses while initializing its default system font (repeatedly calling
+uisettings2_get_TextScaleFactor until stack overflow) and never opens Steam UI.
 
-Before marking a cached face as already registered, check both public keys.
-Let the existing registration pass repair missing or changed values. This
-also repairs affected prefixes without deleting their font cache.
-
+1. Before marking a cached face as already registered in win32u/font.c, check
+   both public keys so the existing registration pass repairs missing or
+   changed values.
+2. Delete the volatile HKCU\Software\Wine\Fonts\Cache key at the end of
+   wineboot's update_wineprefix(). During prefix update, wineboot's own
+   PeekMessageW initializes win32u and creates Fonts\Cache before wine.inf's
+   DefaultInstall clobbers the public NT Fonts entries; without clearing
+   Fonts\Cache afterward, subsequent processes in the same wineserver session
+   (such as steamwebhelper.exe on first launch after a Wine reinstall) skip
+   update_external_font_keys() and hit the Chromium font recursion crash.
 
 diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
-index 836bcbe..46566fb 100644
+index 836bcbe2..46566fb0 100644
 --- a/dlls/win32u/font.c
 +++ b/dlls/win32u/font.c
 @@ -6614,6 +6614,18 @@ struct external_key
@@ -46,3 +53,15 @@ index 836bcbe..46566fb 100644
              free( path );
              continue;
          }
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 6b5d3d26..841ef6cc 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -1709,6 +1709,7 @@ static void update_wineprefix( BOOL force )
+         update_user_profile();
+         update_win_version();
+         update_root_certs();
++        RegDeleteTreeW( HKEY_CURRENT_USER, L"Software\\Wine\\Fonts\\Cache" );
+ 
+         TRACE( "wine: configuration in %s has been updated.\n", debugstr_w(prettyprint_configdir()) );
+     }
