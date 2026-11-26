@@ -1975,13 +1975,13 @@ index 0000000..21239fb
 +int do_msync(void)
 +{
 +#ifdef __APPLE__
-+    /* Use server synchronization by default while investigating Steam hangs.
-+     * WINEMSYNC=1 explicitly enables msync for comparison. */
++    /* Enable msync by default on macOS; WINEMSYNC=0 falls back to
++     * server-side synchronization. */
 +    static int cached = -1;
 +    if (cached == -1)
 +    {
 +        const char *env = getenv( "WINEMSYNC" );
-+        cached = env ? atoi( env ) : 0;
++        cached = env ? atoi( env ) : 1;
 +    }
 +    return cached;
 +#else
@@ -5205,13 +5205,13 @@ index 0000000..d115126
 +int do_msync(void)
 +{
 +#ifdef __APPLE__
-+    /* Default off to match the client-side do_msync (dlls/ntdll/unix/msync_shm.c);
-+     * WINEMSYNC=1 explicitly enables msync for comparison. */
++    /* Default on to match the client-side do_msync (dlls/ntdll/unix/msync_shm.c);
++     * WINEMSYNC=0 explicitly disables msync. */
 +    static int cached = -1;
 +    if (cached == -1)
 +    {
 +        const char *env = getenv( "WINEMSYNC" );
-+        cached = env ? atoi( env ) : 0;
++        cached = env ? atoi( env ) : 1;
 +    }
 +    return cached;
 +#else
