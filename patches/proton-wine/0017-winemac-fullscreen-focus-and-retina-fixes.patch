@@ -1,4 +1,4 @@
-Subject: winemac.drv: borderless fullscreen snap, activation foreground restore, and Retina mask/mode sync
+Subject: winemac.drv: borderless fullscreen snap, activation foreground restore, Retina mask/mode sync, and Dock icon demotion
 
 1. Snap display-sized borderless windows aligned to the work-area top edge up
    to the monitor origin so they do not sit one menu-bar height too low.
@@ -7,12 +7,99 @@ Subject: winemac.drv: borderless fullscreen snap, activation foreground restore,
 3. Offset the fullscreen mask rect by visible.left/top and convert via
    cgrect_mac_from_win() in macdrv_set_window_mask() for RetinaMode, and call
    check_retina_status() on ChangeDisplaySettings / UpdateDisplayDevices.
+4. Schedule a short (0.5s) deferred check on window order-out and transition
+   back to NSApplicationActivationPolicyAccessory when no visible or
+   miniaturized WineWindow remains (unless Cmd+H hidden), matching Windows
+   taskbar behavior and avoiding duplicate Dock icons for background host
+   processes such as steam.exe.
 
+diff --git a/dlls/winemac.drv/cocoa_app.h b/dlls/winemac.drv/cocoa_app.h
+index 85d252ab..778e8ff5 100644
+--- a/dlls/winemac.drv/cocoa_app.h
++++ b/dlls/winemac.drv/cocoa_app.h
+@@ -103,6 +103,7 @@ @interface WineApplicationController : NSObject <NSApplicationDelegate>
+     + (WineApplicationController*) sharedController;
+ 
+     - (void) transformProcessToForeground:(BOOL)activateIfTransformed;
++    - (void) scheduleDemoteProcessIfNoVisibleWindows;
+     - (void) tryToActivateIgnoringOtherApps:(BOOL)ignore;
+ 
+     - (BOOL) registerEventQueue:(WineEventQueue*)queue;
+diff --git a/dlls/winemac.drv/cocoa_app.m b/dlls/winemac.drv/cocoa_app.m
+index 2a9dab26..13c8b099 100644
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -220,21 +220,52 @@ - (void) dealloc
+         [super dealloc];
+     }
+ 
++    - (void) demoteProcessIfNoVisibleWindows
++    {
++        if ([NSApp activationPolicy] != NSApplicationActivationPolicyRegular || [NSApp isHidden])
++            return;
++
++        for (NSWindow* window in [NSApp windows])
++        {
++            if ([window isKindOfClass:[WineWindow class]] &&
++                ([window isVisible] || [window isMiniaturized]))
++                return;
++        }
++
++        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
++    }
++
++    - (void) scheduleDemoteProcessIfNoVisibleWindows
++    {
++        [NSObject cancelPreviousPerformRequestsWithTarget:self
++                                                 selector:@selector(demoteProcessIfNoVisibleWindows)
++                                                   object:nil];
++        [self performSelector:@selector(demoteProcessIfNoVisibleWindows)
++                   withObject:nil
++                   afterDelay:0.5];
++    }
++
+     - (void) transformProcessToForeground:(BOOL)activateIfTransformed
+     {
++        [NSObject cancelPreviousPerformRequestsWithTarget:self
++                                                 selector:@selector(demoteProcessIfNoVisibleWindows)
++                                                   object:nil];
+         if ([NSApp activationPolicy] != NSApplicationActivationPolicyRegular)
+         {
++            [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
++
++            if (activateIfTransformed)
++                [self tryToActivateIgnoringOtherApps:YES];
++
++            if ([NSApp mainMenu])
++                return;
++
+             NSMenu* mainMenu;
+             NSMenu* submenu;
+             NSString* bundleName;
+             NSString* title;
+             NSMenuItem* item;
+ 
+-            [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+-
+-            if (activateIfTransformed)
+-                [self tryToActivateIgnoringOtherApps:YES];
+-
+             if (!enable_app_nap)
+             {
+                 [[[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
 diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
-index 7d6d704..db11785 100644
+index 7d6d7044..032f6ac1 100644
 --- a/dlls/winemac.drv/cocoa_window.m
 +++ b/dlls/winemac.drv/cocoa_window.m
-@@ -1956,6 +1956,38 @@ - (void) setFrameFromWine:(NSRect)contentRect
+@@ -1897,6 +1897,7 @@ - (void) doOrderOut
+             [controller updateFullscreenWindows];
+         [controller adjustWindowLevels];
+         [NSApp removeWindowsItem:self];
++        [controller scheduleDemoteProcessIfNoVisibleWindows];
+ 
+         [queue discardEventsMatchingMask:event_mask_for_type(WINDOW_BROUGHT_FORWARD) |
+                                          event_mask_for_type(WINDOW_GOT_FOCUS) |
+@@ -1956,6 +1957,38 @@ - (void) setFrameFromWine:(NSRect)contentRect
             (left, bottom) in a bottom-up space. */
          [[WineApplicationController sharedController] flipRect:&contentRect];
  
@@ -51,7 +138,7 @@ index 7d6d704..db11785 100644
          /* The back end is establishing a new window size and position.  It's
             not interested in any stale events regarding those that may be sitting
             in the queue. */
-@@ -1965,6 +1997,7 @@ - (void) setFrameFromWine:(NSRect)contentRect
+@@ -1965,6 +1998,7 @@ - (void) setFrameFromWine:(NSRect)contentRect
          if (!NSIsEmptyRect(contentRect))
          {
              NSRect frame, oldFrame;
@@ -59,7 +146,7 @@ index 7d6d704..db11785 100644
  
              oldFrame = self.wine_fractionalFrame;
              frame = [self frameRectForContentRect:contentRect];
-@@ -2016,13 +2049,21 @@ - (void) setFrameFromWine:(NSRect)contentRect
+@@ -2016,13 +2050,21 @@ - (void) setFrameFromWine:(NSRect)contentRect
  
                  [self updateFullscreen];
  
@@ -87,7 +174,7 @@ index 7d6d704..db11785 100644
          }
      }
  
-@@ -3682,7 +3723,7 @@ void macdrv_set_window_mask(macdrv_window w, CGRect rect)
+@@ -3682,7 +3724,7 @@ void macdrv_set_window_mask(macdrv_window w, CGRect rect)
      WineWindow* window = (WineWindow*)w;
  
      OnMainThread(^{
@@ -97,7 +184,7 @@ index 7d6d704..db11785 100644
  }
  }
 diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
-index cf0dfc0..d464adb 100644
+index cf0dfc02..d464adb7 100644
 --- a/dlls/winemac.drv/display.c
 +++ b/dlls/winemac.drv/display.c
 @@ -804,6 +804,7 @@ LONG macdrv_ChangeDisplaySettings(LPDEVMODEW displays, LPCWSTR primary_name, HWN
@@ -118,7 +205,7 @@ index cf0dfc0..d464adb 100644
      if (macdrv_get_gpus(&gpus, &gpu_count))
      {
 diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
-index 4f19100..b97b175 100644
+index 4f19100b..b97b1751 100644
 --- a/dlls/winemac.drv/window.c
 +++ b/dlls/winemac.drv/window.c
 @@ -1637,7 +1637,13 @@ void macdrv_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT
