@@ -1,43 +1,64 @@
-Subject: win32u: use host surface currentExtent for Vulkan fshack swapchains
+Subject: winemac,win32u: scale CAMetalLayer contentsScale by window DPI and skip Vulkan fshack double-blit on macOS
 
-When a DPI-unaware window (e.g. a 1280x720 D3D9 game at 96 DPI) runs on a
-high-DPI display (macOS RetinaMode="y" with LogPixels=192), Wine's Vulkan
-fullscreen/DPI hack (fshack) activates in win32u_vkCreateSwapchainKHR() so
-the application renders to a client-DPI user_image (1280x720, matching
-GetClientRect) while win32u scales it into a physical-resolution host
-swapchain (2560x1440, matching CAMetalLayer).
+When a DPI-unaware window (e.g. a 1280x720 D3D9/DXVK game at 96 DPI) runs on a
+macOS Retina display (RetinaMode="y", LogPixels=192), Wine maps its 1280x720
+logical client area to a 1280x720 pt NSWindow.
 
-Previously, win32u_vkCreateSwapchainKHR() initialized swapchain->host_extents
-and create_info_host.imageExtent from capabilities.minImageExtent. That worked
-on X11 (where minImageExtent == currentExtent), but Metal WSI (KosmicKrisp)
-reports minImageExtent = {1, 1} and puts the actual CAMetalLayer pixel size
-in currentExtent = {2560, 1440}. As a result, fshack created a 1x1 host
-swapchain, causing KosmicKrisp's vkQueuePresentKHR() to return
-VK_SUBOPTIMAL_KHR on every frame in an infinite swapchain recreation loop.
+Previously, two compounding issues occurred:
+  1. winemac.drv hardcoded WineMetalView's CAMetalLayer.contentsScale = 2.0
+     whenever RetinaMode="y", making KosmicKrisp's Metal WSI report the layer
+     size as 2560x1440 pixels (4x the pixel count of the 96-DPI swapchain) and
+     return VK_SUBOPTIMAL_KHR on every frame whenever swapchain extent != layer
+     pixel size.
+  2. Proton's X11-oriented Vulkan fshack_dpi path in win32u_vkCreateSwapchainKHR()
+     tried to paper over that mismatch by allocating a 2560x1440 host swapchain
+     (which also broke on Metal WSI because minImageExtent is {1, 1} instead of
+     currentExtent) and running a full 2560x1440 compute-shader blit + extra
+     vkQueueSubmit on every frame, followed by KosmicKrisp's own 2560x1440
+     render-pass blit into the CAMetalDrawable -- doubling 4x-pixel blits and
+     driving WindowServer to ~50% CPU.
 
-Fix win32u_vkCreateSwapchainKHR():
-  1. When fshack is active, derive host_extent from caps.currentExtent when
-     defined and non-zero (falling back to the MDT_WINE_RAW_DPI surface rect
-     if currentExtent is {UINT32_MAX, UINT32_MAX}, or create_info_host's
-     imageExtent), clamped to [caps.minImageExtent, caps.maxImageExtent].
-  2. Clear VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR on the fshack host
-     swapchain since fshack overrides imageFormat to VK_FORMAT_B8G8R8A8_UNORM
-     with VK_IMAGE_USAGE_STORAGE_BIT and only accesses it through a non-mutable
-     BGRA8_UNORM storage view (while user_image retains the client's mutable
-     flags).
-  3. Only attach VkSwapchainPresentScalingCreateInfoEXT when fshack is not
-     active, and chain scaling.pNext = create_info_host.pNext instead of
-     clobbering existing pNext entries such as VkImageFormatListCreateInfo
-     and VkSwapchainPresentModesCreateInfoKHR.
+Fix the architecture at the root on macOS:
+  1. winemac.drv: Give WineMetalView a per-view _dpiRatio (default 1.0 for
+     DPI-aware apps and Mullion) and conform to NSViewLayerContentScaleDelegate
+     so AppKit never overwrites layer.contentsScale back to backingScaleFactor.
+     For Vulkan surfaces (macdrv_vulkan_surface_create / macdrv_client_surface_update),
+     set _dpiRatio = NtUserGetDpiForWindow(hwnd) / NtUserGetWinMonitorDpi(MDT_RAW_DPI)
+     (cached on macdrv_client_surface for zero per-frame main-thread dispatch):
+       - DPI-aware windows (dpi == raw): contentsScale = 2.0 (full Retina).
+       - DPI-unaware windows (96 vs 192): contentsScale = 1.0, so KosmicKrisp
+         sees a matching 1280x720 layer, blits 1/4 the pixels with VK_SUCCESS
+         (zero VK_SUBOPTIMAL_KHR), and Apple's display compositor scales
+         1280x720 -> 2560x1440 in hardware at zero GPU cost.
+  2. win32u: Skip X11 compute-shader fshack_dpi on __APPLE__ in
+     surface_get_fshack_dpi(), while retaining the defensive currentExtent,
+     mutable-format, and pNext chaining fixes in win32u_vkCreateSwapchainKHR().
+
+Regression: tests/vulkan-dpi-swapchain-test.c (DPI-unaware + --dpi-aware + no-fshack check)
 
 diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
 --- a/dlls/win32u/vulkan.c
 +++ b/dlls/win32u/vulkan.c
-@@ -3106,25 +3106,13 @@
+@@ -3072,8 +3072,15 @@ fail:
  
+ static BOOL surface_get_fshack_dpi( struct surface *surface )
+ {
++#ifdef __APPLE__
++    /* On macOS, winemac.drv scales the CAMetalLayer's contentsScale by dpi/raw so
++     * Apple's display compositor scales DPI-unaware swapchains in hardware at zero
++     * GPU cost without Proton's X11 compute-shader fshack double-blit. */
++    return 0;
++#else
+     UINT dpi = NtUserGetDpiForWindow( surface->hwnd ), raw = NtUserGetWinMonitorDpi( surface->hwnd, MDT_RAW_DPI );
+     return fshack_enabled && dpi != raw ? raw : 0;
++#endif
+ }
+ 
+ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwapchainCreateInfoKHR *create_info,
+@@ -3107,24 +3114,12 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
      create_info_host.imageExtent.width = max( create_info_host.imageExtent.width, capabilities.minImageExtent.width );
      create_info_host.imageExtent.height = max( create_info_host.imageExtent.height, capabilities.minImageExtent.height );
--
+ 
 -    /* If the swapchain image size is not equal to the presentation size (e.g. because of DPI virtualization or
 -     * display mode change emulation), MoltenVK's vkQueuePresentKHR returns VK_SUBOPTIMAL_KHR.
 -     * Create the swapchain with VkSwapchainPresentScalingCreateInfoEXT to avoid this.
@@ -50,7 +71,7 @@ diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
 -        scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
 -        create_info_host.pNext = &scaling;
 -    }
- 
+-
      if (!(swapchain = calloc( 1, sizeof(*swapchain) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
  
      if ((swapchain->fshack_dpi = surface_get_fshack_dpi( surface )))
@@ -60,7 +81,7 @@ diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
  
          if ((res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device,
                                                                            create_info_host.surface, &caps )))
-@@ -3137,15 +3125,53 @@
+@@ -3137,15 +3132,53 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
          if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT))
              FIXME( "Swapchain does not support required VK_IMAGE_USAGE_STORAGE_BIT\n" );
  
@@ -116,3 +137,147 @@ diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
  
      if ((res = device->p_vkCreateSwapchainKHR( device->host.device, &create_info_host, NULL, &host_swapchain )))
      {
+diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -346,12 +346,14 @@
+ @end
+ 
+ 
+-@interface WineMetalView : WineBaseView
++@interface WineMetalView : WineBaseView <NSViewLayerContentScaleDelegate>
+ {
+     id<MTLDevice> _device;
++    CGFloat _dpiRatio;
+ }
+ 
+     - (id) initWithFrame:(NSRect)frame device:(id<MTLDevice>)device;
++    - (void) setDpiRatio:(CGFloat)ratio;
+ 
+ @end
+ 
+@@ -959,6 +961,7 @@
+         if (self)
+         {
+             _device = [device retain];
++            _dpiRatio = 1.0;
+             self.wantsLayer = YES;
+             self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
+         }
+@@ -971,20 +974,36 @@
+         [super dealloc];
+     }
+ 
++    - (void) setDpiRatio:(CGFloat)ratio
++    {
++        if (ratio <= 0.0) ratio = 1.0;
++        _dpiRatio = ratio;
++        self.layer.contentsScale = (retina_on ? 2.0 : 1.0) * _dpiRatio;
++        self.layer.magnificationFilter = (_dpiRatio != 1.0) ? kCAFilterLinear : kCAFilterNearest;
++    }
++
+     - (void) setRetinaMode:(BOOL)mode
+     {
+-        self.layer.contentsScale = mode ? 2.0 : 1.0;
++        self.layer.contentsScale = (mode ? 2.0 : 1.0) * (_dpiRatio > 0.0 ? _dpiRatio : 1.0);
+         [super setRetinaMode:mode];
+     }
+ 
++    - (BOOL) layer:(CALayer*)layer shouldInheritContentsScale:(CGFloat)newScale fromWindow:(NSWindow*)window
++    {
++        CGFloat desired = (retina_on ? 2.0 : 1.0) * (_dpiRatio > 0.0 ? _dpiRatio : 1.0);
++        if (layer.contentsScale != desired)
++            layer.contentsScale = desired;
++        return NO;
++    }
++
+     - (CALayer*) makeBackingLayer
+     {
+         CAMetalLayer *layer = [CAMetalLayer layer];
+         layer.device = _device;
+         layer.framebufferOnly = YES;
+-        layer.magnificationFilter = kCAFilterNearest;
++        layer.magnificationFilter = (_dpiRatio != 1.0 && _dpiRatio > 0.0) ? kCAFilterLinear : kCAFilterNearest;
+         layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+-        layer.contentsScale = retina_on ? 2.0 : 1.0;
++        layer.contentsScale = (retina_on ? 2.0 : 1.0) * (_dpiRatio > 0.0 ? _dpiRatio : 1.0);
+         return layer;
+     }
+ 
+@@ -3993,6 +4012,15 @@
+     return (macdrv_metal_view)metalView;
+ }
+ 
++void macdrv_metal_view_set_dpi_ratio(macdrv_metal_view v, double ratio)
++{
++    WineMetalView* view = (WineMetalView*)v;
++
++    OnMainThread(^{
++        [view setDpiRatio:(CGFloat)ratio];
++    });
++}
++
+ macdrv_metal_layer macdrv_view_get_metal_layer(macdrv_metal_view v)
+ {
+     WineMetalView* view = (WineMetalView*)v;
+diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+--- a/dlls/winemac.drv/macdrv.h
++++ b/dlls/winemac.drv/macdrv.h
+@@ -195,6 +195,7 @@
+     macdrv_view           cocoa_view;
+     macdrv_metal_device   metal_device;
+     macdrv_metal_view     metal_view;
++    double                metal_dpi_ratio;
+ };
+ 
+ static inline struct macdrv_client_surface *impl_from_client_surface(struct client_surface *client)
+diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -525,6 +525,7 @@
+ extern macdrv_metal_device macdrv_create_metal_device(void);
+ extern void macdrv_release_metal_device(macdrv_metal_device d);
+ extern macdrv_metal_view macdrv_view_create_metal_view(macdrv_view v, macdrv_metal_device d);
++extern void macdrv_metal_view_set_dpi_ratio(macdrv_metal_view v, double ratio);
+ extern macdrv_metal_layer macdrv_view_get_metal_layer(macdrv_metal_view v);
+ extern void macdrv_view_release_metal_view(macdrv_metal_view v);
+ extern bool macdrv_get_view_backing_size(macdrv_view v, int backing_size[2]);
+diff --git a/dlls/winemac.drv/vulkan.c b/dlls/winemac.drv/vulkan.c
+--- a/dlls/winemac.drv/vulkan.c
++++ b/dlls/winemac.drv/vulkan.c
+@@ -55,6 +55,14 @@
+     if (!(surface->metal_device = macdrv_create_metal_device())) goto err;
+     if (!(surface->metal_view = macdrv_view_create_metal_view(surface->cocoa_view, surface->metal_device))) goto err;
+ 
++    {
++        UINT dpi = NtUserGetDpiForWindow(hwnd);
++        UINT raw = NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI);
++        surface->metal_dpi_ratio = (dpi && raw) ? (double)dpi / (double)raw : 1.0;
++        if (surface->metal_dpi_ratio != 1.0)
++            macdrv_metal_view_set_dpi_ratio(surface->metal_view, surface->metal_dpi_ratio);
++    }
++
+     if (instance->p_vkCreateMetalSurfaceEXT)
+     {
+         VkMetalSurfaceCreateInfoEXT create_info_host;
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1117,6 +1117,17 @@
+     OffsetRect(&rect, data->rects.client.left - data->rects.visible.left, data->rects.client.top - data->rects.visible.top);
+     macdrv_set_view_frame(surface->cocoa_view, cgrect_from_rect(rect));
+     macdrv_set_view_superview(surface->cocoa_view, toplevel == hwnd ? NULL : data->client_view, data->cocoa_window, NULL, NULL);
++    if (surface->metal_view)
++    {
++        UINT dpi = NtUserGetDpiForWindow(hwnd);
++        UINT raw = NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI);
++        double ratio = (dpi && raw) ? (double)dpi / (double)raw : 1.0;
++        if (ratio != surface->metal_dpi_ratio)
++        {
++            surface->metal_dpi_ratio = ratio;
++            macdrv_metal_view_set_dpi_ratio(surface->metal_view, ratio);
++        }
++    }
+     release_win_data(data);
+ }
+ 

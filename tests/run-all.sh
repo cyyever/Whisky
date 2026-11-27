@@ -99,14 +99,28 @@ if [ -x "$WINE" ]; then
         run_vulkan_dpi_swapchain() {
             local exe="$TMPDIR_PE/vulkan-dpi-swapchain.exe"
             local dpi_prefix="$TMPDIR_PE/prefix-dpi"
+            local vk_stderr="$TMPDIR_PE/vulkan-dpi-stderr.log"
             mkdir -p "$dpi_prefix"
             x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/tests/vulkan-dpi-swapchain-test.c"
             WINEPREFIX="$dpi_prefix" WINEDEBUG=-all "$WINE" reg add 'HKCU\Software\Wine\Mac Driver' /v RetinaMode /t REG_SZ /d y /f >/dev/null
             WINEPREFIX="$dpi_prefix" WINEDEBUG=-all "$WINE" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d 192 /f >/dev/null
             WINEPREFIX="$dpi_prefix" WINEDEBUG=-all "$WS" -k >/dev/null 2>&1 || true
             local rc=0
-            WINEPREFIX="$dpi_prefix" WINEDEBUG=-all \
-                perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" || rc=$?
+            # 1) DPI-unaware window: verify 0 VK_SUBOPTIMAL_KHR AND no fshack compute double-blit on macOS.
+            WINEPREFIX="$dpi_prefix" WINEDEBUG=warn+vulkan \
+                perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" 2>"$vk_stderr" || rc=$?
+            if [ "$rc" -eq 0 ] && grep -q "Enabled fullscreen hack on swapchain" "$vk_stderr"; then
+                echo "FAIL: Vulkan fshack compute double-blit activated on macOS DPI-unaware surface"
+                grep "Enabled fullscreen hack" "$vk_stderr"
+                rc=1
+            elif [ "$rc" -eq 0 ]; then
+                echo "PASS: no Vulkan fshack double-blit on macOS DPI-unaware surface"
+            fi
+            # 2) DPI-aware window: verify full 2x Retina swapchain (1280x720) with 0 VK_SUBOPTIMAL_KHR.
+            if [ "$rc" -eq 0 ]; then
+                WINEPREFIX="$dpi_prefix" WINEDEBUG=-all \
+                    perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" --dpi-aware || rc=$?
+            fi
             WINEPREFIX="$dpi_prefix" "$WS" -k >/dev/null 2>&1 || true
             return "$rc"
         }

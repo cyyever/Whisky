@@ -391,6 +391,7 @@ static void read_reg_string(const char *subkey, const char *value, char *out, DW
 }
 
 typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
+typedef BOOL (WINAPI *PFN_SetProcessDPIAware)(void);
 
 #define LOAD_IPROC(inst, name) \
     PFN_##name p_##name = (PFN_##name)p_vkGetInstanceProcAddr((inst), #name); \
@@ -400,14 +401,25 @@ typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
     PFN_##name p_##name = (PFN_##name)p_vkGetDeviceProcAddr((dev), #name); \
     if (!p_##name) { fprintf(stderr, "FAIL: missing device proc %s\n", #name); return 1; }
 
-int main(void)
+int main(int argc, char **argv)
 {
-    const LONG WANT_W = 640;
-    const LONG WANT_H = 360;
+    int dpi_aware = (argc > 1 && strcmp(argv[1], "--dpi-aware") == 0);
+    const LONG WANT_W = dpi_aware ? 1280 : 640;
+    const LONG WANT_H = dpi_aware ? 720 : 360;
     const int NUM_FRAMES = 5;
     int failures = 0;
 
-    /* Deliberately remain DPI-unaware (do NOT call SetProcessDPIAware). */
+    if (dpi_aware) {
+        HMODULE u32 = LoadLibraryA("user32.dll");
+        if (u32) {
+            PFN_SetProcessDPIAware p_SetProcessDPIAware =
+                (PFN_SetProcessDPIAware)(void *)GetProcAddress(u32, "SetProcessDPIAware");
+            if (p_SetProcessDPIAware)
+                p_SetProcessDPIAware();
+        }
+    }
+
+    /* Default mode stays DPI-unaware; --dpi-aware verifies full Retina scaling is preserved. */
     DWORD reg_logpixels = read_reg_dword("Control Panel\\Desktop", "LogPixels", 96);
     char retina_mode[32];
     read_reg_string("Software\\Wine\\Mac Driver", "RetinaMode", retina_mode, sizeof(retina_mode), "n");
@@ -470,11 +482,15 @@ int main(void)
             win_dpi = p_GetDpiForWindow(hwnd);
     }
 
-    printf("INFO: DPI-unaware window=%ldx%ld win_dpi=%u reg_LogPixels=%lu RetinaMode=%s\n",
+    printf("INFO: %s window=%ldx%ld win_dpi=%u reg_LogPixels=%lu RetinaMode=%s\n",
+           dpi_aware ? "DPI-aware" : "DPI-unaware",
            client_w, client_h, win_dpi, (unsigned long)reg_logpixels, retina_mode);
-    if (reg_logpixels <= 96) {
-        printf("NOTE: LogPixels=%lu (non-HiDPI prefix; fshack DPI scaling may not activate)\n",
-               (unsigned long)reg_logpixels);
+    if (dpi_aware && reg_logpixels > 96 && win_dpi != reg_logpixels) {
+        printf("FAIL: DPI-aware win_dpi=%u, want %lu\n", win_dpi, (unsigned long)reg_logpixels);
+        failures++;
+    } else if (!dpi_aware && win_dpi != 96) {
+        printf("FAIL: DPI-unaware win_dpi=%u, want 96\n", win_dpi);
+        failures++;
     }
     if (client_w != WANT_W || client_h != WANT_H) {
         printf("FAIL: GetClientRect got %ldx%ld, want %ldx%ld\n", client_w, client_h, WANT_W, WANT_H);
