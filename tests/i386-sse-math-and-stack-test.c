@@ -27,22 +27,30 @@ typedef int (__cdecl *fn_snprintf_t)(char *, size_t, const char *, ...);
 __attribute__((noinline))
 static double call_d1_misaligned(fn_d1_t fn, double x, unsigned target_mod)
 {
-    double out;
+    double out = 0.0;
+    struct {
+        fn_d1_t fn;
+        const double *px;
+        double *pout;
+        unsigned target_mod;
+    } ctx = { fn, &x, &out, target_mod };
+    /* Pass ctx in callee-saved %esi and save %esp in callee-saved %edi so
+     * shifting %esp cannot corrupt stack-relative operands or clobber inputs. */
     __asm__ volatile (
-        "pushl %%ebx\n\t"
-        "movl %%esp, %%ebx\n\t"
+        "movl %%esp, %%edi\n\t"
         "andl $-16, %%esp\n\t"
-        "subl %3, %%esp\n\t"      /* ESP % 16 == (16 - target_mod) % 16 */
+        "subl 12(%%esi), %%esp\n\t"
         "subl $8, %%esp\n\t"
-        "fldl %2\n\t"
+        "movl 4(%%esi), %%eax\n\t"
+        "fldl (%%eax)\n\t"
         "fstpl (%%esp)\n\t"
-        "call *%1\n\t"
-        "fstpl %0\n\t"
-        "movl %%ebx, %%esp\n\t"
-        "popl %%ebx\n\t"
-        : "=m"(out)
-        : "r"(fn), "m"(x), "r"(target_mod)
-        : "eax", "ecx", "edx", "memory", "cc",
+        "call *0(%%esi)\n\t"
+        "movl 8(%%esi), %%eax\n\t"
+        "fstpl (%%eax)\n\t"
+        "movl %%edi, %%esp\n\t"
+        :
+        : "S"(&ctx)
+        : "eax", "ecx", "edx", "edi", "memory", "cc",
           "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"
     );
     return out;
@@ -55,21 +63,20 @@ typedef MAT4 * (WINAPI *fn_mat_inv_t)(MAT4 *, float *, const MAT4 *);
 __attribute__((noinline))
 static void *call_stdcall3_misaligned(void *fn, void *a, void *b, void *c, unsigned target_mod)
 {
+    void *args[5] = { fn, a, b, c, (void *)(uintptr_t)target_mod };
     void *ret;
     __asm__ volatile (
-        "pushl %%ebx\n\t"
-        "movl %%esp, %%ebx\n\t"
+        "movl %%esp, %%edi\n\t"
         "andl $-16, %%esp\n\t"
-        "subl %5, %%esp\n\t"
-        "pushl %4\n\t"
-        "pushl %3\n\t"
-        "pushl %2\n\t"
-        "call *%1\n\t"
-        "movl %%ebx, %%esp\n\t"
-        "popl %%ebx\n\t"
+        "subl 16(%%esi), %%esp\n\t"
+        "pushl 12(%%esi)\n\t"
+        "pushl 8(%%esi)\n\t"
+        "pushl 4(%%esi)\n\t"
+        "call *0(%%esi)\n\t"
+        "movl %%edi, %%esp\n\t"
         : "=a"(ret)
-        : "r"(fn), "r"(a), "r"(b), "r"(c), "r"(target_mod)
-        : "ecx", "edx", "memory", "cc",
+        : "S"(args)
+        : "ecx", "edx", "edi", "memory", "cc",
           "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"
     );
     return ret;
