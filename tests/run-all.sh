@@ -91,6 +91,25 @@ if [ -x "$WINE" ]; then
             run_pe "bcrypt-ecdh-rsa" "tests/bcrypt-ecdh-rsa-test.c" "-lbcrypt" ""
         run_case "signal-thread-guard" \
             run_pe "signal-thread-guard" "tests/signal-thread-guard-test.c" "" ""
+
+        if command -v i686-w64-mingw32-gcc >/dev/null 2>&1; then
+            run_wow64_cs_recovery() {
+                local dll="$TMPDIR_PE/dummy-rosetta.dll"
+                local exe="$TMPDIR_PE/wow64-rosetta-cs-recovery.exe"
+                i686-w64-mingw32-gcc -O2 -Wall -Wextra -shared -o "$dll" -xc - <<'EOF'
+#include <windows.h>
+__declspec(dllexport) int ping(int x) { return x + 1; }
+BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, void *r) { (void)h; (void)reason; (void)r; return TRUE; }
+EOF
+                i686-w64-mingw32-gcc -O2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/tests/wow64-rosetta-cs-recovery-test.c" -lbcrypt
+                WINEPREFIX="$TMPDIR_PE/prefix" WINEDEBUG=-all \
+                    perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" "$dll"
+            }
+            run_case "wow64-rosetta-cs-recovery" run_wow64_cs_recovery
+        else
+            echo "SKIP: i686-w64-mingw32-gcc not found; skipping WoW64 CS recovery test"
+            SKIP=$((SKIP + 1))
+        fi
     else
         echo "SKIP: x86_64-w64-mingw32-gcc not found; skipping standalone PE regression tests"
         SKIP=$((SKIP + 4))
