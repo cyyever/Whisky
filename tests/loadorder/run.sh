@@ -70,7 +70,7 @@ fi
 
 pass=0 fail=0
 unset WINEDLLOVERRIDES
-for d in d3d9 d3d8 d3d11 d3d10core dxgi d3d12 d3d12core vulkan-1; do
+for d in d3d9 d3d8 d3d11 d3d10core dxgi d3d12 d3d12core vulkan-1 xaudio2_7 xaudio2_9; do
     cp -f "$STUB" "$WORK/$d.dll"
     TRACE="$WORK/loadorder-$d.trace"
     # The whole point: NO WINEDLLOVERRIDES. The load order alone must pick builtin.
@@ -86,7 +86,7 @@ for d in d3d9 d3d8 d3d11 d3d10core dxgi d3d12 d3d12core vulkan-1; do
 done
 
 # Stale registry values must lose; explicit environment overrides must win.
-for d in d3d12 d3d12core; do
+for d in d3d12 d3d12core xaudio2_7; do
     cp "$STUB" "$WORK/$d.dll"
     WINEDEBUG=-all timeout 30 "$WINE" reg add 'HKCU\Software\Wine\DllOverrides' /v "$d" /d native /f > "$WORK/reg-$d.log" 2>&1
     TRACE="$WORK/registry-$d.trace"

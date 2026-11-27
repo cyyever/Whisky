@@ -134,6 +134,8 @@ if [ -x "$WINE" ]; then
             run_pe "ws2_32-sockopt" "tests/ws2_32-sockopt-test.c" "-lws2_32" ""
         run_case "ws2_32-fd-write-rearm" \
             run_pe "ws2_32-fd-write-rearm" "tests/ws2_32-fd-write-rearm-test.c" "-lws2_32" "WINEMSYNC=1"
+        run_case "macos-sleep-qos-and-avrt" \
+            run_pe "macos-sleep-qos-and-avrt" "tests/macos-sleep-qos-and-avrt-test.c" "-lws2_32" "WINEMSYNC=1"
         run_case "bcrypt-ecdh-rsa" \
             run_pe "bcrypt-ecdh-rsa" "tests/bcrypt-ecdh-rsa-test.c" "-lbcrypt" ""
         run_case "signal-thread-guard" \
