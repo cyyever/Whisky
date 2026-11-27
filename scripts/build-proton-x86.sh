@@ -238,14 +238,14 @@ WS_OBJ="$WINE_SRC/build/server-arm64"
 rm -rf "$WS_OBJ" && mkdir -p "$WS_OBJ"
 for f in "$WINE_SRC"/server/*.c; do
     base=$(basename "$f" .c)
-    ccache clang -arch arm64 -O2 -c -o "$WS_OBJ/${base}.o" "$f" \
+    ccache clang -arch arm64 -O2 -flto=thin -c -o "$WS_OBJ/${base}.o" "$f" \
         -I"$WINE_SRC/build/server" -I"$WINE_SRC/server" \
         -I"$WINE_SRC/build/include" -I"$WINE_SRC/include" \
         -D__WINESRC__ -DWINE_UNIX_LIB \
         -DBINDIR='"/usr/local/bin"' -DDATADIR='"/usr/local/share"' \
         -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing
 done
-clang -arch arm64 -o "$WINE_STAGE/bin/wineserver" "$WS_OBJ"/*.o
+clang -arch arm64 -flto=thin -o "$WINE_STAGE/bin/wineserver" "$WS_OBJ"/*.o
 rm -rf "$WS_OBJ"
 
 # Remove Wine SDK/build-time tools not used at runtime

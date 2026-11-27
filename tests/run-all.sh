@@ -49,6 +49,7 @@ else
 fi
 
 if [ -x "$WINE" ]; then
+    run_case "build-codegen-contract"        bash "$PROJECT_DIR/tests/build-codegen-contract-test.sh"
     run_case "loadorder-builtins"            bash "$PROJECT_DIR/tests/loadorder/run.sh"
     run_case "audio-coreaudio-vol-route-ev"  bash "$PROJECT_DIR/tests/audio/coreaudio-volume-and-routing-test.sh"
     run_case "audio-name-growth"             bash "$PROJECT_DIR/tests/audio/audio-name-growth-test.sh"
@@ -186,6 +187,14 @@ EOF
                     perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" "$dll"
             }
             run_case "wow64-rosetta-cs-recovery" run_wow64_cs_recovery
+
+            run_i386_sse_math_and_stack() {
+                local exe="$TMPDIR_PE/i386-sse-math-and-stack-test.exe"
+                i686-w64-mingw32-gcc -O2 -msse2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/tests/i386-sse-math-and-stack-test.c" -lole32
+                WINEPREFIX="$TMPDIR_PE/prefix" WINEDEBUG=-all WINEDLLOVERRIDES="d3dx9_43,xaudio2_7=b" \
+                    perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe"
+            }
+            run_case "i386-sse-math-and-stack" run_i386_sse_math_and_stack
         else
             echo "SKIP: i686-w64-mingw32-gcc not found; skipping WoW64 CS recovery test"
             SKIP=$((SKIP + 1))

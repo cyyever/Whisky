@@ -337,6 +337,23 @@ wine_configure() {
     clean_path="$(wine_clean_path)"
     cc_cmd="$(wine_cc_cmd)"
     cxx_cmd="$(wine_cxx_cmd)"
+    local unix_cflags i386_pe_cflags x86_64_pe_cflags flags_sig flags_stamp
+    # Rosetta 2 baseline ISA is x86-64-v2 (SSE4.2 + POPCNT, no AVX required).
+    # Keep -fno-omit-frame-pointer on the unix side so sample(1) stacks stay
+    # readable at -O2. On the 32-bit PE side, -msse2 ... -mfpmath=sse eliminates
+    # x87 scalar float codegen (which Rosetta 2 emulates in software, ~30-50x
+    # slower than ARM64 FP); GCC pairs it safely with Wine's
+    # -mpreferred-stack-boundary=2 via dynamic stack realignment when needed.
+    unix_cflags="-O2 -fno-omit-frame-pointer -msse4.2 -mpopcnt -I$X86_DEPS/include -I$X86_DEPS/include/freetype2"
+    i386_pe_cflags="-g -O2 -msse2 -msse3 -mssse3 -msse4.1 -msse4.2 -mpopcnt -mfpmath=sse"
+    x86_64_pe_cflags="-g -O2 -msse4.2 -mpopcnt"
+    flags_sig="unix=${unix_cflags}|i386=${i386_pe_cflags}|x86_64=${x86_64_pe_cflags}"
+    flags_stamp="$build_dir/.whisky-cflags"
+    if [ -f "$build_dir/Makefile" ] && [ "$(cat "$flags_stamp" 2>/dev/null || true)" != "$flags_sig" ]; then
+        echo "=== Wine compiler flags changed; wiping stale build tree ($build_dir) ==="
+        rm -rf "$build_dir"
+        mkdir -p "$build_dir"
+    fi
     if whisky_ccache_on; then
         echo "=== Using ccache (WHISKY_CCACHE=0 to disable) ==="
     fi
@@ -354,14 +371,10 @@ wine_configure() {
         SDL2_CFLAGS="-I$X86_DEPS/include/SDL2 -D_THREAD_SAFE" \
         SDL2_LIBS="-L$X86_DEPS/lib -lSDL2" \
         LDFLAGS="-L$X86_DEPS/lib" \
-        `# NOTE: no -O here, so the unix side (ntdll.so, winemac.drv.so, ...) builds` \
-        `# unoptimised: setting CFLAGS at all suppresses autoconf's default -g -O2,` \
-        `# and nothing puts it back. The PE side still gets -O2 from Wine's own` \
-        `# configure. Left as-is on purpose while the msync hang is being chased --` \
-        `# an optimised build makes sample(1) stacks much harder to read. Add -O2` \
-        `# once that closes, and re-run scripts/test-msync.sh afterwards, since -O2` \
-        `# changes atomics scheduling and can shake out races -O0 hides.` \
-        CFLAGS="-I$X86_DEPS/include -I$X86_DEPS/include/freetype2" \
+        CFLAGS="$unix_cflags" \
+        CXXFLAGS="$unix_cflags" \
+        i386_CFLAGS="$i386_pe_cflags" \
+        x86_64_CFLAGS="$x86_64_pe_cflags" \
         CPPFLAGS="-I$X86_DEPS/include -I$X86_DEPS/include/freetype2" \
         ../configure \
             --enable-archs=i386,x86_64 \
@@ -394,6 +407,7 @@ wine_configure() {
             --without-gssapi \
             --without-pcap \
             --without-pcsclite
+    printf '%s\n' "$flags_sig" > "$flags_stamp"
 }
 
 # The build-tree prefixes whose libraries get copied into Wine/lib. Scope for
