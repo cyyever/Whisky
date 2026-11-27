@@ -272,10 +272,11 @@ public class Wine {
             .appending(path: "Wine").appending(path: "lib").path
         // Only what the launcher alone can know. The constants that used to sit
         // here — WINE_DISABLE_IPV6, WHISKY_HIDE_VIRTUAL_AUDIO, WINE_NX_COMPAT,
-        // WINEMSYNC_NO_MANUALEVENT, PROTON_DISABLE_LSTEAMCLIENT, SDL_JOYSTICK_MFI
-        // — are now defaults in the code that reads them (patches 0007, 0008,
-        // 0009, 0013, 0018, 0019), each still overridable by setting the variable
-        // to "0". A constant set here has to be mirrored by hand in every harness
+        // PROTON_DISABLE_LSTEAMCLIENT, SDL_JOYSTICK_MFI — are now defaults in
+        // the code that reads them (patches 0008, 0009, 0013, 0018, 0019), each
+        // still overridable by setting the variable to "0". (WINEMSYNC_NO_MANUALEVENT
+        // in patch 0007 now defaults off after fixing the msync multi-wait spin.)
+        // A constant set here has to be mirrored by hand in every harness
         // that stands in for a GUI launch, and those mirrors drift.
         var result: [String: String] = [
             "WINEPREFIX": bottle.url.path,

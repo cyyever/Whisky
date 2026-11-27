@@ -83,6 +83,50 @@ if [ -x "$WINE" ]; then
 
         run_case "msync-mixed-wait" \
             run_pe "msync-mixed-wait" "tests/msync-mixed-wait-test.c" "" "WINEMSYNC=1"
+
+        run_msync_multi_wait_stress() {
+            local exe="$TMPDIR_PE/msync-multi-wait-stress.exe"
+            local port_prefix="$TMPDIR_PE/prefix-msync-ports"
+            mkdir -p "$port_prefix"
+            x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/tests/msync-multi-wait-stress-test.c"
+            # 1) Default WINEMSYNC=1 (native msync manual-reset events)
+            WINEPREFIX="$TMPDIR_PE/prefix" WINEMSYNC=1 WINEDEBUG=-all \
+                perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe"
+            # 2) Diagnostic mixed-wait path (WINEMSYNC_NO_MANUALEVENT=1)
+            WINEPREFIX="$TMPDIR_PE/prefix" WINEMSYNC=1 WINEMSYNC_NO_MANUALEVENT=1 WINEDEBUG=-all \
+                perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe"
+            # 3) wineserver Mach port send-right leak check across 20 churn runs
+            WINEPREFIX="$port_prefix" WINEMSYNC=1 WINEDEBUG=-all "$WS" -p=30
+            WINEPREFIX="$port_prefix" WINEMSYNC=1 WINEDEBUG=-all "$WINE" "$exe" --port-churn >/dev/null
+            local ws_pid ports_before ports_after delta
+            ws_pid=$(pgrep -n -f "$WS" || true)
+            # Identify the persistent wineserver belonging to port_prefix if multiple exist
+            for p in $(pgrep -f "wineserver" || true); do
+                if lsof -p "$p" 2>/dev/null | grep -q "$port_prefix"; then
+                    ws_pid="$p"
+                    break
+                fi
+            done
+            if [ -n "$ws_pid" ] && command -v top >/dev/null 2>&1; then
+                ports_before=$(top -l 1 -stats pid,ports -pid "$ws_pid" 2>/dev/null | awk -v pid="$ws_pid" '$1==pid{gsub(/[^0-9]/,"",$2); print $2}')
+                for _ in $(seq 1 20); do
+                    WINEPREFIX="$port_prefix" WINEMSYNC=1 WINEDEBUG=-all "$WINE" "$exe" --port-churn >/dev/null
+                done
+                ports_after=$(top -l 1 -stats pid,ports -pid "$ws_pid" 2>/dev/null | awk -v pid="$ws_pid" '$1==pid{gsub(/[^0-9]/,"",$2); print $2}')
+                WINEPREFIX="$port_prefix" "$WS" -k >/dev/null 2>&1 || true
+                if [ -n "$ports_before" ] && [ -n "$ports_after" ]; then
+                    delta=$((ports_after - ports_before))
+                    echo "wineserver Mach ports: before=$ports_before after_20_runs=$ports_after delta=$delta"
+                    if [ "$delta" -gt 4 ]; then
+                        echo "FAIL: wineserver leaked $delta Mach ports over 20 runs"
+                        return 1
+                    fi
+                fi
+            else
+                WINEPREFIX="$port_prefix" "$WS" -k >/dev/null 2>&1 || true
+            fi
+        }
+        run_case "msync-multi-wait-stress" run_msync_multi_wait_stress
         run_case "steam-appid-unix-env" \
             run_pe "steam-appid-unix-env" "tests/steam-appid-unix-env-test.c" "" "-u SteamGameId -u SteamAppId -u STEAM_COMPAT_APP_ID"
         run_case "ws2_32-sockopt" \
