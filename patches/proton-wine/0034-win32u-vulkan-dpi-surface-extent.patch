@@ -1,0 +1,118 @@
+Subject: win32u: use host surface currentExtent for Vulkan fshack swapchains
+
+When a DPI-unaware window (e.g. a 1280x720 D3D9 game at 96 DPI) runs on a
+high-DPI display (macOS RetinaMode="y" with LogPixels=192), Wine's Vulkan
+fullscreen/DPI hack (fshack) activates in win32u_vkCreateSwapchainKHR() so
+the application renders to a client-DPI user_image (1280x720, matching
+GetClientRect) while win32u scales it into a physical-resolution host
+swapchain (2560x1440, matching CAMetalLayer).
+
+Previously, win32u_vkCreateSwapchainKHR() initialized swapchain->host_extents
+and create_info_host.imageExtent from capabilities.minImageExtent. That worked
+on X11 (where minImageExtent == currentExtent), but Metal WSI (KosmicKrisp)
+reports minImageExtent = {1, 1} and puts the actual CAMetalLayer pixel size
+in currentExtent = {2560, 1440}. As a result, fshack created a 1x1 host
+swapchain, causing KosmicKrisp's vkQueuePresentKHR() to return
+VK_SUBOPTIMAL_KHR on every frame in an infinite swapchain recreation loop.
+
+Fix win32u_vkCreateSwapchainKHR():
+  1. When fshack is active, derive host_extent from caps.currentExtent when
+     defined and non-zero (falling back to the MDT_WINE_RAW_DPI surface rect
+     if currentExtent is {UINT32_MAX, UINT32_MAX}, or create_info_host's
+     imageExtent), clamped to [caps.minImageExtent, caps.maxImageExtent].
+  2. Clear VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR on the fshack host
+     swapchain since fshack overrides imageFormat to VK_FORMAT_B8G8R8A8_UNORM
+     with VK_IMAGE_USAGE_STORAGE_BIT and only accesses it through a non-mutable
+     BGRA8_UNORM storage view (while user_image retains the client's mutable
+     flags).
+  3. Only attach VkSwapchainPresentScalingCreateInfoEXT when fshack is not
+     active, and chain scaling.pNext = create_info_host.pNext instead of
+     clobbering existing pNext entries such as VkImageFormatListCreateInfo
+     and VkSwapchainPresentModesCreateInfoKHR.
+
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -3106,25 +3106,13 @@
+ 
+     create_info_host.imageExtent.width = max( create_info_host.imageExtent.width, capabilities.minImageExtent.width );
+     create_info_host.imageExtent.height = max( create_info_host.imageExtent.height, capabilities.minImageExtent.height );
+-
+-    /* If the swapchain image size is not equal to the presentation size (e.g. because of DPI virtualization or
+-     * display mode change emulation), MoltenVK's vkQueuePresentKHR returns VK_SUBOPTIMAL_KHR.
+-     * Create the swapchain with VkSwapchainPresentScalingCreateInfoEXT to avoid this.
+-     */
+-    if (get_surface_rect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_WINE_RAW_DPI ) ) &&
+-        !extents_equals( &create_info_host.imageExtent, &client_rect ) &&
+-        instance->extensions.has_VK_EXT_surface_maintenance1 &&
+-        physical_device->extensions.has_VK_KHR_swapchain_maintenance1)
+-    {
+-        scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
+-        create_info_host.pNext = &scaling;
+-    }
+ 
+     if (!(swapchain = calloc( 1, sizeof(*swapchain) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+     if ((swapchain->fshack_dpi = surface_get_fshack_dpi( surface )))
+     {
+         VkSurfaceCapabilitiesKHR caps = {0};
++        VkExtent2D host_extent;
+ 
+         if ((res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device,
+                                                                           create_info_host.surface, &caps )))
+@@ -3137,15 +3125,53 @@
+         if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT))
+             FIXME( "Swapchain does not support required VK_IMAGE_USAGE_STORAGE_BIT\n" );
+ 
+-        swapchain->host_extents = capabilities.minImageExtent;
+-        create_info_host.imageExtent = capabilities.minImageExtent;
++        /* Host WSI backends such as Metal (KosmicKrisp) report minImageExtent = {1, 1}
++         * and expose the actual surface size in currentExtent, whereas X11 sets
++         * minImageExtent == currentExtent. Use currentExtent when defined, falling back
++         * to the raw-DPI client rect if currentExtent is {UINT32_MAX, UINT32_MAX}, and
++         * clamp to [minImageExtent, maxImageExtent].
++         */
++        if (caps.currentExtent.width != ~0u && caps.currentExtent.height != ~0u &&
++            caps.currentExtent.width && caps.currentExtent.height)
++        {
++            host_extent = caps.currentExtent;
++        }
++        else if (get_surface_rect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_WINE_RAW_DPI ) ))
++        {
++            host_extent.width = client_rect.right - client_rect.left;
++            host_extent.height = client_rect.bottom - client_rect.top;
++        }
++        else
++        {
++            host_extent = create_info_host.imageExtent;
++        }
++
++        host_extent.width = max( min( host_extent.width, caps.maxImageExtent.width ), caps.minImageExtent.width );
++        host_extent.height = max( min( host_extent.height, caps.maxImageExtent.height ), caps.minImageExtent.height );
++
++        swapchain->host_extents = host_extent;
++        create_info_host.imageExtent = host_extent;
+         create_info_host.imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
+         create_info_host.imageUsage = VK_IMAGE_USAGE_STORAGE_BIT;
++        create_info_host.flags &= ~VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
+ 
+         if (create_info->imageFormat != VK_FORMAT_B8G8R8A8_UNORM && create_info->imageFormat != VK_FORMAT_B8G8R8A8_SRGB)
+             FIXME( "swapchain image format is not BGRA8 UNORM/SRGB. Things may go badly. %d\n",
+                    create_info_host.imageFormat );
+     }
++    /* If the swapchain image size is not equal to the presentation size (e.g. because of DPI virtualization or
++     * display mode change emulation), MoltenVK's vkQueuePresentKHR returns VK_SUBOPTIMAL_KHR.
++     * Create the swapchain with VkSwapchainPresentScalingCreateInfoEXT to avoid this.
++     */
++    else if (get_surface_rect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_WINE_RAW_DPI ) ) &&
++             !extents_equals( &create_info_host.imageExtent, &client_rect ) &&
++             instance->extensions.has_VK_EXT_surface_maintenance1 &&
++             physical_device->extensions.has_VK_KHR_swapchain_maintenance1)
++    {
++        scaling.pNext = create_info_host.pNext;
++        scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
++        create_info_host.pNext = &scaling;
++    }
+ 
+     if ((res = device->p_vkCreateSwapchainKHR( device->host.device, &create_info_host, NULL, &host_swapchain )))
+     {

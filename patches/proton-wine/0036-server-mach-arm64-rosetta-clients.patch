@@ -1,0 +1,394 @@
+Subject: [PATCH] server,ntdll: fix arm64 wineserver Mach, view alignment, and Rosetta 2 icache invalidation
+
+When wineserver is built natively for arm64 on Apple Silicon (while wine64
+clients run as x86_64/i386 under Rosetta 2), five mismatches occur:
+
+  1. server/mach.c: is_rosetta() queries sysctl.proc_translated on wineserver
+     itself, which returns 0 for native arm64 wineserver. In
+     write_process_memory(), Rosetta 2 downgrades executed RWX pages to R-X
+     (causing mach_vm_write to return KERN_INVALID_ADDRESS), and the fallback
+     check `!is_rosetta() && !(info.protection & VM_PROT_WRITE)` wrongly
+     rejects the write with KERN_PROTECTION_FAILURE (STATUS_ACCESS_DENIED).
+
+  2. server/mach.c + ntdll: When wineserver patches an already-executed RWX
+     page via cross-process mach_vm_protect/mach_vm_write, Rosetta 2's
+     user-space JIT translation cache inside the target process is never
+     notified (unlike in-process mprotect or in-process writes), so the target
+     continues executing stale translated ARM64 code! Signal flush_icache in
+     the write_process_memory reply whenever an executable page was modified
+     in a Rosetta process, implement NtFlushInstructionCache() on x86_64 macOS
+     by re-applying mprotect_range() in the target process (via a synchronous
+     APC_FLUSH_ICACHE system APC for remote processes), and invoke it from
+     NtWriteVirtualMemory() when flush_icache is set.
+
+  3. server/mach.c: get_thread_context() is wrapped in
+     `#if defined(__i386__) || defined(__x86_64__)`, compiling to an empty
+     no-op on arm64 wineserver. It fails to zero context->debug and fails to
+     set SERVER_CTX_DEBUG_REGISTERS, leaving caller DR0..DR7 uninitialized
+     when the server path is taken.
+
+  4. server/mach.c: set_thread_context() is likewise compiled out on arm64
+     wineserver and wrongly returns STATUS_SUCCESS for non-zero DR0..DR7 on
+     Rosetta 2. At the same time, callers that do GetThreadContext(CONTEXT_ALL)
+     followed by SetThreadContext() pass CONTEXT_DEBUG_REGISTERS with all-zero
+     DR0..DR7; allow all-zero debug registers to succeed as a no-op on Rosetta
+     and reject non-zero debug registers with STATUS_UNSUCCESSFUL.
+
+  5. server/mapping.c: is_valid_view_addr() validates client view addresses
+     against arm64 wineserver's 16KB host_page_mask (0x3fff) instead of the
+     Rosetta 2 x86_64/i386 client's 4KB page_mask (0xfff), rejecting valid
+     4KB-aligned views (such as MapViewOfFile3 with MEM_REPLACE_PLACEHOLDER)
+     with STATUS_INVALID_PARAMETER.
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index c41bf2e..8c529a1 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -562,6 +562,15 @@ static BOOL invoke_system_apc( const union apc_call *call, union apc_result *res
+         }
+         else result->virtual_flush.status = STATUS_INVALID_PARAMETER;
+         break;
++    case APC_FLUSH_ICACHE:
++        result->type = call->type;
++        addr = wine_server_get_ptr( call->flush_icache.addr );
++        size = call->flush_icache.size;
++        if ((ULONG_PTR)addr == call->flush_icache.addr && size == call->flush_icache.size)
++            result->flush_icache.status = NtFlushInstructionCache( NtCurrentProcess(), addr, size );
++        else
++            result->flush_icache.status = STATUS_INVALID_PARAMETER;
++        break;
+     case APC_VIRTUAL_LOCK:
+         result->type = call->type;
+         addr = wine_server_get_ptr( call->virtual_lock.addr );
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index d42f831..99c3b12 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -7280,6 +7280,7 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
+                                       SIZE_T size, SIZE_T *bytes_written )
+ {
+     unsigned int status;
++    int flush_icache = 0;
+ 
+     if (virtual_check_buffer_for_read( buffer, size ))
+     {
+@@ -7290,8 +7291,13 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
+             wine_server_add_data( req, buffer, size );
+             status = wine_server_call( req );
+             size = reply->written;
++            flush_icache = reply->flush_icache;
+         }
+         SERVER_END_REQ;
++#ifdef __APPLE__
++        if (!status && size && flush_icache)
++            NtFlushInstructionCache( process, addr, size );
++#endif
+     }
+     else
+     {
+@@ -7443,7 +7449,33 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+  */
+ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T size )
+ {
+-#if defined(__x86_64__) || defined(__i386__)
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (!addr || !size) return STATUS_SUCCESS;
++
++    if (handle != NtCurrentProcess())
++    {
++        union apc_call call;
++        union apc_result result;
++        unsigned int status;
++
++        memset( &call, 0, sizeof(call) );
++        call.flush_icache.type = APC_FLUSH_ICACHE;
++        call.flush_icache.addr = wine_server_client_ptr( addr );
++        call.flush_icache.size = size;
++        status = server_queue_process_apc( handle, &call, &result );
++        return status ? status : result.flush_icache.status;
++    }
++    else
++    {
++        sigset_t sigset;
++        void *base = ROUND_ADDR( addr, host_page_mask );
++        size_t len = ROUND_SIZE( addr, size, host_page_mask );
++
++        server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++        if (find_view( base, len )) mprotect_range( base, len, 0, 0 );
++        server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++    }
++#elif defined(__x86_64__) || defined(__i386__)
+     /* no-op */
+ #elif defined(HAVE___CLEAR_CACHE)
+     if (handle == GetCurrentProcess())
+diff --git a/server/mach.c b/server/mach.c
+index 0f75d89..a83e49c 100644
+--- a/server/mach.c
++++ b/server/mach.c
+@@ -93,6 +93,34 @@ static int is_rosetta( void )
+     return rosetta_status;
+ }
+ 
++static int is_rosetta_process( const struct process *process )
++{
++#if defined(__aarch64__) && defined(__APPLE__)
++    /* Native arm64 wineserver serves x86_64/i386 clients running under Rosetta 2. */
++    if (process && (process->machine == IMAGE_FILE_MACHINE_AMD64 ||
++                    process->machine == IMAGE_FILE_MACHINE_I386))
++        return 1;
++#endif
++    return is_rosetta();
++}
++
++static int has_nonzero_debug_regs( const struct context_data *context )
++{
++    switch (context->machine)
++    {
++    case IMAGE_FILE_MACHINE_I386:
++        return (context->debug.i386_regs.dr0 | context->debug.i386_regs.dr1 |
++                context->debug.i386_regs.dr2 | context->debug.i386_regs.dr3 |
++                context->debug.i386_regs.dr6 | context->debug.i386_regs.dr7) != 0;
++    case IMAGE_FILE_MACHINE_AMD64:
++        return (context->debug.x86_64_regs.dr0 | context->debug.x86_64_regs.dr1 |
++                context->debug.x86_64_regs.dr2 | context->debug.x86_64_regs.dr3 |
++                context->debug.x86_64_regs.dr6 | context->debug.x86_64_regs.dr7) != 0;
++    default:
++        return 1;
++    }
++}
++
+ extern kern_return_t bootstrap_register2( mach_port_t bp, name_t service_name, mach_port_t sp, uint64_t flags );
+ 
+ /* initialize the process control mechanism */
+@@ -189,7 +217,7 @@ void get_thread_context( struct thread *thread, struct context_data *context, un
+     /* all other regs are handled on the client side */
+     assert( flags == SERVER_CTX_DEBUG_REGISTERS );
+ 
+-    if (is_rosetta())
++    if (is_rosetta_process( thread->process ))
+     {
+         /* getting debug registers of a translated process is not supported cross-process, return all zeroes */
+         memset( &context->debug, 0, sizeof(context->debug) );
+@@ -258,6 +286,17 @@ void get_thread_context( struct thread *thread, struct context_data *context, un
+         mach_set_error( ret );
+ done:
+     mach_port_deallocate( mach_task_self(), port );
++#elif defined(__aarch64__) && defined(__APPLE__)
++    /* all other regs are handled on the client side */
++    assert( flags == SERVER_CTX_DEBUG_REGISTERS );
++
++    if (is_rosetta_process( thread->process ))
++    {
++        /* getting debug registers of a translated process is not supported cross-process, return all zeroes */
++        memset( &context->debug, 0, sizeof(context->debug) );
++        context->flags |= SERVER_CTX_DEBUG_REGISTERS;
++        return;
++    }
+ #endif
+ }
+ 
+@@ -275,12 +314,13 @@ void set_thread_context( struct thread *thread, const struct context_data *conte
+     /* all other regs are handled on the client side */
+     assert( flags == SERVER_CTX_DEBUG_REGISTERS );
+ 
+-    if (is_rosetta())
++    if (is_rosetta_process( thread->process ))
+     {
+         /* Setting debug registers of a translated process is not supported cross-process
+-         * (and even in-process, setting debug registers never has the desired effect).
++         * (and even in-process, setting debug registers never has the desired effect),
++         * but allow all-zero debug registers (e.g. SetThreadContext after GetThreadContext(CONTEXT_ALL)).
+          */
+-        set_error( STATUS_UNSUCCESSFUL );
++        if (has_nonzero_debug_regs( context )) set_error( STATUS_UNSUCCESSFUL );
+         return;
+     }
+ 
+@@ -357,6 +397,19 @@ void set_thread_context( struct thread *thread, const struct context_data *conte
+         mach_set_error( ret );
+ done:
+     mach_port_deallocate( mach_task_self(), port );
++#elif defined(__aarch64__) && defined(__APPLE__)
++    /* all other regs are handled on the client side */
++    assert( flags == SERVER_CTX_DEBUG_REGISTERS );
++
++    if (is_rosetta_process( thread->process ))
++    {
++        /* Setting debug registers of a translated process is not supported cross-process
++         * (and even in-process, setting debug registers never has the desired effect),
++         * but allow all-zero debug registers (e.g. SetThreadContext after GetThreadContext(CONTEXT_ALL)).
++         */
++        if (has_nonzero_debug_regs( context )) set_error( STATUS_UNSUCCESSFUL );
++        return;
++    }
+ #endif
+ }
+ 
+@@ -421,6 +474,7 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
+     kern_return_t ret;
+     mach_port_t process_port = get_process_port( process );
+     mach_vm_offset_t data;
++    int flushed_exec = 0;
+ 
+     if (written) *written = 0;
+ 
+@@ -482,7 +536,7 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
+          * For now we will just have to ignore failures due to the wrong
+          * protection here.
+          */
+-        if (!is_rosetta() && !(info.protection & VM_PROT_WRITE))
++        if (!is_rosetta_process( process ) && !(info.protection & VM_PROT_WRITE))
+         {
+             ret = KERN_PROTECTION_FAILURE;
+             goto out;
+@@ -510,7 +564,7 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
+             }
+ 
+             /* FIXME: See the above Rosetta remark. */
+-            if (!is_rosetta() && !(info.protection & VM_PROT_WRITE))
++            if (!is_rosetta_process( process ) && !(info.protection & VM_PROT_WRITE))
+             {
+                 ret = KERN_PROTECTION_FAILURE;
+                 break;
+@@ -531,6 +585,9 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
+                     info.protection );
+             if (ret != KERN_SUCCESS) break;
+ 
++            if (is_rosetta_process( process ) && (info.protection & VM_PROT_EXECUTE))
++                flushed_exec = 1;
++
+             if (written) *written += write_size;
+             current_address       += write_size;
+             remaining_size        -= write_size;
+@@ -543,7 +600,7 @@ out:
+     free( (void *)data );
+     mach_set_error( ret );
+     if (ret == KERN_SUCCESS && written) *written = size;
+-    return (ret == KERN_SUCCESS);
++    return (ret == KERN_SUCCESS) ? (flushed_exec ? 2 : 1) : 0;
+ }
+ 
+ #endif  /* USE_MACH */
+diff --git a/server/mapping.c b/server/mapping.c
+index 1596c56..89a078a 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -460,9 +460,16 @@ static struct memory_view *find_mapped_addr( struct process *process, client_ptr
+ static int is_valid_view_addr( struct process *process, client_ptr_t addr, mem_size_t size )
+ {
+     struct memory_view *view;
++    size_t align_mask = host_page_mask;
++
++#if defined(__aarch64__) && defined(__APPLE__)
++    /* Rosetta 2 x86_64/i386 clients use 4KB pages while arm64 wineserver has 16KB host pages. */
++    if (process->machine == IMAGE_FILE_MACHINE_AMD64 || process->machine == IMAGE_FILE_MACHINE_I386)
++        align_mask = page_mask;
++#endif
+ 
+     if (!size) return 0;
+-    if (addr & host_page_mask) return 0;
++    if (addr & align_mask) return 0;
+     if (addr + size < addr) return 0;  /* overflow */
+ 
+     /* check for overlapping view */
+diff --git a/server/process.c b/server/process.c
+index 1e543a1..c44b21f 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -1825,7 +1825,9 @@ DECL_HANDLER(write_process_memory)
+     {
+         data_size_t len = get_req_data_size();
+         reply->written = 0;
+-        if (len) write_process_memory( process, req->addr, len, get_req_data(), &reply->written );
++        reply->flush_icache = 0;
++        if (len && write_process_memory( process, req->addr, len, get_req_data(), &reply->written ) == 2)
++            reply->flush_icache = 1;
+         release_object( process );
+     }
+ }
+diff --git a/server/protocol.def b/server/protocol.def
+index 9c1b29f..b5e1d4c 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -502,6 +502,7 @@ enum apc_type
+     APC_VIRTUAL_QUERY,
+     APC_VIRTUAL_PROTECT,
+     APC_VIRTUAL_FLUSH,
++    APC_FLUSH_ICACHE,
+     APC_VIRTUAL_LOCK,
+     APC_VIRTUAL_UNLOCK,
+     APC_MAP_VIEW,
+@@ -583,6 +584,13 @@ union apc_call
+         client_ptr_t     addr;      /* requested address */
+         mem_size_t       size;      /* requested size */
+     } virtual_flush;
++    struct
++    {
++        enum apc_type    type;      /* APC_FLUSH_ICACHE */
++        int              __pad;
++        client_ptr_t     addr;      /* requested address */
++        mem_size_t       size;      /* requested size */
++    } flush_icache;
+     struct
+     {
+         enum apc_type    type;      /* APC_VIRTUAL_LOCK */
+@@ -706,6 +714,11 @@ union apc_result
+         client_ptr_t     addr;      /* resulting address */
+         mem_size_t       size;      /* resulting size */
+     } virtual_flush;
++    struct
++    {
++        enum apc_type    type;      /* APC_FLUSH_ICACHE */
++        unsigned int     status;    /* status returned by call */
++    } flush_icache;
+     struct
+     {
+         enum apc_type    type;      /* APC_VIRTUAL_LOCK */
+@@ -2059,6 +2072,7 @@ struct process_info
+     VARARG(data,bytes);        /* data to write */
+ @REPLY
+     data_size_t written;       /* number of bytes written */
++    int         flush_icache;  /* target executable page modified under Rosetta */
+ @END
+ 
+ 
+diff --git a/server/thread.c b/server/thread.c
+index 4b61f29..a9923d1 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -2242,6 +2242,9 @@ DECL_HANDLER(queue_apc)
+     case APC_UNMAP_VIEW:
+         process = get_process_from_handle( req->handle, PROCESS_VM_OPERATION );
+         break;
++    case APC_FLUSH_ICACHE:
++        process = get_process_from_handle( req->handle, PROCESS_VM_WRITE );
++        break;
+     case APC_VIRTUAL_QUERY:
+         process = get_process_from_handle( req->handle, PROCESS_QUERY_LIMITED_INFORMATION );
+         break;
+diff --git a/server/trace.c b/server/trace.c
+index 7a11420..88a2e1d 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -244,6 +244,10 @@ static void dump_apc_call( const union apc_call *call )
+         dump_uint64( "APC_VIRTUAL_FLUSH,addr=", &call->virtual_flush.addr );
+         dump_uint64( ",size=", &call->virtual_flush.size );
+         break;
++    case APC_FLUSH_ICACHE:
++        dump_uint64( "APC_FLUSH_ICACHE,addr=", &call->flush_icache.addr );
++        dump_uint64( ",size=", &call->flush_icache.size );
++        break;
+     case APC_VIRTUAL_LOCK:
+         dump_uint64( "APC_VIRTUAL_LOCK,addr=", &call->virtual_lock.addr );
+         dump_uint64( ",size=", &call->virtual_lock.size );
+@@ -338,6 +342,10 @@ static void dump_apc_result( const union apc_result *result )
+         dump_uint64( ",addr=", &result->virtual_flush.addr );
+         dump_uint64( ",size=", &result->virtual_flush.size );
+         break;
++    case APC_FLUSH_ICACHE:
++        fprintf( stderr, "APC_FLUSH_ICACHE,status=%s",
++                 get_status_name( result->flush_icache.status ));
++        break;
+     case APC_VIRTUAL_LOCK:
+         fprintf( stderr, "APC_VIRTUAL_LOCK,status=%s",
+                  get_status_name( result->virtual_lock.status ));

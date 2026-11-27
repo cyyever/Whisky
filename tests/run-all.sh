@@ -91,6 +91,26 @@ if [ -x "$WINE" ]; then
             run_pe "bcrypt-ecdh-rsa" "tests/bcrypt-ecdh-rsa-test.c" "-lbcrypt" ""
         run_case "signal-thread-guard" \
             run_pe "signal-thread-guard" "tests/signal-thread-guard-test.c" "" ""
+        run_case "rosetta-signal-xstate" \
+            run_pe "rosetta-signal-xstate" "tests/rosetta-signal-xstate-test.c" "-mavx2" "ROSETTA_ADVERTISE_AVX=1"
+        run_case "rosetta-mach-wpm" \
+            run_pe "rosetta-mach-wpm" "tests/rosetta-mach-wpm-test.c" "" ""
+
+        run_vulkan_dpi_swapchain() {
+            local exe="$TMPDIR_PE/vulkan-dpi-swapchain.exe"
+            local dpi_prefix="$TMPDIR_PE/prefix-dpi"
+            mkdir -p "$dpi_prefix"
+            x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/tests/vulkan-dpi-swapchain-test.c"
+            WINEPREFIX="$dpi_prefix" WINEDEBUG=-all "$WINE" reg add 'HKCU\Software\Wine\Mac Driver' /v RetinaMode /t REG_SZ /d y /f >/dev/null
+            WINEPREFIX="$dpi_prefix" WINEDEBUG=-all "$WINE" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d 192 /f >/dev/null
+            WINEPREFIX="$dpi_prefix" WINEDEBUG=-all "$WS" -k >/dev/null 2>&1 || true
+            local rc=0
+            WINEPREFIX="$dpi_prefix" WINEDEBUG=-all \
+                perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" || rc=$?
+            WINEPREFIX="$dpi_prefix" "$WS" -k >/dev/null 2>&1 || true
+            return "$rc"
+        }
+        run_case "vulkan-dpi-swapchain" run_vulkan_dpi_swapchain
 
         if command -v i686-w64-mingw32-gcc >/dev/null 2>&1; then
             run_wow64_cs_recovery() {
