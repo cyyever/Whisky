@@ -37,6 +37,7 @@ Fix the architecture at the root on macOS:
 Regression: tests/vulkan-dpi-swapchain-test.c (DPI-unaware + --dpi-aware + no-fshack check)
 
 diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 71fcda2e..47b8fcc3 100644
 --- a/dlls/win32u/vulkan.c
 +++ b/dlls/win32u/vulkan.c
 @@ -3072,8 +3072,15 @@ fail:
@@ -138,9 +139,10 @@ diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
      if ((res = device->p_vkCreateSwapchainKHR( device->host.device, &create_info_host, NULL, &host_swapchain )))
      {
 diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
+index 032f6ac1..03d227fb 100644
 --- a/dlls/winemac.drv/cocoa_window.m
 +++ b/dlls/winemac.drv/cocoa_window.m
-@@ -346,12 +346,14 @@
+@@ -346,12 +346,14 @@ @interface WineBaseView : NSView
  @end
  
  
@@ -156,7 +158,7 @@ diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
  
  @end
  
-@@ -959,6 +961,7 @@
+@@ -959,6 +961,7 @@ - (id) initWithFrame:(NSRect)frame device:(id<MTLDevice>)device
          if (self)
          {
              _device = [device retain];
@@ -164,7 +166,7 @@ diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
              self.wantsLayer = YES;
              self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
          }
-@@ -971,20 +974,36 @@
+@@ -971,20 +974,36 @@ - (void) dealloc
          [super dealloc];
      }
  
@@ -204,7 +206,7 @@ diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
          return layer;
      }
  
-@@ -3993,6 +4012,15 @@
+@@ -3993,6 +4012,15 @@ macdrv_metal_view macdrv_view_create_metal_view(macdrv_view v, macdrv_metal_devi
      return (macdrv_metal_view)metalView;
  }
  
@@ -221,20 +223,26 @@ diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
  {
      WineMetalView* view = (WineMetalView*)v;
 diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
+index 42e675e3..7a75bcd3 100644
 --- a/dlls/winemac.drv/macdrv.h
 +++ b/dlls/winemac.drv/macdrv.h
-@@ -195,6 +195,7 @@
+@@ -195,6 +195,11 @@ extern BOOL macdrv_SystemParametersInfo(UINT action, UINT int_param, void *ptr_p
      macdrv_view           cocoa_view;
      macdrv_metal_device   metal_device;
      macdrv_metal_view     metal_view;
 +    double                metal_dpi_ratio;
++    RECT                  last_rect;
++    macdrv_view           last_superview;
++    macdrv_window         last_cocoa_window;
++    BOOL                  has_last_geom;
  };
  
  static inline struct macdrv_client_surface *impl_from_client_surface(struct client_surface *client)
 diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
+index 6a6b6975..e45ce337 100644
 --- a/dlls/winemac.drv/macdrv_cocoa.h
 +++ b/dlls/winemac.drv/macdrv_cocoa.h
-@@ -525,6 +525,7 @@
+@@ -525,6 +525,7 @@ extern void macdrv_order_cocoa_window(macdrv_window w, macdrv_window prev,
  extern macdrv_metal_device macdrv_create_metal_device(void);
  extern void macdrv_release_metal_device(macdrv_metal_device d);
  extern macdrv_metal_view macdrv_view_create_metal_view(macdrv_view v, macdrv_metal_device d);
@@ -243,9 +251,10 @@ diff --git a/dlls/winemac.drv/macdrv_cocoa.h b/dlls/winemac.drv/macdrv_cocoa.h
  extern void macdrv_view_release_metal_view(macdrv_metal_view v);
  extern bool macdrv_get_view_backing_size(macdrv_view v, int backing_size[2]);
 diff --git a/dlls/winemac.drv/vulkan.c b/dlls/winemac.drv/vulkan.c
+index a4012372..62fe82eb 100644
 --- a/dlls/winemac.drv/vulkan.c
 +++ b/dlls/winemac.drv/vulkan.c
-@@ -55,6 +55,14 @@
+@@ -55,6 +55,14 @@ static VkResult macdrv_vulkan_surface_create(HWND hwnd, BOOL raw, const struct v
      if (!(surface->metal_device = macdrv_create_metal_device())) goto err;
      if (!(surface->metal_view = macdrv_view_create_metal_view(surface->cocoa_view, surface->metal_device))) goto err;
  
@@ -261,9 +270,10 @@ diff --git a/dlls/winemac.drv/vulkan.c b/dlls/winemac.drv/vulkan.c
      {
          VkMetalSurfaceCreateInfoEXT create_info_host;
 diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index b97b1751..57ed9513 100644
 --- a/dlls/winemac.drv/window.c
 +++ b/dlls/winemac.drv/window.c
-@@ -1106,17 +1106,29 @@ static void macdrv_client_surface_update(struct client_surface *client)
+@@ -1106,17 +1106,43 @@ static void macdrv_client_surface_update(struct client_surface *client)
      struct macdrv_client_surface *surface = impl_from_client_surface(client);
      HWND hwnd = client->hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
      struct macdrv_win_data *data;
@@ -280,8 +290,24 @@ diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
  
      if (!(data = get_win_data(toplevel))) return;
      OffsetRect(&rect, data->rects.client.left - data->rects.visible.left, data->rects.client.top - data->rects.visible.top);
-     macdrv_set_view_frame(surface->cocoa_view, cgrect_from_rect(rect));
-     macdrv_set_view_superview(surface->cocoa_view, toplevel == hwnd ? NULL : data->client_view, data->cocoa_window, NULL, NULL);
+-    macdrv_set_view_frame(surface->cocoa_view, cgrect_from_rect(rect));
+-    macdrv_set_view_superview(surface->cocoa_view, toplevel == hwnd ? NULL : data->client_view, data->cocoa_window, NULL, NULL);
++    {
++        macdrv_view superview = toplevel == hwnd ? NULL : data->client_view;
++        if (!surface->has_last_geom || !EqualRect(&rect, &surface->last_rect))
++        {
++            macdrv_set_view_frame(surface->cocoa_view, cgrect_from_rect(rect));
++            surface->last_rect = rect;
++        }
++        if (!surface->has_last_geom || superview != surface->last_superview ||
++            data->cocoa_window != surface->last_cocoa_window)
++        {
++            macdrv_set_view_superview(surface->cocoa_view, superview, data->cocoa_window, NULL, NULL);
++            surface->last_superview = superview;
++            surface->last_cocoa_window = data->cocoa_window;
++        }
++        surface->has_last_geom = TRUE;
++    }
 +    if (surface->metal_view)
 +    {
 +        UINT dpi = NtUserGetDpiForWindow(hwnd);

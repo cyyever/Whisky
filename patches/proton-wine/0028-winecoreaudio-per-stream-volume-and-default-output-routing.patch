@@ -36,18 +36,21 @@ Subject: winecoreaudio: per-stream volume, DefaultOutput routing, callback-drive
    (speaker channel mask from get_device_channel_layout()).
 
 diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaudio.c
+index 20d84a89..02ba9cb8 100644
 --- a/dlls/winecoreaudio.drv/coreaudio.c
 +++ b/dlls/winecoreaudio.drv/coreaudio.c
-@@ -47,6 +47,8 @@
+@@ -47,7 +47,10 @@
  #include <AudioToolbox/AudioFormat.h>
  #include <AudioToolbox/AudioConverter.h>
  #include <AudioUnit/AudioUnit.h>
 +#include <mach/mach.h>
 +#include <mach/semaphore.h>
  #include <os/lock.h>
++#include <pthread.h>
  
  #undef LoadResource
-@@ -69,6 +71,7 @@
+ #undef CompareString
+@@ -69,6 +72,7 @@
  #include "wine/unixlib.h"
  
  #include "unixlib.h"
@@ -55,7 +58,15 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
  #if !defined(MAC_OS_VERSION_12_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_12_0
  #define kAudioObjectPropertyElementMain kAudioObjectPropertyElementMaster
-@@ -89,7 +92,14 @@
+@@ -79,6 +83,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(coreaudio);
+ struct coreaudio_stream
+ {
+     os_unfair_lock lock;
++    pthread_mutex_t unit_lock; /* serializes AudioUnit start/stop/reconfig; never taken in RT callbacks */
+     AudioComponentInstance unit;
+     AudioConverterRef converter;
+     AudioStreamBasicDescription dev_desc; /* audio unit format, not necessarily the same as fmt */
+@@ -89,7 +94,14 @@ struct coreaudio_stream
      AUDCLNT_SHAREMODE share;
      HANDLE event;
  
@@ -63,7 +74,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +    BOOL playing, please_quit, unit_started;
 +    BOOL follow_default, invalidated, alive_listener_added;
 +    semaphore_t cb_sem;
-+    BOOL cb_sem_valid;
++    BOOL cb_sem_valid, cb_pending;
 +    UINT32 cb_frames_accum;
 +    enum ca_sample_format sample_fmt;
 +    float *channel_volumes;
@@ -71,12 +82,10 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      REFERENCE_TIME period;
      UINT32 period_frames;
      UINT32 bufsize_frames, resamp_bufsize_frames;
-@@ -410,8 +420,77 @@
-         memset(buffer, 128, frames * stream->fmt->nBlockAlign);
-     else
+@@ -412,6 +424,79 @@ static void silence_buffer(struct coreaudio_stream *stream, BYTE *buffer, UINT32
          memset(buffer, 0, frames * stream->fmt->nBlockAlign);
-+}
-+
+ }
+ 
 +static enum ca_sample_format ca_sample_format_from_wave(const WAVEFORMATEX *fmt)
 +{
 +    const WAVEFORMATEXTENSIBLE *fmtex = (const WAVEFORMATEXTENSIBLE *)fmt;
@@ -99,8 +108,8 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        }
 +    }
 +    return CA_FMT_OTHER;
- }
- 
++}
++
 +static AudioDeviceID get_default_device(EDataFlow flow)
 +{
 +    AudioDeviceID dev_id = kAudioObjectUnknown;
@@ -138,7 +147,11 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        os_unfair_lock_lock(&stream->lock);
 +        stream->invalidated = TRUE;
 +        stream->playing = FALSE;
-+        wake = stream->cb_sem_valid;
++        if (stream->cb_sem_valid && !stream->cb_pending)
++        {
++            stream->cb_pending = TRUE;
++            wake = TRUE;
++        }
 +        os_unfair_lock_unlock(&stream->lock);
 +        if (wake)
 +            semaphore_signal(stream->cb_sem);
@@ -149,7 +162,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  /* CA is pulling data from us */
  static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
          const AudioTimeStamp *ts, UInt32 bus, UInt32 nframes,
-@@ -419,10 +498,11 @@
+@@ -419,10 +504,11 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
  {
      struct coreaudio_stream *stream = user;
      UINT32 to_copy_bytes, to_copy_frames, chunk_bytes, lcl_offs_bytes;
@@ -162,7 +175,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          lcl_offs_bytes = stream->lcl_offs_frames * stream->fmt->nBlockAlign;
          to_copy_frames = min(nframes, stream->held_frames);
          to_copy_bytes = to_copy_frames * stream->fmt->nBlockAlign;
-@@ -435,9 +515,25 @@
+@@ -435,9 +521,28 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
          }else
              memcpy(data->mBuffers[0].mData, stream->local_buffer + lcl_offs_bytes, to_copy_bytes);
  
@@ -182,13 +195,16 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +            stream->cb_frames_accum += nframes;
 +            if(stream->cb_frames_accum >= stream->period_frames){
 +                stream->cb_frames_accum %= stream->period_frames;
-+                wake_event = TRUE;
++                if(!stream->cb_pending){
++                    stream->cb_pending = TRUE;
++                    wake_event = TRUE;
++                }
 +            }
 +        }
      }else
          to_copy_bytes = to_copy_frames = 0;
  
-@@ -446,6 +542,10 @@
+@@ -446,6 +551,10 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
  
      os_unfair_lock_unlock(&stream->lock);
  
@@ -199,7 +215,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      return noErr;
  }
  
-@@ -502,7 +602,9 @@
+@@ -502,7 +611,9 @@ static OSStatus ca_capture_cb(void *user, AudioUnitRenderActionFlags *flags,
          return sc;
      }
  
@@ -210,7 +226,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          if(list.mBuffers[0].mData == stream->wrap_buffer){
              ca_wrap_buffer(stream->cap_buffer,
                      cap_wri_offs_frames * stream->fmt->nBlockAlign,
-@@ -510,19 +612,29 @@
+@@ -510,19 +621,35 @@ static OSStatus ca_capture_cb(void *user, AudioUnitRenderActionFlags *flags,
                      stream->wrap_buffer, list.mBuffers[0].mDataByteSize);
          }
  
@@ -225,9 +241,15 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        if(stream->cb_sem_valid && stream->event && stream->period_frames){
 +            stream->cb_frames_accum += added_frames;
 +            if(stream->cb_frames_accum >= stream->period_frames){
++                BOOL wake = FALSE;
 +                stream->cb_frames_accum %= stream->period_frames;
++                if(!stream->cb_pending){
++                    stream->cb_pending = TRUE;
++                    wake = TRUE;
++                }
 +                os_unfair_lock_unlock(&stream->lock);
-+                semaphore_signal(stream->cb_sem);
++                if(wake)
++                    semaphore_signal(stream->cb_sem);
 +                return noErr;
 +            }
 +        }
@@ -242,7 +264,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  {
      AudioComponentInstance unit;
      AudioComponent comp;
-@@ -531,7 +643,9 @@
+@@ -531,7 +658,9 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
  
      memset(&desc, 0, sizeof(desc));
      desc.componentType = kAudioUnitType_Output;
@@ -253,7 +275,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      desc.componentManufacturer = kAudioUnitManufacturer_Apple;
  
      if(!(comp = AudioComponentFindNext(NULL, &desc))){
-@@ -567,12 +681,14 @@
+@@ -567,12 +696,14 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
          }
      }
  
@@ -274,7 +296,40 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      }
  
      return unit;
-@@ -763,6 +879,14 @@
+@@ -628,6 +759,8 @@ static HRESULT ca_get_audiodesc(AudioStreamBasicDescription *desc,
+     return S_OK;
+ }
+ 
++static DWORD get_channel_mask(unsigned int channels);
++
+ static HRESULT ca_setup_audiounit(EDataFlow dataflow, AudioComponentInstance unit,
+                                   const WAVEFORMATEX *fmt, AudioStreamBasicDescription *dev_desc,
+                                   AudioConverterRef *converter)
+@@ -700,9 +833,14 @@ static HRESULT ca_setup_audiounit(EDataFlow dataflow, AudioComponentInstance uni
+             return osstatus_to_hresult(sc);
+         }
+ 
+-        /* Set channel layout: AudioChannelBitmap and dwChannelMask conveniently have identical positions */
++        /* Set channel layout: AudioChannelBitmap and dwChannelMask conveniently have identical positions.
++         * Shared mode permits WAVE_FORMAT_EXTENSIBLE with dwChannelMask == 0; fall back to channel count. */
+         layout.mChannelLayoutTag = kAudioChannelLayoutTag_UseChannelBitmap;
+-        layout.mChannelBitmap    = (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE) ? ((WAVEFORMATEXTENSIBLE *)fmt)->dwChannelMask : 0x3;
++        layout.mChannelBitmap    = (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
++            ? ((WAVEFORMATEXTENSIBLE *)fmt)->dwChannelMask
++            : 0;
++        if (!layout.mChannelBitmap)
++            layout.mChannelBitmap = get_channel_mask(fmt->nChannels);
+         layout.mNumberChannelDescriptions = 0;
+ 
+         sc = AudioUnitSetProperty(unit, kAudioUnitProperty_AudioChannelLayout,
+@@ -757,12 +895,21 @@ static NTSTATUS unix_create_stream(void *args)
+         params->result = E_OUTOFMEMORY;
+         return STATUS_SUCCESS;
+     }
++    pthread_mutex_init(&stream->unit_lock, NULL);
+ 
+     stream->fmt = clone_format(params->fmt);
+     if(!stream->fmt){
          params->result = E_OUTOFMEMORY;
          goto end;
      }
@@ -289,7 +344,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
      stream->period = params->period;
      stream->period_frames = muldiv(params->period, stream->fmt->nSamplesPerSec, 10000000);
-@@ -770,12 +894,18 @@
+@@ -770,12 +917,18 @@ static NTSTATUS unix_create_stream(void *args)
      stream->flow = params->flow;
      stream->flags = params->flags;
      stream->share = params->share;
@@ -309,7 +364,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          params->result = AUDCLNT_E_DEVICE_INVALIDATED;
          goto end;
      }
-@@ -806,14 +936,10 @@
+@@ -806,14 +959,10 @@ static NTSTATUS unix_create_stream(void *args)
          goto end;
      }
  
@@ -328,7 +383,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
      size = stream->bufsize_frames * stream->fmt->nBlockAlign;
      if(NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, zero_bits,
-@@ -827,12 +953,33 @@
+@@ -827,12 +976,34 @@ static NTSTATUS unix_create_stream(void *args)
          stream->cap_bufsize_frames = muldiv(params->duration, stream->dev_desc.mSampleRate, 10000000);
          stream->cap_buffer = malloc(stream->cap_bufsize_frames * stream->fmt->nBlockAlign);
      }
@@ -358,11 +413,12 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          if(stream->converter) AudioConverterDispose(stream->converter);
          if(stream->unit) AudioComponentInstanceDispose(stream->unit);
 +        if(stream->cb_sem_valid) semaphore_destroy(mach_task_self(), stream->cb_sem);
++        pthread_mutex_destroy(&stream->unit_lock);
 +        free(stream->channel_volumes);
          free(stream->fmt);
          free(stream);
      } else {
-@@ -851,16 +998,29 @@
+@@ -851,16 +1022,36 @@ static NTSTATUS unix_release_stream( void *args )
  
      if(params->timer_thread){
          stream->please_quit = TRUE;
@@ -380,11 +436,18 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        AudioObjectRemovePropertyListener(stream->dev_id, &alive_addr, ca_device_alive_cb, stream);
 +    }
 +
++    pthread_mutex_lock(&stream->unit_lock);
      if(stream->unit){
 -        AudioOutputUnitStop(stream->unit);
-+        if(stream->unit_started) AudioOutputUnitStop(stream->unit);
++        if(stream->unit_started){
++            AudioOutputUnitStop(stream->unit);
++            stream->unit_started = FALSE;
++        }
          AudioComponentInstanceDispose(stream->unit);
++        stream->unit = NULL;
      }
++    pthread_mutex_unlock(&stream->unit_lock);
++    pthread_mutex_destroy(&stream->unit_lock);
 +    if(stream->cb_sem_valid)
 +        semaphore_destroy(mach_task_self(), stream->cb_sem);
  
@@ -393,7 +456,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      free(stream->resamp_buffer);
      free(stream->wrap_buffer);
      free(stream->cap_buffer);
-@@ -1024,85 +1184,144 @@
+@@ -1024,85 +1215,144 @@ static DWORD get_channel_mask(unsigned int channels)
      return 0;
  }
  
@@ -427,15 +490,16 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 -            TRACE("Got channel layout: {tag: 0x%x, bitmap: 0x%x, num_descs: %u}\n",
 -                  (unsigned int)layout->mChannelLayoutTag, (unsigned int)layout->mChannelBitmap,
 -                  (unsigned int)layout->mNumberChannelDescriptions);
+-
+-            if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelDescriptions){
+-                convert_channel_layout(layout, params->fmt);
 +        if(layout){
 +            sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, layout);
 +            if(sc == noErr){
 +                TRACE("Got channel layout: {tag: 0x%x, bitmap: 0x%x, num_descs: %u}\n",
 +                      (unsigned int)layout->mChannelLayoutTag, (unsigned int)layout->mChannelBitmap,
 +                      (unsigned int)layout->mNumberChannelDescriptions);
- 
--            if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelDescriptions){
--                convert_channel_layout(layout, params->fmt);
++
 +                if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelDescriptions){
 +                    convert_channel_layout(layout, fmt);
 +                }else if(layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelBitmap){
@@ -572,7 +636,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      addr.mSelector = kAudioDevicePropertyNominalSampleRate;
      size = sizeof(Float64);
      sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, &rate);
-@@ -1135,7 +1354,7 @@
+@@ -1135,7 +1385,7 @@ static NTSTATUS unix_is_format_supported(void *args)
      AudioComponentInstance unit;
      const AudioDeviceID dev_id = dev_id_from_device(params->device);
  
@@ -581,7 +645,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
      converter = NULL;
      params->result = ca_setup_audiounit(params->flow, unit, params->fmt_in, &dev_desc, &converter);
-@@ -1271,7 +1490,7 @@
+@@ -1271,7 +1521,7 @@ static NTSTATUS unix_get_buffer_size(void *args)
      return STATUS_SUCCESS;
  }
  
@@ -590,7 +654,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  {
      AudioObjectPropertyAddress addr;
      AudioStreamID *ids;
-@@ -1279,11 +1498,11 @@
+@@ -1279,11 +1529,11 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
      OSStatus sc;
      int nstreams, i;
  
@@ -604,7 +668,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(sc != noErr){
          WARN("Unable to get size for _Streams property: %x\n", (int)sc);
          return osstatus_to_hresult(sc);
-@@ -1293,7 +1512,7 @@
+@@ -1293,7 +1543,7 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
      if(!ids)
          return E_OUTOFMEMORY;
  
@@ -613,7 +677,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(sc != noErr){
          WARN("Unable to get _Streams property: %x\n", (int)sc);
          free(ids);
-@@ -1327,18 +1546,31 @@
+@@ -1327,18 +1577,31 @@ static NTSTATUS unix_get_latency(void *args)
  {
      struct get_latency_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -646,7 +710,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(sc != noErr){
          WARN("Couldn't get _Latency property: %x\n", (int)sc);
          os_unfair_lock_unlock(&stream->lock);
-@@ -1346,7 +1578,7 @@
+@@ -1346,7 +1609,7 @@ static NTSTATUS unix_get_latency(void *args)
          return STATUS_SUCCESS;
      }
  
@@ -655,7 +719,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(FAILED(params->result)){
          os_unfair_lock_unlock(&stream->lock);
          return STATUS_SUCCESS;
-@@ -1374,6 +1606,11 @@
+@@ -1374,6 +1637,11 @@ static NTSTATUS unix_get_current_padding(void *args)
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
  
      os_unfair_lock_lock(&stream->lock);
@@ -667,13 +731,14 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      *params->padding = get_current_padding_nolock(stream);
      os_unfair_lock_unlock(&stream->lock);
      params->result = S_OK;
-@@ -1384,20 +1621,45 @@
+@@ -1384,20 +1652,51 @@ static NTSTATUS unix_start(void *args)
  {
      struct start_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
-+    BOOL need_start = FALSE, has_event = FALSE;
++    BOOL need_start = FALSE, wake_timer = FALSE;
 +    OSStatus sc;
  
++    pthread_mutex_lock(&stream->unit_lock);
      os_unfair_lock_lock(&stream->lock);
  
 -    if((stream->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) && !stream->event)
@@ -687,12 +752,15 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          stream->playing = TRUE;
 +        stream->cb_frames_accum = 0;
 +        need_start = !stream->unit_started;
-+        has_event = (stream->event != NULL);
++        if(stream->event && stream->cb_sem_valid && !stream->cb_pending){
++            stream->cb_pending = TRUE;
++            wake_timer = TRUE;
++        }
          params->result = S_OK;
      }
  
      os_unfair_lock_unlock(&stream->lock);
-+
+ 
 +    if(params->result == S_OK && need_start){
 +        sc = AudioOutputUnitStart(stream->unit);
 +        if(sc != noErr){
@@ -700,6 +768,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +            os_unfair_lock_lock(&stream->lock);
 +            stream->playing = FALSE;
 +            os_unfair_lock_unlock(&stream->lock);
++            pthread_mutex_unlock(&stream->unit_lock);
 +            params->result = osstatus_to_hresult(sc);
 +            return STATUS_SUCCESS;
 +        }
@@ -707,27 +776,32 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        stream->unit_started = TRUE;
 +        os_unfair_lock_unlock(&stream->lock);
 +    }
- 
-+    if(params->result == S_OK && has_event && stream->cb_sem_valid)
++    pthread_mutex_unlock(&stream->unit_lock);
++
++    if(params->result == S_OK && wake_timer)
 +        semaphore_signal(stream->cb_sem);
 +
      return STATUS_SUCCESS;
  }
  
-@@ -1405,6 +1667,7 @@
+@@ -1405,18 +1704,36 @@ static NTSTATUS unix_stop(void *args)
  {
      struct stop_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
 +    BOOL need_stop = FALSE, wake_timer = FALSE;
  
++    pthread_mutex_lock(&stream->unit_lock);
      os_unfair_lock_lock(&stream->lock);
  
-@@ -1412,11 +1675,23 @@
+     if(!stream->playing)
          params->result = S_FALSE;
      else{
          stream->playing = FALSE;
 +        need_stop = stream->unit_started;
-+        wake_timer = (stream->event != NULL && stream->cb_sem_valid);
++        if(stream->event && stream->cb_sem_valid && !stream->cb_pending){
++            stream->cb_pending = TRUE;
++            wake_timer = TRUE;
++        }
          params->result = S_OK;
      }
  
@@ -739,6 +813,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        stream->unit_started = FALSE;
 +        os_unfair_lock_unlock(&stream->lock);
 +    }
++    pthread_mutex_unlock(&stream->unit_lock);
 +
 +    if(wake_timer)
 +        semaphore_signal(stream->cb_sem);
@@ -746,7 +821,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      return STATUS_SUCCESS;
  }
  
-@@ -1441,6 +1716,7 @@
+@@ -1441,6 +1758,7 @@ static NTSTATUS unix_reset(void *args)
          stream->wri_offs_frames = 0;
          stream->cap_offs_frames = 0;
          stream->cap_held_frames = 0;
@@ -754,7 +829,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          params->result = S_OK;
      }
  
-@@ -1452,26 +1728,80 @@
+@@ -1452,26 +1770,107 @@ static NTSTATUS unix_timer_loop(void *args)
  {
      struct timer_loop_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -773,10 +848,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        LONGLONG idle_ns = (LONGLONG)stream->period * 100; /* 100ns -> ns */
 +        LONGLONG play_ns = idle_ns * 2;
 +        mach_timespec_t ts_idle, ts_play;
- 
--    while(!stream->please_quit){
--        NtSetEvent(stream->event, NULL);
--        NtDelayExecution(FALSE, &delay);
++
 +        if(idle_ns < 2000000LL) idle_ns = 2000000LL;
 +        if(idle_ns > 100000000LL) idle_ns = 100000000LL;
 +        if(play_ns < 50000000LL) play_ns = 50000000LL;
@@ -791,6 +863,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +            BOOL is_playing;
 +            kern_return_t kr;
 +            BOOL should_signal = FALSE;
++            BOOL check_unit = FALSE;
 +
 +            os_unfair_lock_lock(&stream->lock);
 +            is_playing = stream->playing;
@@ -801,16 +874,42 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +            if(stream->please_quit) break;
 +
 +            os_unfair_lock_lock(&stream->lock);
++            stream->cb_pending = FALSE;
 +            if(stream->event){
 +                if(stream->playing){
-+                    if(kr == KERN_SUCCESS || stream->invalidated)
++                    /* Signal on RT callback wakeup AND on fallback timeout so a
++                     * DefaultOutput route hiccup never stalls WASAPI forever. */
++                    if(kr == KERN_SUCCESS || kr == KERN_OPERATION_TIMED_OUT || stream->invalidated)
 +                        should_signal = TRUE;
++                    if(kr == KERN_OPERATION_TIMED_OUT && !stream->invalidated)
++                        check_unit = TRUE;
 +                }else{
 +                    if(kr == KERN_OPERATION_TIMED_OUT || stream->invalidated)
 +                        should_signal = TRUE;
 +                }
 +            }
 +            os_unfair_lock_unlock(&stream->lock);
++
++            if(check_unit && !stream->please_quit){
++                /* Self-heal if CoreAudio stopped the AudioUnit during a HAL route change. */
++                pthread_mutex_lock(&stream->unit_lock);
++                os_unfair_lock_lock(&stream->lock);
++                is_playing = stream->playing && !stream->invalidated && stream->unit != NULL;
++                os_unfair_lock_unlock(&stream->lock);
++                if(is_playing){
++                    UInt32 running = 0, sz = sizeof(running);
++                    if(AudioUnitGetProperty(stream->unit, kAudioOutputUnitProperty_IsRunning,
++                                            kAudioUnitScope_Global, 0, &running, &sz) == noErr && !running){
++                        WARN("CoreAudio unit stopped while stream playing; restarting\n");
++                        if(AudioOutputUnitStart(stream->unit) == noErr){
++                            os_unfair_lock_lock(&stream->lock);
++                            stream->unit_started = TRUE;
++                            os_unfair_lock_unlock(&stream->lock);
++                        }
++                    }
++                }
++                pthread_mutex_unlock(&stream->unit_lock);
++            }
 +
 +            if(should_signal)
 +                NtSetEvent(stream->event, NULL);
@@ -821,7 +920,10 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +    {
 +        LARGE_INTEGER delay, next, last;
 +        int adjust;
-+
+ 
+-    while(!stream->please_quit){
+-        NtSetEvent(stream->event, NULL);
+-        NtDelayExecution(FALSE, &delay);
 +        delay.QuadPart = -stream->period;
          NtQueryPerformanceCounter(&last, NULL);
 +        next.QuadPart = last.QuadPart + stream->period;
@@ -850,7 +952,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      }
  
      return STATUS_SUCCESS;
-@@ -1486,6 +1816,11 @@
+@@ -1486,6 +1885,11 @@ static NTSTATUS unix_get_render_buffer(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -862,7 +964,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      pad = get_current_padding_nolock(stream);
  
      if(stream->getbuf_last){
-@@ -1542,7 +1877,9 @@
+@@ -1542,7 +1946,9 @@ static NTSTATUS unix_release_render_buffer(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -873,7 +975,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          stream->getbuf_last = 0;
          params->result = S_OK;
      }else if(!stream->getbuf_last)
-@@ -1588,6 +1925,11 @@
+@@ -1588,6 +1994,11 @@ static NTSTATUS unix_get_capture_buffer(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -885,7 +987,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      if(stream->getbuf_last){
          params->result = AUDCLNT_E_OUT_OF_ORDER;
          goto end;
-@@ -1641,7 +1983,9 @@
+@@ -1641,7 +2052,9 @@ static NTSTATUS unix_release_capture_buffer(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -896,7 +998,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          stream->getbuf_last = 0;
          params->result = S_OK;
      }else if(!stream->getbuf_last)
-@@ -1669,6 +2013,12 @@
+@@ -1669,6 +2082,12 @@ static NTSTATUS unix_get_next_packet_size(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -909,7 +1011,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      capture_resample(stream);
  
      if(stream->held_frames >= stream->period_frames)
-@@ -1688,17 +2038,20 @@
+@@ -1688,17 +2107,20 @@ static NTSTATUS unix_get_position(void *args)
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
      LARGE_INTEGER stamp;
  
@@ -923,9 +1025,9 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
          return STATUS_SUCCESS;
      }
--
--    os_unfair_lock_lock(&stream->lock);
  
+-    os_unfair_lock_lock(&stream->lock);
+-
      *params->pos = stream->written_frames - stream->held_frames;
  
 -    if(stream->share == AUDCLNT_SHAREMODE_SHARED)
@@ -936,7 +1038,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
          *params->pos *= stream->fmt->nBlockAlign;
  
      if(params->qpctime){
-@@ -1717,10 +2070,12 @@
+@@ -1717,10 +2139,12 @@ static NTSTATUS unix_get_frequency(void *args)
      struct get_frequency_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
  
@@ -949,12 +1051,10 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
      params->result = S_OK;
      return STATUS_SUCCESS;
-@@ -1737,14 +2092,122 @@
-         params->result = S_FALSE;
- 
+@@ -1739,12 +2163,120 @@ static NTSTATUS unix_is_started(void *args)
      return STATUS_SUCCESS;
-+}
-+
+ }
+ 
 +static BOOL device_has_scope_channels(AudioDeviceID dev_id, AudioObjectPropertyScope scope)
 +{
 +    AudioObjectPropertyAddress addr = {
@@ -1029,8 +1129,8 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +    }
 +
 +    return flow == eCapture ? Microphone : Speakers;
- }
- 
++}
++
  static NTSTATUS unix_get_prop_value(void *args)
  {
 +    static const GUID PKEY_AudioEndpoint_GUID = {
@@ -1045,7 +1145,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        params->result = E_FAIL;
 +        return STATUS_SUCCESS;
 +    }
- 
++
 +    if(IsEqualGUID(&params->prop->fmtid, &PKEY_AudioEndpoint_GUID)){
 +        switch(params->prop->pid){
 +        case 0: /* PKEY_AudioEndpoint_FormFactor */
@@ -1068,12 +1168,12 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        }
 +        }
 +    }
-+
+ 
 +    params->result = E_NOTIMPL;
      return STATUS_SUCCESS;
  }
  
-@@ -1752,31 +2215,19 @@
+@@ -1752,31 +2284,19 @@ static NTSTATUS unix_set_volumes(void *args)
  {
      struct set_volumes_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -1085,7 +1185,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 -        kAudioObjectPropertyScopeGlobal,
 -        kAudioObjectPropertyElementMain
 -    };
- 
+-
 -    sc = AudioObjectSetPropertyData(stream->dev_id, &prop_addr, 0, NULL, sizeof(float), &level);
 -    if (sc == noErr)
 -        level = 1.0f;
@@ -1094,7 +1194,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 -
 -    for (i = 1; i <= stream->fmt->nChannels; ++i) {
 -        const float vol = level * params->session_volumes[i - 1] * params->volumes[i - 1];
--
+ 
 -        prop_addr.mElement = i;
 -
 -        sc = AudioObjectSetPropertyData(stream->dev_id, &prop_addr, 0, NULL, sizeof(float), &vol);
@@ -1116,13 +1216,10 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
  
      return STATUS_SUCCESS;
  }
-@@ -1799,6 +2250,77 @@
-     os_unfair_lock_unlock(&stream->lock);
+@@ -1802,6 +2322,82 @@ static NTSTATUS unix_set_event_handle(void *args)
+     return STATUS_SUCCESS;
+ }
  
-     params->result = hr;
-+    return STATUS_SUCCESS;
-+}
-+
 +static NTSTATUS unix_set_sample_rate(void *args)
 +{
 +    struct set_sample_rate_params *params = args;
@@ -1136,14 +1233,17 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +        return STATUS_SUCCESS;
 +    }
 +
++    pthread_mutex_lock(&stream->unit_lock);
 +    os_unfair_lock_lock(&stream->lock);
 +    if(stream->invalidated){
 +        os_unfair_lock_unlock(&stream->lock);
++        pthread_mutex_unlock(&stream->unit_lock);
 +        params->result = AUDCLNT_E_DEVICE_INVALIDATED;
 +        return STATUS_SUCCESS;
 +    }
 +    if(stream->flow != eRender || !stream->unit){
 +        os_unfair_lock_unlock(&stream->lock);
++        pthread_mutex_unlock(&stream->unit_lock);
 +        params->result = E_NOTIMPL;
 +        return STATUS_SUCCESS;
 +    }
@@ -1174,6 +1274,7 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +            stream->unit_started = FALSE;
 +            os_unfair_lock_unlock(&stream->lock);
 +        }
++        pthread_mutex_unlock(&stream->unit_lock);
 +        params->result = osstatus_to_hresult(sc);
 +        return STATUS_SUCCESS;
 +    }
@@ -1189,12 +1290,16 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
 +    stream->fmt->nAvgBytesPerSec = stream->fmt->nSamplesPerSec * stream->fmt->nBlockAlign;
 +    stream->period_frames = muldiv(stream->period, stream->fmt->nSamplesPerSec, 10000000);
 +    os_unfair_lock_unlock(&stream->lock);
++    pthread_mutex_unlock(&stream->unit_lock);
 +
 +    params->result = S_OK;
-     return STATUS_SUCCESS;
- }
- 
-@@ -1830,7 +2352,7 @@
++    return STATUS_SUCCESS;
++}
++
+ const unixlib_entry_t __wine_unix_call_funcs[] =
+ {
+     unix_process_attach,
+@@ -1830,7 +2426,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
      unix_get_position,
      unix_set_volumes,
      unix_set_event_handle,
@@ -1203,19 +1308,18 @@ diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaud
      unix_not_implemented,
      unix_is_started,
      unix_get_prop_value,
-@@ -2286,8 +2808,8 @@
+@@ -2286,7 +2882,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
      unix_wow64_get_position,
      unix_wow64_set_volumes,
      unix_wow64_set_event_handle,
+-    unix_not_implemented,
 +    unix_set_sample_rate,
      unix_not_implemented,
--    unix_not_implemented,
      unix_is_started,
      unix_wow64_get_prop_value,
-     unix_not_implemented,
 diff --git a/dlls/winecoreaudio.drv/volume_scale.h b/dlls/winecoreaudio.drv/volume_scale.h
 new file mode 100644
-index 00000000..00000000
+index 00000000..8da78b30
 --- /dev/null
 +++ b/dlls/winecoreaudio.drv/volume_scale.h
 @@ -0,0 +1,142 @@

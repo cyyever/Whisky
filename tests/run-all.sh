@@ -131,6 +131,8 @@ if [ -x "$WINE" ]; then
             run_pe "steam-appid-unix-env" "tests/steam-appid-unix-env-test.c" "" "-u SteamGameId -u SteamAppId -u STEAM_COMPAT_APP_ID"
         run_case "ws2_32-sockopt" \
             run_pe "ws2_32-sockopt" "tests/ws2_32-sockopt-test.c" "-lws2_32" ""
+        run_case "ws2_32-fd-write-rearm" \
+            run_pe "ws2_32-fd-write-rearm" "tests/ws2_32-fd-write-rearm-test.c" "-lws2_32" "WINEMSYNC=1"
         run_case "bcrypt-ecdh-rsa" \
             run_pe "bcrypt-ecdh-rsa" "tests/bcrypt-ecdh-rsa-test.c" "-lbcrypt" ""
         run_case "signal-thread-guard" \

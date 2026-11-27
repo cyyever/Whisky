@@ -344,6 +344,123 @@ static void exercise_endpoint_properties(IMMDevice *dev)
     IPropertyStore_Release(store);
 }
 
+struct start_stop_ctx {
+    IAudioClient *client;
+    volatile LONG stop_flag;
+};
+
+static DWORD WINAPI start_stop_racer_thread(void *arg)
+{
+    struct start_stop_ctx *ctx = (struct start_stop_ctx *)arg;
+    while (!InterlockedCompareExchange(&ctx->stop_flag, 0, 0)) {
+        IAudioClient_Stop(ctx->client);
+        Sleep(0);
+        IAudioClient_Start(ctx->client);
+        Sleep(0);
+    }
+    return 0;
+}
+
+static void exercise_concurrent_start_stop_race(IMMDevice *dev)
+{
+    IAudioClient *client = NULL;
+    IAudioRenderClient *render = NULL;
+    WAVEFORMATEX *mix_fmt = NULL;
+    WAVEFORMATEXTENSIBLE zero_mask_fmt;
+    HANDLE ev = NULL, th = NULL;
+    UINT32 buf_frames = 0, pad_before = 0, pad_after = 0;
+    BYTE *data = NULL;
+    struct start_stop_ctx ctx;
+    HRESULT hr;
+    int i, wakes = 0;
+
+    hr = IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&client);
+    CHECK(SUCCEEDED(hr) && client, "[unit-race] Activate IAudioClient (hr=0x%08lx)", (unsigned long)hr);
+    if (FAILED(hr) || !client) return;
+
+    hr = IAudioClient_GetMixFormat(client, &mix_fmt);
+    CHECK(SUCCEEDED(hr) && mix_fmt, "[unit-race] GetMixFormat (hr=0x%08lx)", (unsigned long)hr);
+    if (FAILED(hr) || !mix_fmt) goto done;
+
+    /* Test WAVE_FORMAT_EXTENSIBLE with dwChannelMask == 0 (permitted in shared mode). */
+    if (mix_fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE && mix_fmt->cbSize >= 22) {
+        memcpy(&zero_mask_fmt, mix_fmt, sizeof(zero_mask_fmt));
+        zero_mask_fmt.dwChannelMask = 0;
+        hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 1000000, 0, &zero_mask_fmt.Format, NULL);
+    } else {
+        hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 1000000, 0, mix_fmt, NULL);
+    }
+    CHECK(SUCCEEDED(hr), "[unit-race] Initialize EVENTCALLBACK zero-mask (hr=0x%08lx)", (unsigned long)hr);
+    if (FAILED(hr)) goto done;
+
+    ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+    hr = IAudioClient_SetEventHandle(client, ev);
+    CHECK(SUCCEEDED(hr), "[unit-race] SetEventHandle (hr=0x%08lx)", (unsigned long)hr);
+
+    hr = IAudioClient_GetBufferSize(client, &buf_frames);
+    hr = IAudioClient_GetService(client, &IID_IAudioRenderClient, (void **)&render);
+    CHECK(SUCCEEDED(hr) && render && buf_frames > 0, "[unit-race] GetService render buf=%u", buf_frames);
+    if (FAILED(hr) || !render || !buf_frames) goto done;
+
+    /* Hammer Stop/Start concurrently from two threads to catch unlocked
+     * unit_started/playing desync (where playing=TRUE while AudioUnit is stopped). */
+    IAudioClient_Start(client);
+    ctx.client = client;
+    ctx.stop_flag = 0;
+    th = CreateThread(NULL, 0, start_stop_racer_thread, &ctx, 0, NULL);
+    for (i = 0; i < 40; ++i) {
+        IAudioClient_Start(client);
+        Sleep(1);
+        IAudioClient_Stop(client);
+        Sleep(1);
+    }
+    InterlockedExchange(&ctx.stop_flag, 1);
+    if (th) {
+        WaitForSingleObject(th, 5000);
+        CloseHandle(th);
+    }
+
+    /* Ensure stream is in Started state WITHOUT calling Stop() first: if a race
+     * left playing==TRUE while AudioOutputUnitStop() stopped the unit, Start()
+     * returns AUDCLNT_E_NOT_STOPPED and the AudioUnit stays dead (0 drain). */
+    hr = IAudioClient_Start(client);
+    CHECK(hr == S_OK || hr == AUDCLNT_E_NOT_STOPPED,
+          "[unit-race] ensure Started after concurrent race (hr=0x%08lx)", (unsigned long)hr);
+
+    {
+        UINT32 write_frames = buf_frames / 2;
+        if (SUCCEEDED(IAudioClient_GetCurrentPadding(client, &pad_before)) && buf_frames > pad_before) {
+            if (write_frames > buf_frames - pad_before) write_frames = buf_frames - pad_before;
+            if (write_frames > 0 && SUCCEEDED(IAudioRenderClient_GetBuffer(render, write_frames, &data)) && data) {
+                memset(data, 0, write_frames * mix_fmt->nBlockAlign);
+                IAudioRenderClient_ReleaseBuffer(render, write_frames, 0);
+            }
+        }
+        IAudioClient_GetCurrentPadding(client, &pad_before);
+    }
+
+    ResetEvent(ev);
+    for (i = 0; i < 5; ++i) {
+        if (WaitForSingleObject(ev, 250) == WAIT_OBJECT_0)
+            wakes++;
+    }
+    IAudioClient_GetCurrentPadding(client, &pad_after);
+
+    CHECK(wakes == 5, "[unit-race] EVENTCALLBACK alive after Start/Stop race (wakes=%d/5)", wakes);
+    CHECK(pad_after < pad_before, "[unit-race] AudioUnit drained buffer after race (pad %u -> %u)",
+          pad_before, pad_after);
+
+    IAudioClient_Stop(client);
+
+done:
+    if (render) IAudioRenderClient_Release(render);
+    if (mix_fmt) CoTaskMemFree(mix_fmt);
+    if (client) IAudioClient_Release(client);
+    if (ev) CloseHandle(ev);
+}
+
 int main(void)
 {
     IMMDeviceEnumerator *enumerator = NULL;
@@ -379,6 +496,7 @@ int main(void)
 
     exercise_event_clock_and_rate(dev);
     exercise_endpoint_properties(dev);
+    exercise_concurrent_start_stop_race(dev);
 
 exit:
     if (dev) IMMDevice_Release(dev);
