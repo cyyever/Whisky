@@ -36,7 +36,7 @@ SWIFTLINT ?= swiftlint
 .NOTPARALLEL:
 
 .PHONY: all help x86-deps llvm-x86 ffmpeg gstreamer kosmickrisp proton proton-debug proton-asan clean-proton \
-        dxvk mullion proxychains app app-asan app-release install-app lint format lint-swiftlint test run submodule clean check-proton-src
+        dxvk mullion proxychains app app-asan app-tsan app-release install-app lint format lint-swiftlint test run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -174,6 +174,10 @@ app-asan: ## Build Whisky macOS app (Debug) with Xcode Address + Undefined Behav
 	$(XCODEBUILD) -configuration Debug -enableAddressSanitizer YES -enableUndefinedBehaviorSanitizer YES build $(CODESIGN_OFF)
 	@$(MAKE) --no-print-directory install-app CONFIG=Debug
 
+app-tsan: ## Build Whisky macOS app (Debug) with Xcode Thread Sanitizer
+	$(XCODEBUILD) -configuration Debug -enableThreadSanitizer YES build $(CODESIGN_OFF)
+	@$(MAKE) --no-print-directory install-app CONFIG=Debug
+
 app-release: ## Build the Whisky app (Release) and install it over /Applications/Whisky.app
 	$(XCODEBUILD) -configuration Release build $(CODESIGN_OFF)
 	@$(MAKE) --no-print-directory install-app CONFIG=Release
@@ -226,7 +230,7 @@ format:  ## Reformat the Swift sources in place (swift-format)
 lint-swiftlint:  ## Run the strict SwiftLint checks used by CI (SwiftLint 0.65.1)
 	@$(SWIFTLINT) lint --strict
 
-test:  ## Run Whisky automated regression suite (with ASan + UBSan + LSan + Metal Validation)
+test:  ## Run Whisky automated regression suite (ASan + UBSan + LSan + TSan + RTSan + TySan + Metal Validation)
 	@$(CURDIR)/tests/run-all.sh
 
 

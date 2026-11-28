@@ -31,23 +31,47 @@ leak:type_class_init_Wm
 leak:NSApplication
 leak:CoreGraphics
 SUPP
-    export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:exitcode=77"
-    export LSAN_OPTIONS="suppressions=$run_dir/lsan.supp"
+    VT_ASAN_OPTS="detect_leaks=1:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1:strict_init_order=1:halt_on_error=1:exitcode=77"
+    VT_LSAN_OPTS="suppressions=$run_dir/lsan.supp"
 else
     HOST_CC="$(xcrun --find clang)"
-    export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:exitcode=77"
+    VT_ASAN_OPTS="detect_leaks=0:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1:strict_init_order=1:halt_on_error=1:exitcode=77"
+    VT_LSAN_OPTS=""
 fi
-export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
+VT_UBSAN_OPTS="print_stacktrace=1:halt_on_error=1"
 "$HOST_CC" -arch x86_64 -isysroot "$SDK" -O1 -g -fno-omit-frame-pointer \
-    -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+    -fsanitize=address,undefined,nullability,local-bounds,float-divide-by-zero -fno-sanitize-recover=all \
     -framework Cocoa @"$run_dir/flags.rsp" \
     "$PROJECT_DIR/tests/gstreamer/videotoolbox-test.m" -o "$run_dir/probe"
+"$HOST_CC" -arch x86_64 -isysroot "$SDK" -O1 -g -fno-omit-frame-pointer \
+    -fsanitize=thread \
+    -framework Cocoa @"$run_dir/flags.rsp" \
+    "$PROJECT_DIR/tests/gstreamer/videotoolbox-test.m" -o "$run_dir/probe-tsan"
+if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then
+    "$HOST_CC" -arch x86_64 -isysroot "$SDK" -O1 -g -fno-omit-frame-pointer \
+        -fsanitize=type \
+        -framework Cocoa @"$run_dir/flags.rsp" \
+        "$PROJECT_DIR/tests/gstreamer/videotoolbox-test.m" -o "$run_dir/probe-tysan"
+fi
 
 export DYLD_LIBRARY_PATH="$prefix/lib"
 export GST_PLUGIN_SYSTEM_PATH=""
 export GST_PLUGIN_PATH="$prefix/lib/gstreamer-1.0"
 export GST_PLUGIN_SCANNER="$prefix/libexec/gstreamer-1.0/gst-plugin-scanner"
 for mode in hardware software mp4; do
-    echo "=== $mode: twelve frames and full pixel validation ==="
-    GST_REGISTRY="$run_dir/$mode.registry.bin" "$run_dir/probe" "--$mode"
+    echo "=== $mode (ASan+UBSan+LSan): twelve frames and full pixel validation ==="
+    ASAN_OPTIONS="$VT_ASAN_OPTS" LSAN_OPTIONS="$VT_LSAN_OPTS" UBSAN_OPTIONS="$VT_UBSAN_OPTS" \
+        GST_REGISTRY="$run_dir/$mode.registry.bin" "$run_dir/probe" "--$mode"
 done
+for mode in hardware software mp4; do
+    echo "=== $mode (TSan): twelve frames and full pixel validation ==="
+    TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1" \
+        GST_REGISTRY="$run_dir/$mode-tsan.registry.bin" "$run_dir/probe-tsan" "--$mode"
+done
+if [ -x "$run_dir/probe-tysan" ]; then
+    for mode in hardware software mp4; do
+        echo "=== $mode (TySan): twelve frames and full pixel validation ==="
+        TYSAN_OPTIONS="halt_on_error=1" \
+            GST_REGISTRY="$run_dir/$mode-tysan.registry.bin" "$run_dir/probe-tysan" "--$mode"
+    done
+fi

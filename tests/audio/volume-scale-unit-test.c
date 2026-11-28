@@ -124,6 +124,33 @@ static void test_pcm8(void)
     CHECK(buf[1] == 128, "u8[1]=%u expected silence midpoint 128", buf[1]);
 }
 
+#if defined(__has_attribute) && __has_attribute(nonblocking)
+#define WHISKY_NONBLOCKING __attribute__((nonblocking))
+#else
+#define WHISKY_NONBLOCKING
+#endif
+
+static void rtsan_verify_all_formats(void) WHISKY_NONBLOCKING
+{
+    float gains[2] = { 0.5f, 0.25f };
+    float stream_vols[2] = { 1.0f, 0.5f };
+    float chan_vols[2] = { 0.5f, 1.0f };
+    float f32[4] = { 0.5f, -0.5f, 1.0f, -1.0f };
+    int16_t s16[4] = { 1000, -1000, 32767, -32768 };
+    uint8_t s24[6] = { 0x00, 0x00, 0x40, 0x00, 0x00, 0xc0 };
+    int32_t s32[4] = { 100000, -100000, INT32_MAX, INT32_MIN + 1 };
+    uint8_t u8[4] = { 228, 28, 128, 255 };
+
+    int is_unity = 0, is_muted = 0;
+
+    ca_compute_channel_gains(2, 0.5f, stream_vols, chan_vols, gains, &is_unity, &is_muted);
+    ca_scale_pcm_frames(f32, 2, 2, CA_FMT_FLOAT32, gains);
+    ca_scale_pcm_frames(s16, 2, 2, CA_FMT_PCM16, gains);
+    ca_scale_pcm_frames(s24, 1, 2, CA_FMT_PCM24, gains);
+    ca_scale_pcm_frames(s32, 2, 2, CA_FMT_PCM32, gains);
+    ca_scale_pcm_frames(u8, 2, 2, CA_FMT_PCM8, gains);
+}
+
 int main(void)
 {
     test_gain_computation();
@@ -132,6 +159,7 @@ int main(void)
     test_pcm24();
     test_pcm32();
     test_pcm8();
+    rtsan_verify_all_formats();
 
     printf("volume-scale-unit-test: %s (failures=%d)\n", failures ? "FAIL" : "PASS", failures);
     return failures ? 1 : 0;

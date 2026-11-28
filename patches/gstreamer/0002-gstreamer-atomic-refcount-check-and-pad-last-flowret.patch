@@ -1,0 +1,395 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Whisky <whisky@local>
+Date: Sat, 28 Nov 2026 13:08:00 +0800
+Subject: [PATCH] gstreamer: use atomic ref_count read in gst_object_unref and atomic last_flowret in gstpad
+
+Eliminate two ThreadSanitizer data-race sites in GStreamer core:
+1. gst_object_unref() read ((GObject *) object)->ref_count non-atomically
+   for its precondition/tracer check while other threads concurrently mutate
+   ref_count atomically via g_object_ref/g_object_unref.
+2. gstpad.c wrote pad->ABI.abi.last_flowret under STREAM_LOCK in data-flow
+   paths while GST_EVENT_RECONFIGURE read/reset it under OBJECT_LOCK. Use
+   g_atomic_int_set() and g_atomic_int_compare_and_exchange() consistently.
+---
+ subprojects/gstreamer/gst/gstobject.c |  9 ++--
+ subprojects/gstreamer/gst/gstpad.c    | 80 +++++++++++++++++------------------
+ 2 files changed, 45 insertions(+), 44 deletions(-)
+
+diff --git a/subprojects/gstreamer/gst/gstobject.c b/subprojects/gstreamer/gst/gstobject.c
+index ced436f9..a7ab965d 100644
+--- a/subprojects/gstreamer/gst/gstobject.c
++++ b/subprojects/gstreamer/gst/gstobject.c
+@@ -258,13 +258,16 @@ gst_object_ref (gpointer object)
+ void
+ gst_object_unref (gpointer object)
+ {
++  gint refcount;
++
+   g_return_if_fail (object != NULL);
+-  g_return_if_fail (((GObject *) object)->ref_count > 0);
++  refcount = g_atomic_int_get (&((GObject *) object)->ref_count);
++  g_return_if_fail (refcount > 0);
+ 
+-  GST_TRACER_OBJECT_UNREFFED (object, ((GObject *) object)->ref_count - 1);
++  GST_TRACER_OBJECT_UNREFFED (object, refcount - 1);
+ #ifdef DEBUG_REFCOUNT
+   GST_CAT_TRACE_OBJECT (GST_CAT_REFCOUNTING, object, "%p unref %d->%d", object,
+-      ((GObject *) object)->ref_count, ((GObject *) object)->ref_count - 1);
++      refcount, refcount - 1);
+ #endif
+   g_object_unref (object);
+ }
+diff --git a/subprojects/gstreamer/gst/gstpad.c b/subprojects/gstreamer/gst/gstpad.c
+index 506c26b5..e5084114 100644
+--- a/subprojects/gstreamer/gst/gstpad.c
++++ b/subprojects/gstreamer/gst/gstpad.c
+@@ -438,7 +438,7 @@ gst_pad_init (GstPad * pad)
+   pad->priv->peer_cookie = 0;
+   g_cond_init (&pad->priv->activation_cond);
+ 
+-  pad->ABI.abi.last_flowret = GST_FLOW_FLUSHING;
++  g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_FLUSHING);
+ }
+ 
+ /* called when setting the pad inactive. It removes all sticky events from
+@@ -1041,7 +1041,7 @@ pre_activate (GstPad * pad, GstPadMode new_mode)
+       pad->priv->in_activation = TRUE;
+       GST_DEBUG_OBJECT (pad, "setting PAD_MODE NONE, set flushing");
+       GST_PAD_SET_FLUSHING (pad);
+-      pad->ABI.abi.last_flowret = GST_FLOW_FLUSHING;
++      g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_FLUSHING);
+       GST_PAD_MODE (pad) = new_mode;
+       /* unlock blocked pads so element can resume and stop */
+       GST_PAD_BLOCK_BROADCAST (pad);
+@@ -1062,7 +1062,7 @@ pre_activate (GstPad * pad, GstPadMode new_mode)
+       GST_DEBUG_OBJECT (pad, "setting pad into %s mode, unset flushing",
+           gst_pad_mode_get_name (new_mode));
+       GST_PAD_UNSET_FLUSHING (pad);
+-      pad->ABI.abi.last_flowret = GST_FLOW_OK;
++      g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_OK);
+       GST_PAD_MODE (pad) = new_mode;
+       if (GST_PAD_IS_SINK (pad)) {
+         GstPad *peer;
+@@ -1157,7 +1157,7 @@ gst_pad_set_active (GstPad * pad, gboolean active)
+       GST_DEBUG_OBJECT (pad, "activating pad from none");
+       ret = (GST_PAD_ACTIVATEFUNC (pad)) (pad, parent);
+       if (ret)
+-        pad->ABI.abi.last_flowret = GST_FLOW_OK;
++        g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_OK);
+     } else {
+       GST_DEBUG_OBJECT (pad, "pad was active in %s mode",
+           gst_pad_mode_get_name (old));
+@@ -1172,7 +1172,7 @@ gst_pad_set_active (GstPad * pad, gboolean active)
+           gst_pad_mode_get_name (old));
+       ret = activate_mode_internal (pad, parent, old, FALSE);
+       if (ret)
+-        pad->ABI.abi.last_flowret = GST_FLOW_FLUSHING;
++        g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_FLUSHING);
+     }
+   }
+ 
+@@ -4656,7 +4656,7 @@ gst_pad_chain_data_unchecked (GstPad * pad, GstPadProbeType type, void *data)
+         GST_DEBUG_FUNCPTR_NAME (chainlistfunc), gst_flow_get_name (ret));
+   }
+ 
+-  pad->ABI.abi.last_flowret = ret;
++  g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+ 
+   RELEASE_PARENT (parent);
+ 
+@@ -4676,7 +4676,7 @@ flushing:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad,
+         "chaining, but pad was flushing");
+-    pad->ABI.abi.last_flowret = GST_FLOW_FLUSHING;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_FLUSHING);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+@@ -4686,7 +4686,7 @@ flushing:
+ eos:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad, "chaining, but pad was EOS");
+-    pad->ABI.abi.last_flowret = GST_FLOW_EOS;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_EOS);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+@@ -4697,7 +4697,7 @@ wrong_mode:
+   {
+     g_critical ("chain on pad %s:%s but it was not in push mode",
+         GST_DEBUG_PAD_NAME (pad));
+-    pad->ABI.abi.last_flowret = GST_FLOW_ERROR;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_ERROR);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+@@ -4723,7 +4723,7 @@ probe_stopped:
+         GST_DEBUG_OBJECT (pad, "an error occurred %s", gst_flow_get_name (ret));
+         break;
+     }
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     goto out;
+@@ -4731,7 +4731,7 @@ probe_stopped:
+ no_parent:
+   {
+     GST_DEBUG_OBJECT (pad, "No parent when chaining %" GST_PTR_FORMAT, data);
+-    pad->ABI.abi.last_flowret = GST_FLOW_FLUSHING;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_FLUSHING);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+@@ -4740,7 +4740,7 @@ no_parent:
+   }
+ no_function:
+   {
+-    pad->ABI.abi.last_flowret = GST_FLOW_NOT_SUPPORTED;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_NOT_SUPPORTED);
+     RELEASE_PARENT (parent);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+     g_critical ("chain on pad %s:%s but it has no chainfunction",
+@@ -4943,7 +4943,7 @@ gst_pad_push_data (GstPad * pad, GstPadProbeType type, void *data)
+   gst_object_unref (peer);
+ 
+   GST_OBJECT_LOCK (pad);
+-  pad->ABI.abi.last_flowret = ret;
++  g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+   pad->priv->using--;
+   if (pad->priv->using == 0) {
+     /* pad is not active anymore, trigger idle callbacks */
+@@ -4960,7 +4960,7 @@ flushing:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad,
+         "pushing, but pad was flushing");
+-    pad->ABI.abi.last_flowret = GST_FLOW_FLUSHING;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_FLUSHING);
+     GST_OBJECT_UNLOCK (pad);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+     return GST_FLOW_FLUSHING;
+@@ -4968,7 +4968,7 @@ flushing:
+ eos:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad, "pushing, but pad was EOS");
+-    pad->ABI.abi.last_flowret = GST_FLOW_EOS;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_EOS);
+     GST_OBJECT_UNLOCK (pad);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+     return GST_FLOW_EOS;
+@@ -4977,7 +4977,7 @@ wrong_mode:
+   {
+     g_critical ("pushing on pad %s:%s but it was not activated in push mode",
+         GST_DEBUG_PAD_NAME (pad));
+-    pad->ABI.abi.last_flowret = GST_FLOW_ERROR;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_ERROR);
+     GST_OBJECT_UNLOCK (pad);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+     return GST_FLOW_ERROR;
+@@ -4986,7 +4986,7 @@ events_error:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad,
+         "error pushing events, return %s", gst_flow_get_name (ret));
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     GST_OBJECT_UNLOCK (pad);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+     return ret;
+@@ -5010,14 +5010,14 @@ probe_stopped:
+         GST_DEBUG_OBJECT (pad, "an error occurred %s", gst_flow_get_name (ret));
+         break;
+     }
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     return ret;
+   }
+ not_linked:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad,
+         "pushing, but it was not linked");
+-    pad->ABI.abi.last_flowret = GST_FLOW_NOT_LINKED;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_NOT_LINKED);
+     GST_OBJECT_UNLOCK (pad);
+     gst_mini_object_unref (GST_MINI_OBJECT_CAST (data));
+     return GST_FLOW_NOT_LINKED;
+@@ -5158,7 +5158,7 @@ gst_pad_get_range_unchecked (GstPad * pad, guint64 offset, guint size,
+ probed_data:
+   PROBE_PULL (pad, GST_PAD_PROBE_TYPE_PULL | GST_PAD_PROBE_TYPE_BUFFER,
+       res_buf, offset, size, probe_stopped_unref);
+-  pad->ABI.abi.last_flowret = ret;
++  g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+   GST_OBJECT_UNLOCK (pad);
+ 
+   GST_PAD_STREAM_UNLOCK (pad);
+@@ -5176,14 +5176,14 @@ flushing:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad,
+         "getrange, but pad was flushing");
+-    pad->ABI.abi.last_flowret = GST_FLOW_FLUSHING;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_FLUSHING);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     return GST_FLOW_FLUSHING;
+   }
+ wrong_mode:
+   {
+-    pad->ABI.abi.last_flowret = GST_FLOW_ERROR;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_ERROR);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     g_critical ("getrange on pad %s:%s but it was not activated in pull mode",
+@@ -5193,7 +5193,7 @@ wrong_mode:
+ events_error:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad, "error pushing events");
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     return ret;
+@@ -5201,7 +5201,7 @@ events_error:
+ no_parent:
+   {
+     GST_DEBUG_OBJECT (pad, "no parent");
+-    pad->ABI.abi.last_flowret = GST_FLOW_FLUSHING;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_FLUSHING);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     return GST_FLOW_FLUSHING;
+@@ -5231,7 +5231,7 @@ probe_stopped:
+         ret = GST_FLOW_EOS;
+       }
+     }
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+ 
+@@ -5244,7 +5244,7 @@ probe_stopped_unref:
+     /* if we drop here, it signals EOS */
+     if (ret == GST_FLOW_PROBE_DROPPED)
+       ret = GST_FLOW_EOS;
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     if (*buffer == NULL)
+@@ -5253,7 +5253,7 @@ probe_stopped_unref:
+   }
+ get_range_failed:
+   {
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     GST_OBJECT_UNLOCK (pad);
+     GST_PAD_STREAM_UNLOCK (pad);
+     GST_CAT_LEVEL_LOG (GST_CAT_SCHEDULING,
+@@ -5399,7 +5399,7 @@ gst_pad_pull_range (GstPad * pad, guint64 offset, guint size,
+ 
+   GST_OBJECT_LOCK (pad);
+   pad->priv->using--;
+-  pad->ABI.abi.last_flowret = ret;
++  g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+   if (pad->priv->using == 0) {
+     /* pad is not active anymore, trigger idle callbacks */
+     PROBE_NO_DATA (pad, GST_PAD_PROBE_TYPE_PULL | GST_PAD_PROBE_TYPE_IDLE,
+@@ -5425,7 +5425,7 @@ flushing:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad,
+         "pullrange, but pad was flushing");
+-    pad->ABI.abi.last_flowret = GST_FLOW_FLUSHING;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_FLUSHING);
+     GST_OBJECT_UNLOCK (pad);
+     ret = GST_FLOW_FLUSHING;
+     goto done;
+@@ -5434,7 +5434,7 @@ wrong_mode:
+   {
+     g_critical ("pullrange on pad %s:%s but it was not activated in pull mode",
+         GST_DEBUG_PAD_NAME (pad));
+-    pad->ABI.abi.last_flowret = GST_FLOW_ERROR;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_ERROR);
+     GST_OBJECT_UNLOCK (pad);
+     ret = GST_FLOW_ERROR;
+     goto done;
+@@ -5456,7 +5456,7 @@ probe_stopped:
+         ret = GST_FLOW_EOS;
+       }
+     }
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     GST_OBJECT_UNLOCK (pad);
+     goto done;
+   }
+@@ -5464,14 +5464,14 @@ not_linked:
+   {
+     GST_CAT_LOG_OBJECT (GST_CAT_SCHEDULING, pad,
+         "pulling range, but it was not linked");
+-    pad->ABI.abi.last_flowret = GST_FLOW_NOT_LINKED;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_NOT_LINKED);
+     GST_OBJECT_UNLOCK (pad);
+     ret = GST_FLOW_NOT_LINKED;
+     goto done;
+   }
+ pull_range_failed:
+   {
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     GST_OBJECT_UNLOCK (pad);
+     GST_CAT_LEVEL_LOG (GST_CAT_SCHEDULING,
+         (ret >= GST_FLOW_EOS) ? GST_LEVEL_INFO : GST_LEVEL_WARNING,
+@@ -5487,7 +5487,7 @@ probe_stopped_unref:
+     if (ret == GST_FLOW_PROBE_DROPPED)
+       ret = GST_FLOW_EOS;
+ 
+-    pad->ABI.abi.last_flowret = ret;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, ret);
+     GST_OBJECT_UNLOCK (pad);
+ 
+     if (*buffer == NULL)
+@@ -5619,7 +5619,7 @@ store_sticky_event (GstPad * pad, GstEvent * event)
+   }
+   if (type == GST_EVENT_EOS) {
+     GST_OBJECT_FLAG_SET (pad, GST_PAD_FLAG_EOS);
+-    pad->ABI.abi.last_flowret = GST_FLOW_EOS;
++    g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_EOS);
+   }
+ 
+   return GST_PAD_IS_FLUSHING (pad) ? GST_FLOW_FLUSHING : GST_FLOW_OK;
+@@ -5733,7 +5733,7 @@ gst_pad_push_event_unchecked (GstPad * pad, GstEvent * event,
+       GST_LOG_OBJECT (pad, "Removing pending EOS and SEGMENT related events");
+       remove_flushed_events (pad);
+       GST_OBJECT_FLAG_UNSET (pad, GST_PAD_FLAG_EOS);
+-      pad->ABI.abi.last_flowret = GST_FLOW_OK;
++      g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_OK);
+ 
+       type |= GST_PAD_PROBE_TYPE_EVENT_FLUSH;
+       break;
+@@ -5751,8 +5751,7 @@ gst_pad_push_event_unchecked (GstPad * pad, GstEvent * event,
+         case GST_EVENT_RECONFIGURE:
+           if (GST_PAD_IS_SINK (pad))
+             GST_OBJECT_FLAG_SET (pad, GST_PAD_FLAG_NEED_RECONFIGURE);
+-          if (pad->ABI.abi.last_flowret == GST_FLOW_NOT_LINKED)
+-            pad->ABI.abi.last_flowret = GST_FLOW_OK;
++          g_atomic_int_compare_and_exchange ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_NOT_LINKED, GST_FLOW_OK);
+           break;
+         default:
+           break;
+@@ -6089,7 +6088,7 @@ gst_pad_send_event_unchecked (GstPad * pad, GstEvent * event,
+       GST_LOG_OBJECT (pad, "Removing pending EOS and SEGMENT related events");
+       remove_flushed_events (pad);
+       GST_OBJECT_FLAG_UNSET (pad, GST_PAD_FLAG_EOS);
+-      pad->ABI.abi.last_flowret = GST_FLOW_OK;
++      g_atomic_int_set ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_OK);
+ 
+       GST_OBJECT_UNLOCK (pad);
+       /* grab stream lock */
+@@ -6156,8 +6155,7 @@ gst_pad_send_event_unchecked (GstPad * pad, GstEvent * event,
+         case GST_EVENT_RECONFIGURE:
+           if (GST_PAD_IS_SRC (pad))
+             GST_OBJECT_FLAG_SET (pad, GST_PAD_FLAG_NEED_RECONFIGURE);
+-          if (pad->ABI.abi.last_flowret == GST_FLOW_NOT_LINKED)
+-            pad->ABI.abi.last_flowret = GST_FLOW_OK;
++          g_atomic_int_compare_and_exchange ((gint *) &pad->ABI.abi.last_flowret, GST_FLOW_NOT_LINKED, GST_FLOW_OK);
+           break;
+         default:
+           if (serialized) {

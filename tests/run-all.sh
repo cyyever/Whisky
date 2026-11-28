@@ -54,7 +54,7 @@ if [ -d "$PROJECT_DIR/vendor/proton-wine/build/include" ] && [ -x "$WINE" ]; the
     for f in "$PROJECT_DIR"/vendor/proton-wine/server/*.c; do
         base="$(basename "$f" .c)"
         "$SAN_CC" -arch arm64 -isysroot "$SDK" -O1 -g -fno-omit-frame-pointer \
-            -fsanitize=address,undefined -fno-sanitize=function -fno-sanitize-recover=undefined \
+            -fsanitize=address,undefined,local-bounds,float-divide-by-zero -fno-sanitize=function -fno-sanitize-recover=undefined \
             -c -o "$TMPDIR_SAN/ws-obj/${base}.o" "$f" \
             -I"$PROJECT_DIR/vendor/proton-wine/build/server" -I"$PROJECT_DIR/vendor/proton-wine/server" \
             -I"$PROJECT_DIR/vendor/proton-wine/build/include" -I"$PROJECT_DIR/vendor/proton-wine/include" \
@@ -63,11 +63,11 @@ if [ -d "$PROJECT_DIR/vendor/proton-wine/build/include" ] && [ -x "$WINE" ]; the
             -fvisibility=hidden -fno-strict-aliasing 2>/dev/null &
     done
     wait
-    "$SAN_CC" -arch arm64 -isysroot "$SDK" -fsanitize=address,undefined -fno-sanitize=function \
+    "$SAN_CC" -arch arm64 -isysroot "$SDK" -fsanitize=address,undefined,local-bounds,float-divide-by-zero -fno-sanitize=function \
         -o "$TMPDIR_SAN/wineserver-asan" "$TMPDIR_SAN/ws-obj"/*.o
     cat > "$TMPDIR_SAN/wineserver" <<EOF
 #!/bin/sh
-export ASAN_OPTIONS="detect_leaks=${LSAN_FLAG}:halt_on_error=1:exitcode=77:log_path=${TMPDIR_SAN}/wineserver-asan.log"
+export ASAN_OPTIONS="detect_leaks=${LSAN_FLAG}:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1:strict_init_order=1:halt_on_error=1:exitcode=77:log_path=${TMPDIR_SAN}/wineserver-asan.log"
 export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:log_path=${TMPDIR_SAN}/wineserver-ubsan.log"
 exec "${TMPDIR_SAN}/wineserver-asan" "\$@"
 EOF
@@ -299,6 +299,61 @@ if [ -n "$TMPDIR_SAN" ]; then
     }
     run_case "wineserver-asan-ubsan-lsan-audit" audit_wineserver_sanitizers
 
+    run_wineserver_tsan() {
+        local wine_src="$PROJECT_DIR/vendor/proton-wine"
+        local tsan_dir="$TMPDIR_SAN/tsan"
+        mkdir -p "$tsan_dir/ws-obj" "$tsan_dir/pfx"
+        for f in "$wine_src"/server/*.c; do
+            local base
+            base="$(basename "$f" .c)"
+            "$SAN_CC" -arch arm64 -isysroot "$SDK" -O1 -g -fno-omit-frame-pointer \
+                -fsanitize=thread \
+                -c -o "$tsan_dir/ws-obj/${base}.o" "$f" \
+                -I"$wine_src/build/server" -I"$wine_src/server" \
+                -I"$wine_src/build/include" -I"$wine_src/include" \
+                -D__WINESRC__ -DWINE_UNIX_LIB \
+                -DBINDIR="\"$WINE_PREFIX_BIN\"" -DDATADIR="\"$WINE_ROOT/share\"" \
+                -fvisibility=hidden -fno-strict-aliasing 2>/dev/null &
+        done
+        wait
+        "$SAN_CC" -arch arm64 -isysroot "$SDK" -fsanitize=thread \
+            -o "$tsan_dir/wineserver-tsan" "$tsan_dir/ws-obj"/*.o
+        cat > "$tsan_dir/wineserver" <<EOF
+#!/bin/sh
+export TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1:log_path=${tsan_dir}/wineserver-tsan.log"
+exec "${tsan_dir}/wineserver-tsan" "\$@"
+EOF
+        chmod +x "$tsan_dir/wineserver"
+        local rc=0
+        local tsan_pfx="$TMPDIR_PE/prefix"
+        if [ -z "$TMPDIR_PE" ] || [ ! -d "$tsan_pfx" ]; then
+            tsan_pfx="$tsan_dir/pfx"
+        fi
+        if [ -n "$TMPDIR_PE" ] && [ -x "$TMPDIR_PE/msync-mixed-wait.exe" ] && [ -x "$TMPDIR_PE/msync-multi-wait-stress.exe" ]; then
+            WINEPREFIX="$tsan_pfx" WINESERVER="$tsan_dir/wineserver" WINEMSYNC=1 WINEDEBUG=-all \
+                perl -e 'alarm 45; exec @ARGV' "$WINE" "$TMPDIR_PE/msync-mixed-wait.exe" || rc=$?
+            if [ "$rc" -eq 0 ]; then
+                WINEPREFIX="$tsan_pfx" WINESERVER="$tsan_dir/wineserver" WINEMSYNC=1 WINEDEBUG=-all \
+                    perl -e 'alarm 45; exec @ARGV' "$WINE" "$TMPDIR_PE/msync-multi-wait-stress.exe" || rc=$?
+            fi
+        fi
+        WINEPREFIX="$tsan_pfx" "$tsan_dir/wineserver" -k >/dev/null 2>&1 || true
+        WINEPREFIX="$tsan_pfx" "$tsan_dir/wineserver" -w >/dev/null 2>&1 || true
+        for f in "$tsan_dir"/wineserver-tsan.log*; do
+            [ -f "$f" ] || continue
+            if grep -q 'WARNING: ThreadSanitizer:' "$f"; then
+                echo "FAIL: ThreadSanitizer reported data race(s) in wineserver ($f):"
+                cat "$f"
+                rc=1
+            fi
+        done
+        if [ "$rc" -eq 0 ]; then
+            echo "PASS: wineserver TSan clean (0 data races across msync mixed-wait + multi-wait stress)"
+        fi
+        return "$rc"
+    }
+    run_case "wineserver-tsan-msync" run_wineserver_tsan
+
     check_patched_modules_ubsan() {
         local wine_src="$PROJECT_DIR/vendor/proton-wine"
         if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
@@ -313,12 +368,14 @@ if [ -n "$TMPDIR_SAN" ]; then
                 -I"$wine_src/build/include" -I"$wine_src/include" -I"$wine_src/include/msvcrt" \
                 -D_MSVCR_VER=0 -D__WINESRC__ -D__WINE_PE_BUILD
         fi
-        clang -arch x86_64 -O1 -g -fsanitize=undefined -fsanitize-trap=undefined \
+        clang -arch x86_64 -O1 -g -fsanitize=undefined,nullability,local-bounds,float-divide-by-zero \
+            -fsanitize-trap=undefined,nullability,local-bounds,float-divide-by-zero \
             -c -o "$TMPDIR_SAN/socket.o" "$wine_src/dlls/ntdll/unix/socket.c" \
             -I"$wine_src/build/dlls/ntdll" -I"$wine_src/dlls/ntdll" \
             -I"$wine_src/build/include" -I"$wine_src/include" \
             -D__WINESRC__ -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI= -DWINE_UNIX_LIB
-        clang -arch x86_64 -O1 -g -fsanitize=undefined -fsanitize-trap=undefined \
+        clang -arch x86_64 -O1 -g -fsanitize=undefined,nullability,local-bounds,float-divide-by-zero \
+            -fsanitize-trap=undefined,nullability,local-bounds,float-divide-by-zero \
             -c -o "$TMPDIR_SAN/cocoa_window.o" "$wine_src/dlls/winemac.drv/cocoa_window.m" \
             -I"$wine_src/build/dlls/winemac.drv" -I"$wine_src/dlls/winemac.drv" \
             -I"$wine_src/build/include" -I"$wine_src/include" \
