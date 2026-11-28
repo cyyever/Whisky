@@ -95,6 +95,37 @@ static int show_control_window(double seconds)
     return 0;
 }
 
+static int query_windowserver_title(const char *want_title, double min_w, double min_h)
+{
+    CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+    int matches = 0;
+
+    for (NSDictionary *win in (__bridge NSArray *)list)
+    {
+        NSDictionary *bounds = win[(id)kCGWindowBounds];
+        double w = [bounds[@"Width"] doubleValue];
+        double h = [bounds[@"Height"] doubleValue];
+        int onscreen = [win[(id)kCGWindowIsOnscreen] intValue];
+        NSString *owner = win[(id)kCGWindowOwnerName] ?: @"";
+        NSString *name = win[(id)kCGWindowName] ?: @"";
+
+        if (!onscreen || w < min_w || h < min_h) continue;
+        if (strcmp(name.UTF8String, want_title) != 0) continue;
+
+        printf("  owner='%s' title='%s' size=%.0fx%.0f at (%.0f,%.0f) onscreen=%d alpha=%.2f layer=%d\n",
+               owner.UTF8String, name.UTF8String, w, h,
+               [bounds[@"X"] doubleValue], [bounds[@"Y"] doubleValue],
+               onscreen,
+               [win[(id)kCGWindowAlpha] doubleValue],
+               [win[(id)kCGWindowLayer] intValue]);
+        matches++;
+    }
+    CFRelease(list);
+
+    if (!matches) printf("  (no onscreen '%s' >= %.0fx%.0f window known to WindowServer)\n", want_title, min_w, min_h);
+    return matches ? 0 : 1;
+}
+
 int main(int argc, const char **argv)
 {
     @autoreleasepool
@@ -105,7 +136,10 @@ int main(int argc, const char **argv)
         if (argc >= 4 && !strcmp(argv[1], "query"))
             return query_windowserver(atof(argv[2]), atof(argv[3]));
 
-        fprintf(stderr, "usage: %s control <seconds> | query <width> <height>\n", argv[0]);
+        if (argc >= 5 && !strcmp(argv[1], "query-title"))
+            return query_windowserver_title(argv[2], atof(argv[3]), atof(argv[4]));
+
+        fprintf(stderr, "usage: %s control <seconds> | query <w> <h> | query-title <title> <min_w> <min_h>\n", argv[0]);
         return 2;
     }
 }

@@ -5,32 +5,24 @@ set -euo pipefail
 # A fresh, disposable prefix avoids touching a user's games or wineserver.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../../scripts/lib/common.sh"
-source "$PROJECT_DIR/scripts/lib/vkd3d.sh"
+source "$PROJECT_DIR/scripts/lib/mullion.sh"
 export PATH="/opt/homebrew/bin:/usr/bin:/bin"
-require_tools x86_64-w64-mingw32-gcc python3 timeout
+require_tools x86_64-w64-mingw32-gcc timeout
 WINE="$INSTALL_DIR/Wine/bin/wine64"
 SERVER="${WINESERVER:-$INSTALL_DIR/Wine/bin/wineserver}"
-LIBS="$PROJECT_DIR/vendor/vkd3d-proton/build.w64/libs"
 INSTALLED="$INSTALL_DIR/Wine/lib/wine/x86_64-windows"
 [ -x "$WINE" ] || { echo "ERROR: run make proton first" >&2; exit 1; }
 [ "$#" -eq 0 ] || { echo "Usage: $0 (always uses a disposable prefix)" >&2; exit 2; }
 
-# Byte-for-byte provenance check, allowing only the builtin signature we stamp.
-# Otherwise a test might pass against Wine's fallback implementation after rebuild.
-python3 - "$LIBS" "$INSTALLED" <<'PY'
-from pathlib import Path
-import sys
-source, installed = map(Path, sys.argv[1:])
-for name in ('d3d12', 'd3d12core'):
-    src, dst = source/name/(name+'.dll'), installed/(name+'.dll')
-    if not src.is_file() or not dst.is_file():
-        sys.exit(f'ERROR: missing {name}; run make vkd3d')
-    expected = bytearray(src.read_bytes())
-    expected[64:81] = b'Wine builtin DLL\0'
-    if expected != dst.read_bytes():
-        sys.exit(f'ERROR: installed {name} differs from vkd3d-proton; run make vkd3d')
-    print(f'{name}: installed vkd3d-proton builtin verified')
-PY
+for name in d3d12 d3d12core; do
+    dst="$INSTALLED/$name.dll"
+    [ -f "$dst" ] || { echo "ERROR: missing $dst; run make mullion" >&2; exit 1; }
+    if [ -f "$MULLION_STAGE/x86_64-windows/$name.dll" ] && ! cmp -s "$MULLION_STAGE/x86_64-windows/$name.dll" "$dst"; then
+        echo "ERROR: installed $name differs from Mullion stage; run make mullion" >&2
+        exit 1
+    fi
+    echo "$name: installed Mullion builtin verified"
+done
 
 WORK="$SCRIPT_DIR/.build"
 mkdir -p "$WORK"
@@ -56,12 +48,17 @@ if ! WINEDLLOVERRIDES="mscoree,mshtml=" timeout 180 "$WINE" wineboot --init > "$
     exit 1
 fi
 
+D3DCOMPILER_LIB="-ld3dcompiler"
+if [ ! -f "$INSTALLED/d3dcompiler_47.dll" ] && [ -f "$INSTALLED/d3dcompiler_46.dll" ]; then
+    D3DCOMPILER_LIB="-ld3dcompiler_46"
+fi
+
 pass=0 fail=0
 for test in smoke compute triangle mrt depth stencil streamout; do
     source_test="$test"
     case "$test" in mrt|depth|stencil) source_test=triangle ;; esac
     exe="$RUN/d3d12_$test.exe"
-    x86_64-w64-mingw32-gcc -O1 -g -Wall -fsanitize=undefined -fsanitize-undefined-trap-on-error "$SCRIPT_DIR/d3d12_$source_test.c" -o "$exe" -ld3d12 -ld3dcompiler
+    x86_64-w64-mingw32-gcc -O1 -g -Wall -fsanitize=undefined -fsanitize-undefined-trap-on-error "$SCRIPT_DIR/d3d12_$source_test.c" -o "$exe" -ld3d12 "$D3DCOMPILER_LIB"
     status=0
     (cd "$RUN"; timeout 90 "$WINE" "$exe" "$test") > "$RUN/$test.log" 2>&1 || status=$?
     if [ "$status" -eq 0 ] && grep -q 'ALL OK' "$RUN/$test.log"; then

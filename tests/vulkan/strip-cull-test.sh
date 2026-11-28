@@ -50,9 +50,31 @@ needs_build=0
 for hdr in "$PROJECT_DIR"/tests/vulkan/quad*.h; do
     [ -e "$hdr" ] && [ "$hdr" -nt "$EXE" ] && needs_build=1
 done
+if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then
+    CC="/opt/homebrew/opt/llvm/bin/clang"
+    SAN_FLAGS=(-g -fno-omit-frame-pointer -fsanitize=address,undefined,nullability,local-bounds,float-divide-by-zero)
+else
+    CC=clang
+    SAN_FLAGS=(-g -fno-omit-frame-pointer -fsanitize=address,undefined)
+fi
+
 if [ "$needs_build" = 1 ]; then
-    clang -arch x86_64 -O1 -I"$VKH" -I"$PROJECT_DIR/tests/vulkan" -o "$EXE" "$SRC" \
+    "$CC" -arch x86_64 -O1 "${SAN_FLAGS[@]}" -I"$VKH" -I"$PROJECT_DIR/tests/vulkan" -o "$EXE" "$SRC" \
         -L"$VKL" -lvulkan -Wl,-rpath,"$VKL" || exit 1
 fi
 
+VVL_DIR="$PROJECT_DIR/vendor/vulkan-validation"
+VVL_ENV=()
+if [ -f "$VVL_DIR/VkLayer_khronos_validation.json" ]; then
+    VVL_ENV=(VK_LAYER_PATH="$VVL_DIR" VK_INSTANCE_LAYERS="VK_LAYER_KHRONOS_validation")
+fi
+
+# Note: MTL_SHADER_VALIDATION=1 (Metal GPU Validation) is omitted here because
+# Apple's MetalTools MTL4GPUDebugCommandBuffer crashes with SEGV inside
+# HeapUsageTable::updateHeapUsage on KosmicKrisp's Metal 4 backend.
+ASAN_OPTIONS="detect_leaks=0:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1:strict_init_order=1:halt_on_error=1" \
+UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" \
+METAL_DEVICE_WRAPPER_TYPE=1 \
+MTL_DEBUG_LAYER=1 \
+"${VVL_ENV[@]}" \
 VK_DRIVER_FILES="$ICD" arch -x86_64 "$EXE"

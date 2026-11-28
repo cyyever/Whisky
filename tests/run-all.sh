@@ -121,7 +121,7 @@ if [ -x "$WINE" ]; then
     run_case "loadorder-builtins"            bash "$PROJECT_DIR/tests/loadorder/run.sh"
     run_case "audio-coreaudio-vol-route-ev"  bash "$PROJECT_DIR/tests/audio/coreaudio-volume-and-routing-test.sh"
     run_case "audio-name-growth"             bash "$PROJECT_DIR/tests/audio/audio-name-growth-test.sh"
-    if [ -f "$PROJECT_DIR/scripts/lib/vkd3d.sh" ]; then
+    if [ -f "$PROJECT_DIR/scripts/lib/mullion.sh" ]; then
         run_case "d3d12-builtins"            bash "$PROJECT_DIR/tests/d3d12/run.sh"
     fi
 

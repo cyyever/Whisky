@@ -37,11 +37,10 @@ WIDTH=640; HEIGHT=480
 # The native half must be x86_64: it has to be able to see what a Wine process
 # (x86_64 under Rosetta) puts on screen, and to be a like-for-like control.
 echo "=== building ==="
-clang -arch x86_64 -fobjc-arc -framework Cocoa \
+clang -arch x86_64 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fobjc-arc -framework Cocoa \
       -o "$NATIVE" "$TESTS/window-visibility-native.m" || exit 2
-[ -f "$WINE_EXE" ] || \
-    x86_64-w64-mingw32-gcc -O2 -o "$WINE_EXE" "$TESTS/win-toplevel-visible-test.c" \
-        -mconsole -lgdi32 -luser32 || exit 2
+x86_64-w64-mingw32-gcc -O1 -g -fsanitize=undefined -fsanitize-undefined-trap-on-error -o "$WINE_EXE" \
+    "$TESTS/win-toplevel-visible-test.c" -mconsole -lgdi32 -luser32 || exit 2
 
 cleanup() {
     pkill -f window-visibility-native 2>/dev/null
@@ -57,8 +56,8 @@ echo "=== control: plain x86_64 Cocoa process ==="
 read -r _ WIDTH HEIGHT < <(grep '^QUERYSIZE' /tmp/wvr-control.log)
 : "${WIDTH:=640}" "${HEIGHT:=512}"
 cat /tmp/wvr-control.log | grep -v QUERYSIZE
-echo "WindowServer sees (querying ${WIDTH}x${HEIGHT}):"
-"$NATIVE" query "$WIDTH" "$HEIGHT"
+echo "WindowServer sees (querying 'native control window' >= 600x440):"
+"$NATIVE" query-title "native control window" 600 440
 control_ok=$?
 pkill -f window-visibility-native 2>/dev/null
 sleep 1
@@ -71,11 +70,17 @@ echo "=== wine: win-toplevel-visible-test.exe ==="
 WINEPREFIX="$BOTTLE" "$WINESERVER" -k9 2>/dev/null; sleep 2
 pkill -9 -f wineserver 2>/dev/null; sleep 1
 
-WINEPREFIX="$BOTTLE" WINEMSYNC=0 WIN_TEST_HOLD=1 "$WINE" "$WINE_EXE" 2>&1 \
-    | grep -E "^\[A\]" &
-sleep 8
-echo "WindowServer sees (querying ${WIDTH}x${HEIGHT}):"
-"$NATIVE" query "$WIDTH" "$HEIGHT"
+WINE_LOG=/tmp/wvr-wine.log
+rm -f "$WINE_LOG"
+WINEPREFIX="$BOTTLE" WINEMSYNC=0 WIN_TEST_HOLD=1 "$WINE" "$WINE_EXE" >"$WINE_LOG" 2>&1 &
+for _ in $(seq 1 60); do
+    grep -q '^\[A\]' "$WINE_LOG" 2>/dev/null && break
+    sleep 0.5
+done
+grep -E '^\[A\]' "$WINE_LOG" || true
+sleep 1
+echo "WindowServer sees (querying 'A: plain toplevel' >= 600x440):"
+"$NATIVE" query-title "A: plain toplevel" 600 440
 wine_ok=$?
 
 # --- verdict ----------------------------------------------------------------
