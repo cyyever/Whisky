@@ -62,7 +62,7 @@ run_cpp_test() {
 run_cpp_test "colorspace"          1 ",float-divide-by-zero" "$MULLION/tests/host/colorspace.cpp"
 run_cpp_test "window_placement"    1 ",float-divide-by-zero" "$MULLION/tests/host/window_placement.cpp"
 run_cpp_test "geometry_budget"     1 ",float-divide-by-zero" "$MULLION/tests/host/geometry_budget.cpp"
-run_cpp_test "format"              0 ",float-divide-by-zero" "$MULLION/tests/host/format.cpp" "$MULLION/src/util/util_string.cpp"
+run_cpp_test "format"              1 ",float-divide-by-zero" "$MULLION/tests/host/format.cpp" "$MULLION/src/util/util_string.cpp"
 run_cpp_test "rc_self_move"        1 ",float-divide-by-zero" "$MULLION/tests/host/rc.cpp"
 run_cpp_test "metal_reference"     0 ",float-divide-by-zero" "$MULLION/tests/host/metal_reference.cpp"
 run_cpp_test "packed_variant_list" 1 ",float-divide-by-zero" "$MULLION/tests/host/packed_variant_list.cpp"
