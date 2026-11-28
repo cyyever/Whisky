@@ -191,11 +191,14 @@ bottle_shellenv() {
     printf 'export PATH=%q\n' "$wine_dir/bin:$PATH"
     printf 'export WINEPREFIX=%q\n' "$bottle_dir"
     printf 'export DYLD_FALLBACK_LIBRARY_PATH=%q\n' "$wine_dir/lib"
+    # msync defaults ON in Whisky (Wine.swift no longer writes enhancedSync).
+    # Only disable if Metadata.plist explicitly selects a non-msync mode, and
+    # always let an explicit WINEMSYNC override take precedence.
     if plutil -p "$bottle_dir/Metadata.plist" 2>/dev/null |
-            grep -A2 '"enhancedSync"' | grep -q '"msync"'; then
-        printf 'export WINEMSYNC=${WINEMSYNC:-1}\n'
-    else
+            grep -A2 '"enhancedSync"' | grep -q '"none"'; then
         printf 'export WINEMSYNC=${WINEMSYNC:-0}\n'
+    else
+        printf 'export WINEMSYNC=${WINEMSYNC:-1}\n'
     fi
 }
 

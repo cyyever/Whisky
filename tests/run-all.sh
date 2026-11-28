@@ -147,18 +147,22 @@ if [ -x "$WINE" ]; then
 
         run_case "msync-mixed-wait" \
             run_pe "msync-mixed-wait" "tests/msync-mixed-wait-test.c" "" "WINEMSYNC=1"
+        run_case "msync-driver-input" \
+            run_pe "msync-driver-input" "tests/msync-driver-input-test.c" "-luser32 -ladvapi32 -lntdll" "WINEMSYNC=1"
 
         run_msync_multi_wait_stress() {
             local exe="$TMPDIR_PE/msync-multi-wait-stress.exe"
             local port_prefix="$TMPDIR_PE/prefix-msync-ports"
-            mkdir -p "$port_prefix"
+            local srv_prefix="$TMPDIR_PE/prefix-msync-srv"
+            mkdir -p "$port_prefix" "$srv_prefix"
             x86_64-w64-mingw32-gcc "${PE_OPT_FLAGS[@]}" -o "$exe" "$PROJECT_DIR/tests/msync-multi-wait-stress-test.c"
-            # 1) Default WINEMSYNC=1 (native msync manual-reset events)
+            # 1) Default WINEMSYNC=1 (inproc_sync msync backend)
             WINEPREFIX="$TMPDIR_PE/prefix" WINEMSYNC=1 WINEDEBUG=-all \
                 perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe"
-            # 2) Diagnostic mixed-wait path (WINEMSYNC_NO_MANUALEVENT=1)
-            WINEPREFIX="$TMPDIR_PE/prefix" WINEMSYNC=1 WINEMSYNC_NO_MANUALEVENT=1 WINEDEBUG=-all \
+            # 2) Server-side baseline (WINEMSYNC=0) in its own prefix
+            WINEPREFIX="$srv_prefix" WINEMSYNC=0 WINEDEBUG=-all \
                 perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe"
+            WINEPREFIX="$srv_prefix" "$WS" -k >/dev/null 2>&1 || true
             # 3) wineserver Mach port send-right leak check across 20 churn runs
             WINEPREFIX="$port_prefix" WINEMSYNC=1 WINEDEBUG=-all "$WS" -p=30
             WINEPREFIX="$port_prefix" WINEMSYNC=1 WINEDEBUG=-all "$WINE" "$exe" --port-churn >/dev/null
@@ -353,6 +357,10 @@ EOF
             if [ "$rc" -eq 0 ]; then
                 WINEPREFIX="$tsan_pfx" WINESERVER="$tsan_dir/wineserver" WINEMSYNC=1 WINEDEBUG=-all \
                     perl -e 'alarm 45; exec @ARGV' "$WINE" "$TMPDIR_PE/msync-multi-wait-stress.exe" || rc=$?
+            fi
+            if [ "$rc" -eq 0 ] && [ -x "$TMPDIR_PE/msync-driver-input.exe" ]; then
+                WINEPREFIX="$tsan_pfx" WINESERVER="$tsan_dir/wineserver" WINEMSYNC=1 WINEDEBUG=-all \
+                    perl -e 'alarm 45; exec @ARGV' "$WINE" "$TMPDIR_PE/msync-driver-input.exe" || rc=$?
             fi
         fi
         WINEPREFIX="$tsan_pfx" "$tsan_dir/wineserver" -k >/dev/null 2>&1 || true

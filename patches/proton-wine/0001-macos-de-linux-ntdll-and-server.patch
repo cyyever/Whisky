@@ -5,7 +5,7 @@ and make set_thread_teb a no-op on Apple (the dispatcher manages %gs/pthread TSD
 writing the raw TEB clobbers it -> SIGBUS).
 
 diff --git a/dlls/ntdll/unix/fsync.c b/dlls/ntdll/unix/fsync.c
-index 25d41ca..97968eb 100644
+index 25d41cac..97968ebc 100644
 --- a/dlls/ntdll/unix/fsync.c
 +++ b/dlls/ntdll/unix/fsync.c
 @@ -61,6 +61,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(fsync);
@@ -41,8 +41,42 @@ index 25d41ca..97968eb 100644
 +                                BOOLEAN alertable, const LARGE_INTEGER *timeout ) { return STATUS_NOT_IMPLEMENTED; }
 +
 +#endif  /* __linux__ */
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 2cc53c36..2361c0df 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -38,7 +38,9 @@
+ #include <sys/mman.h>
+ #include <sys/wait.h>
+ #include <unistd.h>
++#ifdef __linux__
+ #include <malloc.h>
++#endif
+ #include <dlfcn.h>
+ #ifdef HAVE_PWD_H
+ # include <pwd.h>
+@@ -2421,7 +2423,9 @@ static void start_main_thread(void)
+     set_thread_teb( teb );
+ #endif
+ 
++#ifdef __linux__
+     mallopt( M_PERTURB, 0xff );
++#endif
+     init_startup_info();
+     *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
+     set_load_order_app_name( main_wargv[0] );
+@@ -2430,7 +2434,9 @@ static void start_main_thread(void)
+     load_ntdll();
+     load_wow64_ntdll( main_image_info.Machine );
+     load_apiset_dll();
++#ifdef __linux__
+     mallopt( M_PERTURB, 0 );
++#endif
+     server_init_process_done();
+ }
+ 
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
-index de05faa..52b8765 100644
+index de05faaf..52b87652 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
 @@ -3098,7 +3098,17 @@ void signal_init_process(void)
@@ -64,7 +98,7 @@ index de05faa..52b8765 100644
  
  /***********************************************************************
 diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
-index f1af6b5..6599988 100644
+index f1af6b5e..65999886 100644
 --- a/dlls/ntdll/unix/system.c
 +++ b/dlls/ntdll/unix/system.c
 @@ -1284,6 +1284,11 @@ static BOOL logical_proc_info_add_group( DWORD num_cpus, ULONG_PTR mask )
@@ -80,7 +114,7 @@ index f1af6b5..6599988 100644
  
  /* Helper function for counting bitmap values as commonly used by the Linux kernel
 diff --git a/server/fsync.c b/server/fsync.c
-index 7d3ec64..ce4370f 100644
+index 7d3ec646..ce4370fd 100644
 --- a/server/fsync.c
 +++ b/server/fsync.c
 @@ -310,7 +310,11 @@ int fsync_grab_shm_idx( unsigned int shm_idx )

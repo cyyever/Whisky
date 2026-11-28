@@ -118,7 +118,7 @@ while IFS='|' read -r what file pattern; do
 done <<'CONTRACTS'
 WINE_DISABLE_IPV6|dlls/ws2_32/unixlib.c|no_v6\[0\] != '0'
 WINE_NX_COMPAT|dlls/ntdll/loader.c|if \(!nx_status && nx_value\.Length
-WINEMSYNC_NO_MANUALEVENT|dlls/ntdll/unix/msync_shm.c|gates\[i\]\.dflt
+WINEMSYNC|server/msync.c|cached = env \? atoi\( env \) : 1
 PROTON_DISABLE_LSTEAMCLIENT|dlls/ntdll/loader.c|use = get_env\( L"PROTON_DISABLE_LSTEAMCLIENT"
 SDL_JOYSTICK_MFI|dlls/winebus.sys/bus_sdl.c|SDL_HINT_JOYSTICK_MFI
 CONTRACTS

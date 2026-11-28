@@ -17,7 +17,7 @@ Subject: macos: mach_wait_until NtDelayExecution, avrt MMCSS, LatencyCritical, b
    WHISKY_SCHED_DEBUG=1 diagnostic logging for Mach QoS/sleep/AppNap state.
 
 diff --git a/dlls/avrt/main.c b/dlls/avrt/main.c
-index 68af35c..fd4b0ba 100644
+index 68af35c8..98f1a3ba 100644
 --- a/dlls/avrt/main.c
 +++ b/dlls/avrt/main.c
 @@ -18,6 +18,8 @@
@@ -29,7 +29,7 @@ index 68af35c..fd4b0ba 100644
  
  #include "windef.h"
  #include "winbase.h"
-@@ -54,9 +56,47 @@ HANDLE WINAPI AvSetMmThreadCharacteristicsA(const char *name, DWORD *index)
+@@ -54,9 +56,51 @@ HANDLE WINAPI AvSetMmThreadCharacteristicsA(const char *name, DWORD *index)
      return ret;
  }
  
@@ -54,9 +54,13 @@ index 68af35c..fd4b0ba 100644
 +
 +static int avrt_task_base_priority(const WCHAR *name)
 +{
-+    if (!_wcsicmp(name, L"Pro Audio") || !_wcsicmp(name, L"Audio") || !_wcsicmp(name, L"Games"))
-+        return THREAD_PRIORITY_TIME_CRITICAL;
-+    if (!_wcsicmp(name, L"Playback") || !_wcsicmp(name, L"Capture") || !_wcsicmp(name, L"DisplayPostProcessing"))
++    /* Map MMCSS audio/games tasks to THREAD_PRIORITY_HIGHEST (macOS
++     * USER_INTERACTIVE + TIER_0 QoS with timeshare=1) rather than
++     * THREAD_PRIORITY_TIME_CRITICAL (fixed non-timeshare priority), which
++     * risks priority inversion / starving normal threads on non-PI futexes
++     * when a game runs heavy CPU DSP work on an audio thread. */
++    if (!_wcsicmp(name, L"Pro Audio") || !_wcsicmp(name, L"Audio") || !_wcsicmp(name, L"Games") ||
++        !_wcsicmp(name, L"Playback") || !_wcsicmp(name, L"Capture") || !_wcsicmp(name, L"DisplayPostProcessing"))
 +        return THREAD_PRIORITY_HIGHEST;
 +    return THREAD_PRIORITY_ABOVE_NORMAL;
 +}
@@ -78,7 +82,7 @@ index 68af35c..fd4b0ba 100644
  
      if (!name)
      {
-@@ -70,7 +110,23 @@ HANDLE WINAPI AvSetMmThreadCharacteristicsW(const WCHAR *name, DWORD *index)
+@@ -70,7 +114,23 @@ HANDLE WINAPI AvSetMmThreadCharacteristicsW(const WCHAR *name, DWORD *index)
          return NULL;
      }
  
@@ -103,7 +107,7 @@ index 68af35c..fd4b0ba 100644
  }
  
  BOOL WINAPI AvQuerySystemResponsiveness(HANDLE AvrtHandle, ULONG *value)
-@@ -81,14 +137,72 @@ BOOL WINAPI AvQuerySystemResponsiveness(HANDLE AvrtHandle, ULONG *value)
+@@ -81,14 +141,72 @@ BOOL WINAPI AvQuerySystemResponsiveness(HANDLE AvrtHandle, ULONG *value)
  
  BOOL WINAPI AvRevertMmThreadCharacteristics(HANDLE AvrtHandle)
  {
@@ -165,7 +169,7 @@ index 68af35c..fd4b0ba 100644
 +
 +    switch (prio)
 +    {
-+    case AVRT_PRIORITY_CRITICAL: win_prio = THREAD_PRIORITY_TIME_CRITICAL; break;
++    case AVRT_PRIORITY_CRITICAL: win_prio = THREAD_PRIORITY_HIGHEST; break;
 +    case AVRT_PRIORITY_HIGH:     win_prio = THREAD_PRIORITY_HIGHEST; break;
 +    case AVRT_PRIORITY_NORMAL:   win_prio = THREAD_PRIORITY_ABOVE_NORMAL; break;
 +    case AVRT_PRIORITY_LOW:      win_prio = THREAD_PRIORITY_NORMAL; break;
@@ -180,10 +184,10 @@ index 68af35c..fd4b0ba 100644
  
  HANDLE WINAPI AvSetMmMaxThreadCharacteristicsA(const char *task1, const char *task2, DWORD *index)
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index d369e3b..c24e75e 100644
+index 3814aabf..fe50b45c 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
-@@ -2657,16 +2657,79 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+@@ -2505,7 +2505,67 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
          LARGE_INTEGER now;
          timeout_t when, diff;
  
@@ -252,10 +256,7 @@ index d369e3b..c24e75e 100644
          {
              NtQuerySystemTime( &now );
              when = now.QuadPart - when;
-         }
- 
-         /* Note that we yield after establishing the desired timeout, but
-            we only care about the result of the yield for zero timeouts */
+@@ -2516,6 +2576,9 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
          status = NtYieldExecution();
          if (!when) return status;
  
@@ -266,7 +267,7 @@ index d369e3b..c24e75e 100644
          {
              struct timeval tv;
 diff --git a/dlls/winemac.drv/cocoa_app.m b/dlls/winemac.drv/cocoa_app.m
-index 13c8b09..8552509 100644
+index 13c8b099..181a3af7 100644
 --- a/dlls/winemac.drv/cocoa_app.m
 +++ b/dlls/winemac.drv/cocoa_app.m
 @@ -268,7 +268,14 @@ - (void) transformProcessToForeground:(BOOL)activateIfTransformed
@@ -285,35 +286,11 @@ index 13c8b09..8552509 100644
                                                                  reason:@"Running Windows program"] retain]; // intentional leak
              }
  
-diff --git a/server/thread.c b/server/thread.c
-index 2e94c8a..8031c92 100644
---- a/server/thread.c
-+++ b/server/thread.c
-@@ -386,6 +386,19 @@ static void apply_thread_priority( struct thread *thread )
-                            THREAD_TIME_CONSTRAINT_POLICY_COUNT );
-     }
-     mach_port_deallocate( mach_task_self(), thread_port );
-+    {
-+        static int sched_dbg = -1;
-+        if (sched_dbg == -1)
-+        {
-+            const char *e = getenv( "WHISKY_SCHED_DEBUG" );
-+            sched_dbg = (e && atoi( e )) ? 1 : 0;
-+        }
-+        if (sched_dbg)
-+            fprintf( stderr, "[whisky-sched-srv] tid=%04x unix_pid=%d unix_tid=%d base=%d prio=%d eff=%d tqos=%d lqos=%d imp=%d ts=%d\n",
-+                     thread->id, thread->unix_pid, thread->unix_tid, thread->base_priority, thread->priority,
-+                     effective_priority, throughput_qos, latency_qos, thread_precedence_policy.importance,
-+                     thread_extended_policy.timeshare );
-+    }
- }
- 
- #else
 diff --git a/server/fd.c b/server/fd.c
-index 69d7bcb..301e5df 100644
+index aa71e6df..47455991 100644
 --- a/server/fd.c
 +++ b/server/fd.c
-@@ -650,47 +650,79 @@ static inline void main_loop_epoll(void)
+@@ -644,47 +644,79 @@ static inline void main_loop_epoll(void)
  #elif defined(HAVE_KQUEUE)
  
  static int kqueue_fd = -1;
@@ -415,7 +392,7 @@ index 69d7bcb..301e5df 100644
      }
  }
  
-@@ -702,6 +734,8 @@ static inline void remove_epoll_user( struct fd *fd, int user )
+@@ -696,6 +728,8 @@ static inline void remove_epoll_user( struct fd *fd, int user )
      {
          struct kevent ev[2];
  
@@ -424,7 +401,7 @@ index 69d7bcb..301e5df 100644
          EV_SET( &ev[0], fd->unix_fd, EVFILT_READ, EV_DELETE, 0, 0, 0 );
          EV_SET( &ev[1], fd->unix_fd, EVFILT_WRITE, EV_DELETE, 0, 0, 0 );
          kevent( kqueue_fd, ev, 2, NULL, 0, NULL );
-@@ -718,12 +752,17 @@ static inline void main_loop_epoll(void)
+@@ -712,34 +746,57 @@ static inline void main_loop_epoll(void)
  
      while (active_users)
      {
@@ -443,25 +420,71 @@ index 69d7bcb..301e5df 100644
  
          set_current_time();
  
-@@ -731,11 +770,13 @@ static inline void main_loop_epoll(void)
+         /* put the events into the pollfd array first, like poll does */
          for (i = 0; i < ret; i++)
          {
-             long user = (long)events[i].udata;
-+            if ((events[i].flags & EV_ERROR) && (events[i].data == ENOENT || events[i].data == EBADF)) continue;
+-            long user = (long)events[i].udata;
++            long user;
++            if (events[i].flags & EV_ERROR)
++            {
++                if (events[i].data == ENOMEM)
++                {
++                    close( kqueue_fd );
++                    kqueue_fd = -1;
++                    break;
++                }
++                if (events[i].data != ENOENT && events[i].data != EBADF)
++                    fprintf( stderr, "wineserver: kevent changelist error %ld on fd %lu\n",
++                             (long)events[i].data, (unsigned long)events[i].ident );
++                continue;
++            }
++            user = (long)events[i].udata;
              pollfd[user].revents = 0;
          }
++        if (kqueue_fd == -1) break;
          for (i = 0; i < ret; i++)
          {
-             long user = (long)events[i].udata;
-+            if ((events[i].flags & EV_ERROR) && (events[i].data == ENOENT || events[i].data == EBADF)) continue;
+-            long user = (long)events[i].udata;
++            long user;
++            if (events[i].flags & EV_ERROR) continue;
++            user = (long)events[i].udata;
              if (events[i].filter == EVFILT_READ) pollfd[user].revents |= POLLIN;
              else if (events[i].filter == EVFILT_WRITE) pollfd[user].revents |= POLLOUT;
              if (events[i].flags & EV_EOF) pollfd[user].revents |= POLLHUP;
-@@ -746,6 +787,7 @@ static inline void main_loop_epoll(void)
+-            if (events[i].flags & EV_ERROR) pollfd[user].revents |= POLLERR;
+         }
+ 
+         /* read events from the pollfd array, as set_fd_events may modify them */
          for (i = 0; i < ret; i++)
          {
-             long user = (long)events[i].udata;
-+            if ((events[i].flags & EV_ERROR) && (events[i].data == ENOENT || events[i].data == EBADF)) continue;
+-            long user = (long)events[i].udata;
++            long user;
++            if (events[i].flags & EV_ERROR) continue;
++            user = (long)events[i].udata;
              if (pollfd[user].revents) fd_poll_event( poll_users[user], pollfd[user].revents );
              pollfd[user].revents = 0;
          }
+diff --git a/server/thread.c b/server/thread.c
+index 157b77d1..71f10e3b 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -382,6 +382,19 @@ static void apply_thread_priority( struct thread *thread )
+                            THREAD_TIME_CONSTRAINT_POLICY_COUNT );
+     }
+     mach_port_deallocate( mach_task_self(), thread_port );
++    {
++        static int sched_dbg = -1;
++        if (sched_dbg == -1)
++        {
++            const char *e = getenv( "WHISKY_SCHED_DEBUG" );
++            sched_dbg = (e && atoi( e )) ? 1 : 0;
++        }
++        if (sched_dbg)
++            fprintf( stderr, "[whisky-sched-srv] tid=%04x unix_pid=%d unix_tid=%d base=%d prio=%d eff=%d tqos=%d lqos=%d imp=%d ts=%d\n",
++                     thread->id, thread->unix_pid, thread->unix_tid, thread->base_priority, thread->priority,
++                     effective_priority, throughput_qos, latency_qos, thread_precedence_policy.importance,
++                     thread_extended_policy.timeshare );
++    }
+ }
+ 
+ #else

@@ -84,13 +84,8 @@ echo ""
 # combined stdout+stderr to $outfile and returns wine's exit code (= the
 # number of failed assertions in the Wine test framework).
 #
-# Only WINEMSYNC is set here. Anything else in the caller's environment is
-# inherited, and the WINEMSYNC_NO_* gates matter: with one of them set, an object
-# class is routed to the server in BOTH arms, so the diff compares two
-# configurations that agree by construction and the run proves nothing about that
-# class. Run this from a shell with none of them exported. Note the shipping
-# build gates manual events by default (patch 0007 read_type_gates), so
-# manual events are outside what this harness can speak to either way.
+# Only WINEMSYNC is set here. Each arm restarts wineserver first so the two
+# runs cannot accidentally share a lingering wineserver from the other mode.
 run_one() {
     local exe="$1" mode="$2" outfile="$3" rc
     # IMPORTANT: capture through a PIPE (| cat), not a direct `> file` redirect.
@@ -102,6 +97,8 @@ run_one() {
     (
         eval "$(bottle_shellenv "$BOTTLE")"
         export WINEDEBUG="-all"
+        wineserver -k >/dev/null 2>&1 || true
+        wineserver -w >/dev/null 2>&1 || true
         if [ "$GUARD_MALLOC" = "1" ]; then
             # Guard Malloc guards the tail of each allocation (overflow trap); it
             # DYLD_INSERTs ahead of the shellenv-provided DYLD_FALLBACK_LIBRARY_PATH.

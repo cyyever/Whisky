@@ -61,6 +61,17 @@ static int play_clip(IGraphBuilder *graph, IMediaControl *ctrl, IMediaSeeking *s
         if (i == 0 || first < 0) first = cur;
         last = cur;
         printf("[%d] t=%.1fs pos=%.3fs\n", idx, (i + 1) * 0.5, (double)cur / 10000000.0);
+        if (idx == 0 && i == 1) {
+            /* Live seek while State_Running (without Pause): exercises
+             * qasf media_seeking_ChangeCurrent() decommit-before-stop +
+             * re-commit-before-start without AB-BA deadlock. */
+            LONGLONG zero = 0;
+            HRESULT shr = IMediaSeeking_SetPositions(seek, &zero, AM_SEEKING_AbsolutePositioning,
+                                                     NULL, AM_SEEKING_NoPositioning);
+            printf("[%d] LiveSeek0=0x%08lx\n", idx, (unsigned long)shr);
+            if (FAILED(shr)) return 1;
+            first = -1;
+        }
         if (idx == 1 && i == 1) {
             LONGLONG zero = 0;
             HRESULT phr = IMediaControl_Pause(ctrl);
@@ -78,6 +89,19 @@ static int play_clip(IGraphBuilder *graph, IMediaControl *ctrl, IMediaSeeking *s
     hr = IMediaControl_Stop(ctrl);
     printf("[%d] Stop hr=0x%08lx (advanced=%.3fs)\n",
            idx, (unsigned long)hr, (double)(last - first) / 10000000.0);
+    if (idx == 0) {
+        /* Exact SSFIV.exe pattern: Stop() -> SetPositions(beyond duration) while
+         * State_Stopped -> Stop(). Must NOT start WMReader on a stopped graph. */
+        LONGLONG dur = 0;
+        IMediaSeeking_GetDuration(seek, &dur);
+        LONGLONG past_end = (dur > 0 ? dur : 60000000LL) + 5000000LL;
+        HRESULT shr = IMediaSeeking_SetPositions(seek, &past_end, AM_SEEKING_AbsolutePositioning,
+                                                 NULL, AM_SEEKING_NoPositioning);
+        HRESULT hr2 = IMediaControl_Stop(ctrl);
+        printf("[%d] StoppedSeek(+0.5s)=0x%08lx Stop2=0x%08lx\n",
+               idx, (unsigned long)shr, (unsigned long)hr2);
+        if (FAILED(hr2)) return 1;
+    }
     clear_graph(graph);
     return (last - first > 5000000) ? 0 : 1;
 }

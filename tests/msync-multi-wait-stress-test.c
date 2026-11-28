@@ -277,12 +277,29 @@ static DWORD WINAPI churn_worker(void *arg)
     return 0;
 }
 
-static int run_port_churn(int count)
+static int run_block_named(const char *n0, const char *n1)
 {
     HANDLE ev[2];
+    ev[0] = OpenEventA(SYNCHRONIZE, FALSE, n0);
+    ev[1] = OpenEventA(SYNCHRONIZE, FALSE, n1);
+    if (!ev[0] || !ev[1]) return 2;
+    /* Block indefinitely in msync_wait_multiple until TerminateProcess kills us. */
+    WaitForMultipleObjects(2, ev, FALSE, INFINITE);
+    return 0;
+}
+
+static int run_port_churn(const char *self_path, int count)
+{
+    HANDLE ev[2];
+    char n0[64], n1[64], cmd[1024];
     int i;
-    ev[0] = CreateEventW(NULL, FALSE, FALSE, NULL);
-    ev[1] = CreateEventW(NULL, FALSE, FALSE, NULL);
+
+    snprintf(n0, sizeof(n0), "Local\\WhiskyMsyncChurn0_%lu", (unsigned long)GetCurrentProcessId());
+    snprintf(n1, sizeof(n1), "Local\\WhiskyMsyncChurn1_%lu", (unsigned long)GetCurrentProcessId());
+    ev[0] = CreateEventA(NULL, TRUE, FALSE, n0);
+    ev[1] = CreateEventA(NULL, TRUE, FALSE, n1);
+
+    /* 1) Normal thread multi-wait churn */
     for (i = 0; i < count; i++)
     {
         HANDLE th = CreateThread(NULL, 0, churn_worker, ev, 0, NULL);
@@ -292,6 +309,28 @@ static int run_port_churn(int count)
             CloseHandle(th);
         }
     }
+
+    /* 2) Abrupt TerminateProcess while blocked in msync_wait_multiple on long-lived
+     *    named events: verifies wineserver reclaims the dead thread's Mach semaphore
+     *    send right via msync_cleanup_thread() even without server_remove_wait(). */
+    snprintf(cmd, sizeof(cmd), "\"%s\" --block-named %s %s", self_path, n0, n1);
+    for (i = 0; i < 4; i++)
+    {
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        memset(&pi, 0, sizeof(pi));
+        if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+        {
+            Sleep(40);
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 3000);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
+    }
+
     CloseHandle(ev[0]);
     CloseHandle(ev[1]);
     return 0;
@@ -299,10 +338,13 @@ static int run_port_churn(int count)
 
 int main(int argc, char **argv)
 {
+    if (argc > 3 && strcmp(argv[1], "--block-named") == 0)
+        return run_block_named(argv[2], argv[3]);
+
     if (argc > 1 && strcmp(argv[1], "--port-churn") == 0)
     {
         int n = (argc > 2) ? atoi(argv[2]) : 20;
-        return run_port_churn(n);
+        return run_port_churn(argv[0], n);
     }
 
     printf("=== msync multi-wait stress test ===\n");

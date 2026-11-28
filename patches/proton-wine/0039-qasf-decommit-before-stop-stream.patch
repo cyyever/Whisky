@@ -12,30 +12,87 @@ Subject: qasf: decommit allocators before stopping WMReader and flush all stream
    filter->streams[i].source.pin.peer, leaving peer streams unflushed on seek.
 
 diff --git a/dlls/qasf/asfreader.c b/dlls/qasf/asfreader.c
-index 46a3d7e4..9a7f5cca 100644
+index 46a3d7e4..937dd3af 100644
 --- a/dlls/qasf/asfreader.c
 +++ b/dlls/qasf/asfreader.c
-@@ -335,7 +335,8 @@ static HRESULT WINAPI media_seeking_ChangeCurrent(IMediaSeeking *iface)
-     /* Send begin flush commands downstream. */
+@@ -285,9 +285,9 @@ static HRESULT asf_reader_start_stream(struct asf_reader *filter, LONGLONG start
+ 
+     EnterCriticalSection(&filter->status_cs);
+ 
++    filter->status = -1;
+     if (SUCCEEDED(hr = IWMReader_Start(filter->reader, start, duration, rate, NULL)))
+     {
+-        filter->status = -1;
+         while (filter->status != WMT_STARTED)
+             SleepConditionVariableCS(&filter->status_cv, &filter->status_cs, INFINITE);
+         hr = filter->result;
+@@ -304,9 +304,9 @@ static HRESULT asf_reader_stop_stream(struct asf_reader *filter)
+ 
+     EnterCriticalSection(&filter->status_cs);
+ 
++    filter->status = -1;
+     if (SUCCEEDED(hr = IWMReader_Stop(filter->reader)))
+     {
+-        filter->status = -1;
+         while (filter->status != WMT_STOPPED)
+             SleepConditionVariableCS(&filter->status_cv, &filter->status_cs, INFINITE);
+         hr = filter->result;
+@@ -332,21 +332,34 @@ static HRESULT WINAPI media_seeking_ChangeCurrent(IMediaSeeking *iface)
+ 
+     TRACE("iface %p.\n", iface);
+ 
+-    /* Send begin flush commands downstream. */
++    /* Do not stop/start WMReader while the filter is stopped; the updated
++     * seek->llCurrent will be honored when asf_reader_init_stream() starts. */
++    if (filter->filter.state == State_Stopped)
++        return S_OK;
++
++    /* Send begin flush commands downstream and decommit allocators so any
++     * stream_read_thread blocked in IMemAllocator_GetBuffer() wakes up before
++     * asf_reader_stop_stream() waits for WMT_STOPPED (prevents AB-BA deadlock). */
      for (i = 0; i < filter->stream_count; ++i)
      {
 -        if (FAILED(IPin_BeginFlush(stream->source.pin.peer)))
 +        struct asf_stream *s = &filter->streams[i];
 +        if (s->source.pin.peer && FAILED(IPin_BeginFlush(s->source.pin.peer)))
              WARN("Failed to BeginFlush for stream %u.\n", i);
++        if (s->source.pin.peer && s->source.pAllocator && FAILED(IMemAllocator_Decommit(s->source.pAllocator)))
++            WARN("Failed to decommit allocator for stream %u.\n", i);
      }
  
-@@ -345,7 +346,8 @@ static HRESULT WINAPI media_seeking_ChangeCurrent(IMediaSeeking *iface)
-     /* Send end flush commands downstream. */
+     /* Stop the reader. */
+     hr = asf_reader_stop_stream(filter);
+ 
+-    /* Send end flush commands downstream. */
++    /* Send end flush commands downstream and re-commit allocators. */
      for (i = 0; i < filter->stream_count; ++i)
      {
 -        if (FAILED(IPin_EndFlush(stream->source.pin.peer)))
 +        struct asf_stream *s = &filter->streams[i];
 +        if (s->source.pin.peer && FAILED(IPin_EndFlush(s->source.pin.peer)))
              WARN("Failed to EndFlush for stream %u.\n", i);
++        if (s->source.pin.peer && s->source.pAllocator && FAILED(IMemAllocator_Commit(s->source.pAllocator)))
++            WARN("Failed to commit allocator for stream %u.\n", i);
      }
  
-@@ -575,28 +577,35 @@ static HRESULT asf_reader_init_stream(struct strmbase_filter *iface)
+     /* Start the reader. */
+@@ -566,7 +579,14 @@ static HRESULT asf_reader_init_stream(struct strmbase_filter *iface)
+     if (FAILED(hr))
+         return hr;
+ 
+-    if (FAILED(hr = asf_reader_start_stream(filter, 0, 0, 1.0)))
++    if (filter->stream_count)
++    {
++        struct SourceSeeking *seek = &filter->streams[0].seek;
++        hr = asf_reader_start_stream(filter, seek->llCurrent, 0, seek->dRate);
++    }
++    else
++        hr = asf_reader_start_stream(filter, 0, 0, 1.0);
++    if (FAILED(hr))
+         WARN("Failed to start WMReader %p, hr %#lx\n", filter->reader, hr);
+ 
+     return hr;
+@@ -575,28 +595,35 @@ static HRESULT asf_reader_init_stream(struct strmbase_filter *iface)
  static HRESULT asf_reader_cleanup_stream(struct strmbase_filter *iface)
  {
      struct asf_reader *filter = impl_from_strmbase_filter(iface);
@@ -79,3 +136,14 @@ index 46a3d7e4..9a7f5cca 100644
      return hr;
  }
  
+@@ -697,9 +724,9 @@ static HRESULT WINAPI file_source_Load(IFileSourceFilter *iface, LPCOLESTR file_
+     }
+ 
+     EnterCriticalSection(&filter->status_cs);
++    filter->status = -1;
+     if (SUCCEEDED(hr = IWMReader_Open(filter->reader, filter->file_name, filter->callback, NULL)))
+     {
+-        filter->status = -1;
+         while (filter->status != WMT_OPENED)
+             SleepConditionVariableCS(&filter->status_cv, &filter->status_cs, INFINITE);
+         hr = filter->result;
