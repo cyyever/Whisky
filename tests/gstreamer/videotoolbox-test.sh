@@ -21,7 +21,26 @@ export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig:$prefix/share/pkgconfig"
 unset PKG_CONFIG_PATH
 pkg-config --define-variable=prefix="$prefix" --cflags --libs \
     gstreamer-app-1.0 gstreamer-video-1.0 > "$run_dir/flags.rsp"
-xcrun clang -arch x86_64 -O2 -framework Cocoa @"$run_dir/flags.rsp" \
+SDK="$(xcrun --show-sdk-path)"
+if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then
+    HOST_CC="/opt/homebrew/opt/llvm/bin/clang"
+    cat > "$run_dir/lsan.supp" <<'SUPP'
+# GLib/GObject static type-class registration & macOS AppKit/CoreGraphics singletons
+leak:g_type_class_get
+leak:type_class_init_Wm
+leak:NSApplication
+leak:CoreGraphics
+SUPP
+    export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:exitcode=77"
+    export LSAN_OPTIONS="suppressions=$run_dir/lsan.supp"
+else
+    HOST_CC="$(xcrun --find clang)"
+    export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:exitcode=77"
+fi
+export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
+"$HOST_CC" -arch x86_64 -isysroot "$SDK" -O1 -g -fno-omit-frame-pointer \
+    -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+    -framework Cocoa @"$run_dir/flags.rsp" \
     "$PROJECT_DIR/tests/gstreamer/videotoolbox-test.m" -o "$run_dir/probe"
 
 export DYLD_LIBRARY_PATH="$prefix/lib"

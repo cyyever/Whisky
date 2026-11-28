@@ -13,7 +13,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$PROJECT_DIR/scripts/lib/common.sh"
 
 WINE="$INSTALL_DIR/Wine/bin/wine64"
-SERVER="$INSTALL_DIR/Wine/bin/wineserver"
+SERVER="${WINESERVER:-$INSTALL_DIR/Wine/bin/wineserver}"
 [ -x "$WINE" ] || { echo "ERROR: Wine not found at $WINE (run make proton)" >&2; exit 1; }
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/whisky-audio-test.XXXXXX")
@@ -33,16 +33,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== 1. Host unit test: volume_scale.h (all 5 PCM formats) ==="
-xcrun clang -O2 -Wall -Wextra \
+echo "=== 1. Host unit test: volume_scale.h (all 5 PCM formats, ASan+UBSan+LSan) ==="
+SDK="$(xcrun --show-sdk-path)"
+if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then
+    HOST_CC="/opt/homebrew/opt/llvm/bin/clang"
+    ASAN_OPTS="detect_leaks=1:halt_on_error=1:exitcode=77"
+else
+    HOST_CC="$(xcrun --find clang)"
+    ASAN_OPTS="detect_leaks=0:halt_on_error=1:exitcode=77"
+fi
+"$HOST_CC" -arch arm64 -isysroot "$SDK" -O1 -g -fno-omit-frame-pointer \
+    -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+    -Wall -Wextra \
     -I"$PROJECT_DIR/vendor/proton-wine/dlls/winecoreaudio.drv" \
     "$PROJECT_DIR/tests/audio/volume-scale-unit-test.c" \
-    -o "$WORK/volume-scale-unit-test"
-"$WORK/volume-scale-unit-test"
+    -o "$WORK/volume-scale-unit-test" -lm
+ASAN_OPTIONS="$ASAN_OPTS" UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" \
+    "$WORK/volume-scale-unit-test"
 
 echo ""
-echo "=== 2. Compile live WASAPI test PE ==="
-x86_64-w64-mingw32-gcc -O2 -Wall -Wextra \
+echo "=== 2. Compile live WASAPI test PE (UBSan trap) ==="
+x86_64-w64-mingw32-gcc -O1 -g -Wall -Wextra -fsanitize=undefined -fsanitize-undefined-trap-on-error \
     -o "$WORK/wasapi-volume-and-routing-test.exe" \
     "$PROJECT_DIR/tests/audio/wasapi-volume-and-routing-test.c" \
     -lole32 -luuid

@@ -58,9 +58,21 @@ static int play_clip(IGraphBuilder *graph, IMediaControl *ctrl, IMediaSeeking *s
         }
         LONGLONG cur = -1;
         IMediaSeeking_GetCurrentPosition(seek, &cur);
-        if (i == 0) first = cur;
+        if (i == 0 || first < 0) first = cur;
         last = cur;
         printf("[%d] t=%.1fs pos=%.3fs\n", idx, (i + 1) * 0.5, (double)cur / 10000000.0);
+        if (idx == 1 && i == 1) {
+            LONGLONG zero = 0;
+            HRESULT phr = IMediaControl_Pause(ctrl);
+            Sleep(150);
+            HRESULT shr = IMediaSeeking_SetPositions(seek, &zero, AM_SEEKING_AbsolutePositioning,
+                                                     NULL, AM_SEEKING_NoPositioning);
+            HRESULT rhr = IMediaControl_Run(ctrl);
+            printf("[%d] Pause=0x%08lx Seek0=0x%08lx Run=0x%08lx\n",
+                   idx, (unsigned long)phr, (unsigned long)shr, (unsigned long)rhr);
+            if (FAILED(phr) || FAILED(rhr)) return 1;
+            first = -1;
+        }
     }
 
     hr = IMediaControl_Stop(ctrl);

@@ -347,6 +347,11 @@ wine_configure() {
     unix_cflags="-O2 -fno-omit-frame-pointer -msse4.2 -mpopcnt -I$X86_DEPS/include -I$X86_DEPS/include/freetype2"
     i386_pe_cflags="-g -O2 -msse2 -msse3 -mssse3 -msse4.1 -msse4.2 -mpopcnt -mfpmath=sse"
     x86_64_pe_cflags="-g -O2 -msse4.2 -mpopcnt"
+    if [ "${WHISKY_WINE_UBSAN_TRAP:-0}" = "1" ]; then
+        unix_cflags="$unix_cflags -fsanitize=undefined -fsanitize-trap=undefined"
+        i386_pe_cflags="$i386_pe_cflags -fsanitize=undefined -fsanitize-undefined-trap-on-error"
+        x86_64_pe_cflags="$x86_64_pe_cflags -fsanitize=undefined -fsanitize-undefined-trap-on-error"
+    fi
     flags_sig="unix=${unix_cflags}|i386=${i386_pe_cflags}|x86_64=${x86_64_pe_cflags}"
     flags_stamp="$build_dir/.whisky-cflags"
     if [ -f "$build_dir/Makefile" ] && [ "$(cat "$flags_stamp" 2>/dev/null || true)" != "$flags_sig" ]; then

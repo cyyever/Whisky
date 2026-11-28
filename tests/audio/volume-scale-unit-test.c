@@ -80,14 +80,16 @@ static void test_pcm16(void)
 
 static void pack_i24(uint8_t *dst, int32_t v)
 {
-    dst[0] = (uint8_t)(v & 0xff);
-    dst[1] = (uint8_t)((v >> 8) & 0xff);
-    dst[2] = (uint8_t)((v >> 16) & 0xff);
+    uint32_t u = (uint32_t)v;
+    dst[0] = (uint8_t)(u & 0xffu);
+    dst[1] = (uint8_t)((u >> 8) & 0xffu);
+    dst[2] = (uint8_t)((u >> 16) & 0xffu);
 }
 
 static int32_t unpack_i24(const uint8_t *src)
 {
-    return (int32_t)src[0] | ((int32_t)src[1] << 8) | ((int32_t)(int8_t)src[2] << 16);
+    uint32_t u = (uint32_t)src[0] | ((uint32_t)src[1] << 8) | ((uint32_t)src[2] << 16);
+    return (int32_t)(u ^ 0x800000u) - 0x800000;
 }
 
 static void test_pcm24(void)

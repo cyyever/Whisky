@@ -40,7 +40,7 @@ command -v x86_64-w64-mingw32-gcc >/dev/null || {
 mkdir -p "$SCRIPT_DIR/.build"
 WORK=$(mktemp -d "$SCRIPT_DIR/.build/run.XXXXXX")
 EXE="$WORK/loadorder_probe.exe"
-x86_64-w64-mingw32-gcc "$SCRIPT_DIR/loadorder_probe.c" -o "$EXE"
+x86_64-w64-mingw32-gcc -O1 -g -fsanitize=undefined -fsanitize-undefined-trap-on-error "$SCRIPT_DIR/loadorder_probe.c" -o "$EXE"
 
 # Tiny placeholder PE, copied under each module's name into the probe dir so the
 # loader always *finds* a file and reaches get_load_order (see header). It is a
@@ -52,9 +52,10 @@ echo '__declspec(dllexport) int stub(void){return 0;}' \
 # Throwaway prefix — no DllOverrides, so only the load-order default decides.
 export WINEPREFIX="$WORK/prefix"
 unset WINEDLLOVERRIDES WINEARCH WINEMSYNC WINEESYNC WINEFSYNC
+SERVER="${WINESERVER:-$INSTALL_DIR/Wine/bin/wineserver}"
 cleanup() {
-    timeout 15 "$INSTALL_DIR/Wine/bin/wineserver" -k >/dev/null 2>&1 || true
-    if timeout 15 "$INSTALL_DIR/Wine/bin/wineserver" -w >/dev/null 2>&1; then
+    timeout 15 "$SERVER" -k >/dev/null 2>&1 || true
+    if timeout 15 "$SERVER" -w >/dev/null 2>&1; then
         rm -rf "$WINEPREFIX"
     else
         echo "Keeping $WINEPREFIX: wineserver did not stop."

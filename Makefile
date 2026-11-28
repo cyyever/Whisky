@@ -35,8 +35,8 @@ SWIFTLINT ?= swiftlint
 # interleave, and none of it is the slow part -- the scripts parallelise inside.
 .NOTPARALLEL:
 
-.PHONY: all help x86-deps llvm-x86 ffmpeg gstreamer kosmickrisp proton proton-debug clean-proton \
-        dxvk mullion proxychains app app-release install-app lint format lint-swiftlint test run submodule clean check-proton-src
+.PHONY: all help x86-deps llvm-x86 ffmpeg gstreamer kosmickrisp proton proton-debug proton-asan clean-proton \
+        dxvk mullion proxychains app app-asan app-release install-app lint format lint-swiftlint test run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
 
@@ -84,7 +84,8 @@ gstreamer: $(GST_STAMP)  ## Build x86_64 GStreamer into vendor/gstreamer-x86 (ne
 GST_SRC_HEAD := $(firstword $(wildcard $(CURDIR)/vendor/gstreamer/.git/HEAD \
                                        $(CURDIR)/.git/modules/vendor/gstreamer/HEAD))
 
-$(GST_STAMP): $(FFMPEG_STAMP) $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh $(GST_SRC_HEAD)
+$(GST_STAMP): $(FFMPEG_STAMP) $(SCRIPTS_DIR)/build-gstreamer-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
+              $(wildcard $(CURDIR)/patches/gstreamer/*.patch) $(GST_SRC_HEAD)
 	$(SCRIPTS_DIR)/build-gstreamer-x86.sh
 
 # === KosmicKrisp (Vulkan-on-Metal driver for DXVK & Vulkan apps) ===
@@ -141,6 +142,11 @@ proton-debug:  ## Reinstall Proton keeping PE debug info (for winedbg sessions)
 	WHISKY_WINE_BUILD=debug $(SCRIPTS_DIR)/build-mullion.sh
 	@touch $(WINE_STAMP)
 
+proton-asan:  ## Reinstall Proton debug with arm64 wineserver ASan+UBSan and Wine UBSan trap mode
+	WHISKY_WINE_BUILD=debug WHISKY_WINE_ASAN=1 WHISKY_WINE_UBSAN_TRAP=1 $(SCRIPTS_DIR)/build-proton-x86.sh
+	WHISKY_WINE_BUILD=debug $(SCRIPTS_DIR)/build-mullion.sh
+	@touch $(WINE_STAMP)
+
 clean-proton:  ## Remove Proton build artifacts (keeps installed Wine)
 	rm -rf $(WINE_SRC)/build
 	rm -f $(WINE_STAMP)
@@ -162,6 +168,10 @@ proxychains:  ## Build x86_64 proxychains-ng into Libraries/ProxyChains (routes 
 
 app: ## Build the Whisky macOS app (Debug) and install it over /Applications/Whisky.app
 	$(XCODEBUILD) -configuration Debug build $(CODESIGN_OFF)
+	@$(MAKE) --no-print-directory install-app CONFIG=Debug
+
+app-asan: ## Build Whisky macOS app (Debug) with Xcode Address + Undefined Behavior Sanitizers
+	$(XCODEBUILD) -configuration Debug -enableAddressSanitizer YES -enableUndefinedBehaviorSanitizer YES build $(CODESIGN_OFF)
 	@$(MAKE) --no-print-directory install-app CONFIG=Debug
 
 app-release: ## Build the Whisky app (Release) and install it over /Applications/Whisky.app
@@ -216,7 +226,7 @@ format:  ## Reformat the Swift sources in place (swift-format)
 lint-swiftlint:  ## Run the strict SwiftLint checks used by CI (SwiftLint 0.65.1)
 	@$(SWIFTLINT) lint --strict
 
-test:  ## Run Whisky automated regression test suite
+test:  ## Run Whisky automated regression suite (with ASan + UBSan + LSan + Metal Validation)
 	@$(CURDIR)/tests/run-all.sh
 
 

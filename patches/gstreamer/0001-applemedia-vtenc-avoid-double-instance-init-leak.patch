@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Whisky <whisky@local>
+Date: Sat, 28 Nov 2026 12:48:00 +0800
+Subject: [PATCH] applemedia: vtenc: avoid double gst_vtenc_init leak on codec subtypes
+
+GST_TYPE_VTENC already registers gst_vtenc_init as its instance_init via
+G_DEFINE_TYPE(). Registering concrete codec subtypes (vtenc_h264, etc.) as
+subclasses of GST_TYPE_VTENC while also setting type_info.instance_init =
+gst_vtenc_init caused GObject to invoke gst_vtenc_init() twice on every
+instance, overwriting and permanently leaking keyframe_props
+(CFDictionary), queue_mutex, queue_cond, encoding_mutex, and encoding_cond
+on every element creation (caught by LeakSanitizer).
+
+Use a minimal gst_vtenc_sub_init() on the codec subtypes that only populates
+self->details from the concrete subtype class's qdata, leaving base resource
+initialization to gst_vtenc_init() once.
+---
+ subprojects/gst-plugins-bad/sys/applemedia/vtenc.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/subprojects/gst-plugins-bad/sys/applemedia/vtenc.c b/subprojects/gst-plugins-bad/sys/applemedia/vtenc.c
+index 56cd1f9c..cf5d6f72 100644
+--- a/subprojects/gst-plugins-bad/sys/applemedia/vtenc.c
++++ b/subprojects/gst-plugins-bad/sys/applemedia/vtenc.c
+@@ -2790,6 +2790,12 @@ gst_pixel_buffer_release_cb (void *releaseRefCon, const void *dataPtr,
+ }
+ #endif
+ 
++static void
++gst_vtenc_sub_init (GstVTEnc * self, GstVTEncClass * klass)
++{
++  self->details = GST_VTENC_CLASS_GET_CODEC_DETAILS (klass);
++}
++
+ static gboolean
+ gst_vtenc_register (GstPlugin * plugin,
+     const GstVTEncoderDetails * codec_details)
+@@ -2803,7 +2809,7 @@ gst_vtenc_register (GstPlugin * plugin,
+     NULL,
+     sizeof (GstVTEnc),
+     0,
+-    (GInstanceInitFunc) gst_vtenc_init,
++    (GInstanceInitFunc) gst_vtenc_sub_init,
+   };
+   char *type_name;
+   GType type;

@@ -14,13 +14,73 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WINE_PREFIX_BIN="${WHISKY_WINE_BIN:-$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/bin}"
+WINE_ROOT="$(cd "$WINE_PREFIX_BIN/.." 2>/dev/null && pwd || echo "")"
 WINE="$WINE_PREFIX_BIN/wine64"
-WS="$WINE_PREFIX_BIN/wineserver"
+WS="${WINESERVER:-$WINE_PREFIX_BIN/wineserver}"
 
 PASS=0
 FAIL=0
 SKIP=0
 FAILED_NAMES=()
+
+TMPDIR_PE=""
+TMPDIR_SAN=""
+cleanup_all() {
+    if [ -n "$TMPDIR_PE" ]; then
+        WINEPREFIX="$TMPDIR_PE/prefix" "$WS" -k >/dev/null 2>&1 || true
+        WINEPREFIX="$TMPDIR_PE/prefix" "$WS" -w >/dev/null 2>&1 || true
+        rm -rf "$TMPDIR_PE"
+    fi
+    if [ -n "$TMPDIR_SAN" ]; then
+        rm -rf "$TMPDIR_SAN"
+    fi
+}
+trap cleanup_all EXIT
+
+PE_OPT_FLAGS=(-O1 -g -Wall -Wextra -fsanitize=undefined -fsanitize-undefined-trap-on-error)
+if [ -d "$PROJECT_DIR/vendor/proton-wine/build/include" ] && [ -x "$WINE" ]; then
+    TMPDIR_SAN="$(mktemp -d /tmp/whisky-reg-san.XXXXXX)"
+    SDK="$(xcrun --show-sdk-path)"
+    LSAN_FLAG=0
+    if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then
+        SAN_CC="/opt/homebrew/opt/llvm/bin/clang"
+        LSAN_FLAG=1
+        echo "=== [SANITIZERS] Building arm64 wineserver with LLVM ASan + UBSan + LSan ==="
+    else
+        SAN_CC="$(xcrun --find clang)"
+        echo "=== [SANITIZERS] Building arm64 wineserver with Apple Clang ASan + UBSan ==="
+    fi
+    mkdir -p "$TMPDIR_SAN/ws-obj"
+    for f in "$PROJECT_DIR"/vendor/proton-wine/server/*.c; do
+        base="$(basename "$f" .c)"
+        "$SAN_CC" -arch arm64 -isysroot "$SDK" -O1 -g -fno-omit-frame-pointer \
+            -fsanitize=address,undefined -fno-sanitize=function -fno-sanitize-recover=undefined \
+            -c -o "$TMPDIR_SAN/ws-obj/${base}.o" "$f" \
+            -I"$PROJECT_DIR/vendor/proton-wine/build/server" -I"$PROJECT_DIR/vendor/proton-wine/server" \
+            -I"$PROJECT_DIR/vendor/proton-wine/build/include" -I"$PROJECT_DIR/vendor/proton-wine/include" \
+            -D__WINESRC__ -DWINE_UNIX_LIB \
+            -DBINDIR="\"$WINE_PREFIX_BIN\"" -DDATADIR="\"$WINE_ROOT/share\"" \
+            -fvisibility=hidden -fno-strict-aliasing 2>/dev/null &
+    done
+    wait
+    "$SAN_CC" -arch arm64 -isysroot "$SDK" -fsanitize=address,undefined -fno-sanitize=function \
+        -o "$TMPDIR_SAN/wineserver-asan" "$TMPDIR_SAN/ws-obj"/*.o
+    cat > "$TMPDIR_SAN/wineserver" <<EOF
+#!/bin/sh
+export ASAN_OPTIONS="detect_leaks=${LSAN_FLAG}:halt_on_error=1:exitcode=77:log_path=${TMPDIR_SAN}/wineserver-asan.log"
+export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:log_path=${TMPDIR_SAN}/wineserver-ubsan.log"
+exec "${TMPDIR_SAN}/wineserver-asan" "\$@"
+EOF
+    chmod +x "$TMPDIR_SAN/wineserver"
+    WS="$TMPDIR_SAN/wineserver"
+    export WINESERVER="$WS"
+fi
+
+# Always enable Metal API + GPU Shader Validation across all GPU tests.
+export METAL_DEVICE_WRAPPER_TYPE=1
+export MTL_DEBUG_LAYER=1
+export MTL_DEBUG_LAYER_WARNING_MODE=nslog
+export MTL_SHADER_VALIDATION=1
 
 run_case() {
     local name="$1"
@@ -60,18 +120,13 @@ if [ -x "$WINE" ]; then
     # 2. Standalone Win64 PE regression tests in a fresh disposable prefix
     if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
         TMPDIR_PE="$(mktemp -d /tmp/whisky-reg-pe.XXXXXX)"
-        cleanup_pe() {
-            WINEPREFIX="$TMPDIR_PE/prefix" "$WS" -k >/dev/null 2>&1 || true
-            rm -rf "$TMPDIR_PE"
-        }
-        trap cleanup_pe EXIT
         mkdir -p "$TMPDIR_PE/prefix"
 
         run_pe() {
             local name="$1" src="$2" extra_libs="$3" extra_env="${4:-}"
             local exe="$TMPDIR_PE/${name}.exe"
             # shellcheck disable=SC2086
-            x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/$src" $extra_libs
+            x86_64-w64-mingw32-gcc "${PE_OPT_FLAGS[@]}" -o "$exe" "$PROJECT_DIR/$src" $extra_libs
             if [ -n "$extra_env" ]; then
                 # shellcheck disable=SC2086
                 env $extra_env WINEPREFIX="$TMPDIR_PE/prefix" WINEDEBUG=-all \
@@ -89,7 +144,7 @@ if [ -x "$WINE" ]; then
             local exe="$TMPDIR_PE/msync-multi-wait-stress.exe"
             local port_prefix="$TMPDIR_PE/prefix-msync-ports"
             mkdir -p "$port_prefix"
-            x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/tests/msync-multi-wait-stress-test.c"
+            x86_64-w64-mingw32-gcc "${PE_OPT_FLAGS[@]}" -o "$exe" "$PROJECT_DIR/tests/msync-multi-wait-stress-test.c"
             # 1) Default WINEMSYNC=1 (native msync manual-reset events)
             WINEPREFIX="$TMPDIR_PE/prefix" WINEMSYNC=1 WINEDEBUG=-all \
                 perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe"
@@ -134,6 +189,8 @@ if [ -x "$WINE" ]; then
             run_pe "ws2_32-sockopt" "tests/ws2_32-sockopt-test.c" "-lws2_32" ""
         run_case "ws2_32-fd-write-rearm" \
             run_pe "ws2_32-fd-write-rearm" "tests/ws2_32-fd-write-rearm-test.c" "-lws2_32" "WINEMSYNC=1"
+        run_case "rawinput-active-window" \
+            run_pe "rawinput-active-window" "tests/rawinput-active-window-test.c" "-luser32" "WINEMSYNC=1"
         run_case "macos-sleep-qos-and-avrt" \
             run_pe "macos-sleep-qos-and-avrt" "tests/macos-sleep-qos-and-avrt-test.c" "-lws2_32" "WINEMSYNC=1"
         run_case "bcrypt-ecdh-rsa" \
@@ -150,7 +207,7 @@ if [ -x "$WINE" ]; then
             local dpi_prefix="$TMPDIR_PE/prefix-dpi"
             local vk_stderr="$TMPDIR_PE/vulkan-dpi-stderr.log"
             mkdir -p "$dpi_prefix"
-            x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/tests/vulkan-dpi-swapchain-test.c"
+            x86_64-w64-mingw32-gcc "${PE_OPT_FLAGS[@]}" -o "$exe" "$PROJECT_DIR/tests/vulkan-dpi-swapchain-test.c"
             WINEPREFIX="$dpi_prefix" WINEDEBUG=-all "$WINE" reg add 'HKCU\Software\Wine\Mac Driver' /v RetinaMode /t REG_SZ /d y /f >/dev/null
             WINEPREFIX="$dpi_prefix" WINEDEBUG=-all "$WINE" reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d 192 /f >/dev/null
             WINEPREFIX="$dpi_prefix" WINEDEBUG=-all "$WS" -k >/dev/null 2>&1 || true
@@ -179,12 +236,12 @@ if [ -x "$WINE" ]; then
             run_wow64_cs_recovery() {
                 local dll="$TMPDIR_PE/dummy-rosetta.dll"
                 local exe="$TMPDIR_PE/wow64-rosetta-cs-recovery.exe"
-                i686-w64-mingw32-gcc -O2 -Wall -Wextra -shared -o "$dll" -xc - <<'EOF'
+                i686-w64-mingw32-gcc "${PE_OPT_FLAGS[@]}" -shared -o "$dll" -xc - <<'EOF'
 #include <windows.h>
 __declspec(dllexport) int ping(int x) { return x + 1; }
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, void *r) { (void)h; (void)reason; (void)r; return TRUE; }
 EOF
-                i686-w64-mingw32-gcc -O2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/tests/wow64-rosetta-cs-recovery-test.c" -lbcrypt
+                i686-w64-mingw32-gcc "${PE_OPT_FLAGS[@]}" -o "$exe" "$PROJECT_DIR/tests/wow64-rosetta-cs-recovery-test.c" -lbcrypt
                 WINEPREFIX="$TMPDIR_PE/prefix" WINEDEBUG=-all \
                     perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" "$dll"
             }
@@ -192,7 +249,7 @@ EOF
 
             run_i386_sse_math_and_stack() {
                 local exe="$TMPDIR_PE/i386-sse-math-and-stack-test.exe"
-                i686-w64-mingw32-gcc -O2 -msse2 -Wall -Wextra -o "$exe" "$PROJECT_DIR/tests/i386-sse-math-and-stack-test.c" -lole32
+                i686-w64-mingw32-gcc "${PE_OPT_FLAGS[@]}" -msse2 -o "$exe" "$PROJECT_DIR/tests/i386-sse-math-and-stack-test.c" -lole32
                 WINEPREFIX="$TMPDIR_PE/prefix" WINEDEBUG=-all WINEDLLOVERRIDES="d3dx9_43,xaudio2_7=b" \
                     perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe"
             }
@@ -208,6 +265,67 @@ EOF
 else
     echo "SKIP: Wine not found at $WINE; skipping Wine-dependent tests"
     SKIP=$((SKIP + 8))
+fi
+
+if [ -n "$TMPDIR_SAN" ]; then
+    # Stop the PE prefix's wineserver cleanly so LSan runs its exit-time leak check.
+    if [ -n "$TMPDIR_PE" ]; then
+        WINEPREFIX="$TMPDIR_PE/prefix" "$WS" -k >/dev/null 2>&1 || true
+        WINEPREFIX="$TMPDIR_PE/prefix" "$WS" -w >/dev/null 2>&1 || true
+    fi
+    audit_wineserver_sanitizers() {
+        local san_fail=0
+        local f
+        for f in "$TMPDIR_SAN"/wineserver-asan.log*; do
+            [ -f "$f" ] || continue
+            if grep -qE 'ERROR: (AddressSanitizer|LeakSanitizer)' "$f"; then
+                echo "FAIL: ASan/LSan reported errors in wineserver ($f):"
+                cat "$f"
+                san_fail=1
+            fi
+        done
+        for f in "$TMPDIR_SAN"/wineserver-ubsan.log*; do
+            [ -f "$f" ] || continue
+            if grep -q 'runtime error:' "$f"; then
+                echo "FAIL: UBSan runtime errors in wineserver ($f):"
+                cat "$f"
+                san_fail=1
+            fi
+        done
+        if [ "$san_fail" -eq 0 ]; then
+            echo "PASS: wineserver ASan + UBSan + LSan logs clean across full test suite"
+        fi
+        return "$san_fail"
+    }
+    run_case "wineserver-asan-ubsan-lsan-audit" audit_wineserver_sanitizers
+
+    check_patched_modules_ubsan() {
+        local wine_src="$PROJECT_DIR/vendor/proton-wine"
+        if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+            x86_64-w64-mingw32-gcc -O1 -g -fsanitize=undefined -fsanitize-undefined-trap-on-error \
+                -c -o "$TMPDIR_SAN/dsoundrender64.o" "$wine_src/dlls/quartz/dsoundrender.c" \
+                -I"$wine_src/build/dlls/quartz" -I"$wine_src/dlls/quartz" \
+                -I"$wine_src/build/include" -I"$wine_src/include" -I"$wine_src/include/msvcrt" \
+                -D_MSVCR_VER=0 -D__WINESRC__ -D__WINE_PE_BUILD
+            x86_64-w64-mingw32-gcc -O1 -g -fsanitize=undefined -fsanitize-undefined-trap-on-error \
+                -c -o "$TMPDIR_SAN/asfreader64.o" "$wine_src/dlls/qasf/asfreader.c" \
+                -I"$wine_src/build/dlls/qasf" -I"$wine_src/dlls/qasf" \
+                -I"$wine_src/build/include" -I"$wine_src/include" -I"$wine_src/include/msvcrt" \
+                -D_MSVCR_VER=0 -D__WINESRC__ -D__WINE_PE_BUILD
+        fi
+        clang -arch x86_64 -O1 -g -fsanitize=undefined -fsanitize-trap=undefined \
+            -c -o "$TMPDIR_SAN/socket.o" "$wine_src/dlls/ntdll/unix/socket.c" \
+            -I"$wine_src/build/dlls/ntdll" -I"$wine_src/dlls/ntdll" \
+            -I"$wine_src/build/include" -I"$wine_src/include" \
+            -D__WINESRC__ -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI= -DWINE_UNIX_LIB
+        clang -arch x86_64 -O1 -g -fsanitize=undefined -fsanitize-trap=undefined \
+            -c -o "$TMPDIR_SAN/cocoa_window.o" "$wine_src/dlls/winemac.drv/cocoa_window.m" \
+            -I"$wine_src/build/dlls/winemac.drv" -I"$wine_src/dlls/winemac.drv" \
+            -I"$wine_src/build/include" -I"$wine_src/include" \
+            -D__WINESRC__ -DWINE_UNIX_LIB
+        echo "PASS: UBSan trap-mode compile clean for dsoundrender, asfreader, socket, cocoa_window"
+    }
+    run_case "wine-modules-ubsan-compile" check_patched_modules_ubsan
 fi
 
 echo ""

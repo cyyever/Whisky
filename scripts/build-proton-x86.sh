@@ -236,16 +236,31 @@ fi
 echo "=== Building native arm64 wineserver ==="
 WS_OBJ="$WINE_SRC/build/server-arm64"
 rm -rf "$WS_OBJ" && mkdir -p "$WS_OBJ"
+WS_CFLAGS="-O2 -flto=thin"
+WS_LDFLAGS="-flto=thin"
+WS_CC="clang"
+WS_SDK_FLAGS=""
+if [ "${WHISKY_WINE_ASAN:-0}" = "1" ]; then
+    if [ -x /opt/homebrew/opt/llvm/bin/clang ]; then
+        WS_CC="/opt/homebrew/opt/llvm/bin/clang"
+        WS_SDK_FLAGS="-isysroot $(xcrun --show-sdk-path)"
+        echo "=== Enabling ASan + UBSan + LSan (LLVM) on arm64 wineserver ==="
+    else
+        echo "=== Enabling ASan + UBSan (Apple Clang) on arm64 wineserver ==="
+    fi
+    WS_CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize=function -fno-sanitize-recover=undefined"
+    WS_LDFLAGS="-fsanitize=address,undefined -fno-sanitize=function"
+fi
 for f in "$WINE_SRC"/server/*.c; do
     base=$(basename "$f" .c)
-    ccache clang -arch arm64 -O2 -flto=thin -c -o "$WS_OBJ/${base}.o" "$f" \
+    ccache "$WS_CC" -arch arm64 $WS_SDK_FLAGS $WS_CFLAGS -c -o "$WS_OBJ/${base}.o" "$f" \
         -I"$WINE_SRC/build/server" -I"$WINE_SRC/server" \
         -I"$WINE_SRC/build/include" -I"$WINE_SRC/include" \
         -D__WINESRC__ -DWINE_UNIX_LIB \
         -DBINDIR='"/usr/local/bin"' -DDATADIR='"/usr/local/share"' \
         -fvisibility=hidden -fno-stack-protector -fno-strict-aliasing
 done
-clang -arch arm64 -flto=thin -o "$WINE_STAGE/bin/wineserver" "$WS_OBJ"/*.o
+"$WS_CC" -arch arm64 $WS_SDK_FLAGS $WS_LDFLAGS -o "$WINE_STAGE/bin/wineserver" "$WS_OBJ"/*.o
 rm -rf "$WS_OBJ"
 
 # Remove Wine SDK/build-time tools not used at runtime

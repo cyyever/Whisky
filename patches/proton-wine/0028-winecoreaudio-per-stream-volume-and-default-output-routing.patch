@@ -1322,7 +1322,7 @@ new file mode 100644
 index 00000000..8da78b30
 --- /dev/null
 +++ b/dlls/winecoreaudio.drv/volume_scale.h
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,143 @@
 +/*
 + * Per-stream PCM volume scaling helpers for winecoreaudio.drv.
 + * Kept header-only with zero Wine/CoreAudio dependencies so host unit tests
@@ -1412,17 +1412,18 @@ index 00000000..8da78b30
 +            for (ch = 0; ch < nch; ++ch)
 +            {
 +                unsigned int off = (f * nch + ch) * 3;
-+                int32_t raw = (int32_t)p[off]
-+                            | ((int32_t)p[off + 1] << 8)
-+                            | ((int32_t)(int8_t)p[off + 2] << 16);
++                uint32_t u = (uint32_t)p[off]
++                           | ((uint32_t)p[off + 1] << 8)
++                           | ((uint32_t)p[off + 2] << 16);
++                int32_t raw = (int32_t)(u ^ 0x800000u) - 0x800000;
 +                double v = (double)raw * (double)gains[ch];
-+                int32_t out;
++                uint32_t out;
 +                if (v > 8388607.0) v = 8388607.0;
 +                else if (v < -8388608.0) v = -8388608.0;
-+                out = (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
-+                p[off]     = (uint8_t)(out & 0xff);
-+                p[off + 1] = (uint8_t)((out >> 8) & 0xff);
-+                p[off + 2] = (uint8_t)((out >> 16) & 0xff);
++                out = (uint32_t)(int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
++                p[off]     = (uint8_t)(out & 0xffu);
++                p[off + 1] = (uint8_t)((out >> 8) & 0xffu);
++                p[off + 2] = (uint8_t)((out >> 16) & 0xffu);
 +            }
 +        }
 +        break;

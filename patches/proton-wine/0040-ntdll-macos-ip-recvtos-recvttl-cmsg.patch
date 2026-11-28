@@ -1,0 +1,56 @@
+Subject: ntdll: handle macOS IP_RECVTOS and IP_RECVTTL control messages
+
+On macOS/BSD, recvmsg() returns incoming IPv4 TOS and TTL ancillary data
+with cmsg_type IP_RECVTOS (27) and IP_RECVTTL (24) rather than IP_TOS/IP_TTL.
+Handle both in convert_control_headers() so Winsock WSARecvMsg callers such
+as SteamNetworkingSockets receive TOS/TTL data cleanly without FIXME spam.
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index ffae8da..09a8e73 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -429,8 +429,13 @@ static int convert_control_headers(struct msghdr *hdr, WSABUF *control)
+                     }
+ #endif /* IP_PKTINFO */
+ 
++#if defined(IP_TOS) || defined(IP_RECVTOS)
+ #if defined(IP_TOS)
+                     case IP_TOS:
++#endif
++#if defined(IP_RECVTOS) && (!defined(IP_TOS) || IP_RECVTOS != IP_TOS)
++                    case IP_RECVTOS:
++#endif
+                     {
+                         INT tos = *(unsigned char *)CMSG_DATA(cmsg_unix);
+                         ptr = fill_control_message( WS_IPPROTO_IP, WS_IP_TOS, ptr, &ctlsize,
+@@ -438,17 +443,27 @@ static int convert_control_headers(struct msghdr *hdr, WSABUF *control)
+                         if (!ptr) goto error;
+                         break;
+                     }
+-#endif /* IP_TOS */
++#endif /* IP_TOS || IP_RECVTOS */
+ 
++#if defined(IP_TTL) || defined(IP_RECVTTL)
+ #if defined(IP_TTL)
+                     case IP_TTL:
++#endif
++#if defined(IP_RECVTTL) && (!defined(IP_TTL) || IP_RECVTTL != IP_TTL)
++                    case IP_RECVTTL:
++#endif
+                     {
++                        INT ttl;
++                        if (cmsg_unix->cmsg_len >= CMSG_LEN(sizeof(INT)))
++                            memcpy( &ttl, CMSG_DATA(cmsg_unix), sizeof(INT) );
++                        else
++                            ttl = *(unsigned char *)CMSG_DATA(cmsg_unix);
+                         ptr = fill_control_message( WS_IPPROTO_IP, WS_IP_TTL, ptr, &ctlsize,
+-                                                    CMSG_DATA(cmsg_unix), sizeof(INT) );
++                                                    &ttl, sizeof(INT) );
+                         if (!ptr) goto error;
+                         break;
+                     }
+-#endif /* IP_TTL */
++#endif /* IP_TTL || IP_RECVTTL */
+ 
+                     default:
+                         FIXME("Unhandled IPPROTO_IP message header type %d\n", cmsg_unix->cmsg_type);

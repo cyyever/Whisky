@@ -20,6 +20,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mswsock.h>
 #include <stdio.h>
 #include <stdint.h>
 
@@ -175,6 +176,80 @@ int main(void)
         CHECK(rc == SOCKET_ERROR && WSAGetLastError() == WSAEINVAL,
               "[TCP_KEEPCNT] rejects 0x100 with WSAEINVAL (err=%d)", WSAGetLastError());
         closesocket(s);
+    }
+
+    /* 7. WSARecvMsg returns IP_TOS and IP_TTL ancillary data on macOS (patch 0040) */
+    {
+        SOCKET rx = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        SOCKET tx = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        CHECK(rx != INVALID_SOCKET && tx != INVALID_SOCKET, "[WSARecvMsg] create UDP sockets");
+        if (rx != INVALID_SOCKET && tx != INVALID_SOCKET) {
+            GUID guid = WSAID_WSARECVMSG;
+            LPFN_WSARECVMSG pWSARecvMsg = NULL;
+            DWORD bytes = 0;
+            struct sockaddr_in addr;
+            int addrlen = sizeof(addr);
+            DWORD one = 1, tos = 0x28, ttl = 42;
+            const char payload[] = "tos-ttl-ping";
+            char rbuf[64], cbuf[256];
+            WSABUF data_buf = { sizeof(rbuf), rbuf };
+            WSAMSG msg;
+            int got_tos = 0, got_ttl = 0, got_tos_val = -1, got_ttl_val = -1;
+
+            rc = WSAIoctl(rx, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid),
+                          &pWSARecvMsg, sizeof(pWSARecvMsg), &bytes, NULL, NULL);
+            CHECK(rc == 0 && pWSARecvMsg != NULL, "[WSARecvMsg] resolve extension pointer");
+
+            memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            addr.sin_port = 0;
+            CHECK(bind(rx, (struct sockaddr *)&addr, sizeof(addr)) == 0, "[WSARecvMsg] bind loopback");
+            CHECK(getsockname(rx, (struct sockaddr *)&addr, &addrlen) == 0, "[WSARecvMsg] getsockname");
+
+            CHECK(setsockopt(rx, IPPROTO_IP, IP_RECVTOS, (const char *)&one, sizeof(one)) == 0,
+                  "[WSARecvMsg] setsockopt(IP_RECVTOS=1)");
+            CHECK(setsockopt(rx, IPPROTO_IP, IP_RECVTTL, (const char *)&one, sizeof(one)) == 0,
+                  "[WSARecvMsg] setsockopt(IP_RECVTTL=1)");
+            CHECK(setsockopt(tx, IPPROTO_IP, IP_TOS, (const char *)&tos, sizeof(tos)) == 0,
+                  "[WSARecvMsg] setsockopt(IP_TOS=0x28)");
+            CHECK(setsockopt(tx, IPPROTO_IP, IP_TTL, (const char *)&ttl, sizeof(ttl)) == 0,
+                  "[WSARecvMsg] setsockopt(IP_TTL=42)");
+
+            rc = sendto(tx, payload, (int)sizeof(payload), 0, (struct sockaddr *)&addr, sizeof(addr));
+            CHECK(rc == (int)sizeof(payload), "[WSARecvMsg] sendto loopback rc=%d", rc);
+
+            if (pWSARecvMsg) {
+                DWORD recv_bytes = 0;
+                memset(&msg, 0, sizeof(msg));
+                memset(cbuf, 0, sizeof(cbuf));
+                msg.lpBuffers = &data_buf;
+                msg.dwBufferCount = 1;
+                msg.Control.buf = cbuf;
+                msg.Control.len = sizeof(cbuf);
+                rc = pWSARecvMsg(rx, &msg, &recv_bytes, NULL, NULL);
+                CHECK(rc == 0 && recv_bytes == sizeof(payload),
+                      "[WSARecvMsg] recv rc=%d bytes=%lu err=%d", rc, (unsigned long)recv_bytes, WSAGetLastError());
+                if (rc == 0) {
+                    WSACMSGHDR *cm;
+                    for (cm = WSA_CMSG_FIRSTHDR(&msg); cm != NULL; cm = WSA_CMSG_NXTHDR(&msg, cm)) {
+                        if (cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_TOS) {
+                            got_tos = 1;
+                            memcpy(&got_tos_val, WSA_CMSG_DATA(cm), sizeof(int));
+                        } else if (cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_TTL) {
+                            got_ttl = 1;
+                            memcpy(&got_ttl_val, WSA_CMSG_DATA(cm), sizeof(int));
+                        }
+                    }
+                }
+                CHECK(got_tos && got_tos_val == (int)tos,
+                      "[WSARecvMsg] IP_TOS cmsg present=%d val=0x%x (expected 0x28)", got_tos, got_tos_val);
+                CHECK(got_ttl && got_ttl_val == (int)ttl,
+                      "[WSARecvMsg] IP_TTL cmsg present=%d val=%d (expected 42)", got_ttl, got_ttl_val);
+            }
+        }
+        if (rx != INVALID_SOCKET) closesocket(rx);
+        if (tx != INVALID_SOCKET) closesocket(tx);
     }
 
     WSACleanup();

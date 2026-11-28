@@ -9,7 +9,7 @@ source "$PROJECT_DIR/scripts/lib/vkd3d.sh"
 export PATH="/opt/homebrew/bin:/usr/bin:/bin"
 require_tools x86_64-w64-mingw32-gcc python3 timeout
 WINE="$INSTALL_DIR/Wine/bin/wine64"
-SERVER="$INSTALL_DIR/Wine/bin/wineserver"
+SERVER="${WINESERVER:-$INSTALL_DIR/Wine/bin/wineserver}"
 LIBS="$PROJECT_DIR/vendor/vkd3d-proton/build.w64/libs"
 INSTALLED="$INSTALL_DIR/Wine/lib/wine/x86_64-windows"
 [ -x "$WINE" ] || { echo "ERROR: run make proton first" >&2; exit 1; }
@@ -61,7 +61,7 @@ for test in smoke compute triangle mrt depth stencil streamout; do
     source_test="$test"
     case "$test" in mrt|depth|stencil) source_test=triangle ;; esac
     exe="$RUN/d3d12_$test.exe"
-    x86_64-w64-mingw32-gcc -O2 -Wall "$SCRIPT_DIR/d3d12_$source_test.c" -o "$exe" -ld3d12 -ld3dcompiler
+    x86_64-w64-mingw32-gcc -O1 -g -Wall -fsanitize=undefined -fsanitize-undefined-trap-on-error "$SCRIPT_DIR/d3d12_$source_test.c" -o "$exe" -ld3d12 -ld3dcompiler
     status=0
     (cd "$RUN"; timeout 90 "$WINE" "$exe" "$test") > "$RUN/$test.log" 2>&1 || status=$?
     if [ "$status" -eq 0 ] && grep -q 'ALL OK' "$RUN/$test.log"; then
