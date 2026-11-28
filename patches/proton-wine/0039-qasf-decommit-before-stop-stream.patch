@@ -1,0 +1,81 @@
+Subject: qasf: decommit allocators before stopping WMReader and flush all streams on seek
+
+1. asf_reader_cleanup_stream() previously called asf_reader_stop_stream()
+   (which waits infinitely for WMT_STOPPED) before IMemAllocator_Decommit().
+   Meanwhile wmvcore's ASYNC_OP_STOP waits for stream_read_thread to exit
+   before emitting WMT_STOPPED, and stream_read_thread can be blocked inside
+   IMemAllocator_GetBuffer() waiting for Decommit -- an AB-BA deadlock on
+   IMediaControl_Stop() / FilterGraph reuse. Decommit downstream allocators
+   first (guarding pAllocator != NULL).
+2. media_seeking_ChangeCurrent() previously flushed stream->source.pin.peer
+   repeatedly in a loop over filter->stream_count instead of
+   filter->streams[i].source.pin.peer, leaving peer streams unflushed on seek.
+
+diff --git a/dlls/qasf/asfreader.c b/dlls/qasf/asfreader.c
+index 46a3d7e4..9a7f5cca 100644
+--- a/dlls/qasf/asfreader.c
++++ b/dlls/qasf/asfreader.c
+@@ -335,7 +335,8 @@ static HRESULT WINAPI media_seeking_ChangeCurrent(IMediaSeeking *iface)
+     /* Send begin flush commands downstream. */
+     for (i = 0; i < filter->stream_count; ++i)
+     {
+-        if (FAILED(IPin_BeginFlush(stream->source.pin.peer)))
++        struct asf_stream *s = &filter->streams[i];
++        if (s->source.pin.peer && FAILED(IPin_BeginFlush(s->source.pin.peer)))
+             WARN("Failed to BeginFlush for stream %u.\n", i);
+     }
+ 
+@@ -345,7 +346,8 @@ static HRESULT WINAPI media_seeking_ChangeCurrent(IMediaSeeking *iface)
+     /* Send end flush commands downstream. */
+     for (i = 0; i < filter->stream_count; ++i)
+     {
+-        if (FAILED(IPin_EndFlush(stream->source.pin.peer)))
++        struct asf_stream *s = &filter->streams[i];
++        if (s->source.pin.peer && FAILED(IPin_EndFlush(s->source.pin.peer)))
+             WARN("Failed to EndFlush for stream %u.\n", i);
+     }
+ 
+@@ -575,28 +577,35 @@ static HRESULT asf_reader_init_stream(struct strmbase_filter *iface)
+ static HRESULT asf_reader_cleanup_stream(struct strmbase_filter *iface)
+ {
+     struct asf_reader *filter = impl_from_strmbase_filter(iface);
+-    HRESULT hr = S_OK;
++    HRESULT hr = S_OK, decommit_hr;
+     int i;
+ 
+     TRACE("iface %p\n", iface);
+ 
+-    if (FAILED(hr = asf_reader_stop_stream(filter)))
+-        WARN("Failed to stop WMReader %p, hr %#lx\n", filter->reader, hr);
+-
++    /* Decommit downstream allocators before stopping WMReader so any
++     * stream_read_thread blocked in IMemAllocator_GetBuffer() wakes up with
++     * VFW_E_NOT_COMMITTED instead of deadlocking ASYNC_OP_STOP -> WMT_STOPPED. */
+     for (i = 0; i < filter->stream_count; ++i)
+     {
+         struct asf_stream *stream = filter->streams + i;
+ 
+-        if (!stream->source.pin.peer)
++        if (!stream->source.pin.peer || !stream->source.pAllocator)
+             continue;
+ 
+-        if (FAILED(hr = IMemAllocator_Decommit(stream->source.pAllocator)))
++        if (FAILED(decommit_hr = IMemAllocator_Decommit(stream->source.pAllocator)) && SUCCEEDED(hr))
+         {
+-            WARN("Failed to decommit stream %u allocator, hr %#lx\n", i, hr);
+-            break;
++            WARN("Failed to decommit stream %u allocator, hr %#lx\n", i, decommit_hr);
++            hr = decommit_hr;
+         }
+     }
+ 
++    if (FAILED(decommit_hr = asf_reader_stop_stream(filter)))
++    {
++        WARN("Failed to stop WMReader %p, hr %#lx\n", filter->reader, decommit_hr);
++        if (SUCCEEDED(hr))
++            hr = decommit_hr;
++    }
++
+     return hr;
+ }
+ 
