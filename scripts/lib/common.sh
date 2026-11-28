@@ -403,6 +403,20 @@ wine_configure() {
             "$@" \
             --disable-win16 \
             --disable-winebth.sys \
+            --disable-clock \
+            --disable-eject \
+            --disable-msinfo32 \
+            --disable-oleview \
+            --disable-progman \
+            --disable-tabtip \
+            --disable-uninstaller \
+            --disable-view \
+            --disable-whoami \
+            --disable-winefile \
+            --disable-winemine \
+            --disable-winver \
+            --disable-write \
+            --disable-wusa \
             --without-x \
             --without-wayland \
             --without-opencl \
