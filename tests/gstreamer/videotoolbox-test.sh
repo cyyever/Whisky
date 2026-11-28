@@ -75,3 +75,12 @@ if [ -x "$run_dir/probe-tysan" ]; then
             GST_REGISTRY="$run_dir/$mode-tysan.registry.bin" "$run_dir/probe-tysan" "--$mode"
     done
 fi
+MTC_DYLIB="/Applications/Xcode.app/Contents/Developer/usr/lib/libMainThreadChecker.dylib"
+if [ -f "$MTC_DYLIB" ]; then
+    xcrun clang -arch x86_64 -O1 -g -framework Cocoa @"$run_dir/flags.rsp" \
+        "$PROJECT_DIR/tests/gstreamer/videotoolbox-test.m" -o "$run_dir/probe-mtc"
+    echo "=== hardware (macOS MainThreadChecker + MallocScribble + NSZombie): twelve frames ==="
+    DYLD_INSERT_LIBRARIES="$MTC_DYLIB" MTC_CRASH_ON_REPORT=1 \
+        MallocScribble=1 MallocPreScribble=1 MallocGuardEdges=1 NSZombieEnabled=YES \
+        GST_REGISTRY="$run_dir/hardware-mtc.registry.bin" "$run_dir/probe-mtc" "--hardware"
+fi

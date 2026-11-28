@@ -69,6 +69,14 @@ if [ "$LLVM_EXTRA_SAN" = "1" ]; then
     TYSAN_OPTIONS="halt_on_error=1" "$WORK/volume-scale-tysan" >/dev/null
     echo "volume-scale-unit-test (TySan strict-aliasing): PASS"
 fi
+if [ -f /usr/lib/libgmalloc.dylib ]; then
+    xcrun clang -arch arm64 -O1 -g -Wall -Wextra \
+        -I"$PROJECT_DIR/vendor/proton-wine/dlls/winecoreaudio.drv" \
+        "$PROJECT_DIR/tests/audio/volume-scale-unit-test.c" \
+        -o "$WORK/volume-scale-gmalloc" -lm
+    DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib "$WORK/volume-scale-gmalloc" >/dev/null 2>&1
+    echo "volume-scale-unit-test (macOS Guard Malloc): PASS"
+fi
 
 echo ""
 echo "=== 2. Compile live WASAPI test PE (UBSan trap) ==="

@@ -101,6 +101,7 @@ run_case() {
 # 1. Host & script-based regression suites
 run_case "env-contract"           bash "$PROJECT_DIR/tests/env-contract-test.sh"
 run_case "libfuzzer-smoke"        bash "$PROJECT_DIR/tests/fuzz/run-fuzz.sh"
+run_case "mullion-host-sanitizers" bash "$PROJECT_DIR/tests/mullion-host-sanitizers.sh"
 run_case "gstreamer-videotoolbox" bash "$PROJECT_DIR/tests/gstreamer/videotoolbox-test.sh"
 if [ "${WHISKY_SLOW_TESTS:-0}" = "1" ]; then
     run_case "vulkan-strip-cull"  bash "$PROJECT_DIR/tests/vulkan/strip-cull-test.sh"
