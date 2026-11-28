@@ -1322,7 +1322,7 @@ new file mode 100644
 index 00000000..8da78b30
 --- /dev/null
 +++ b/dlls/winecoreaudio.drv/volume_scale.h
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,147 @@
 +/*
 + * Per-stream PCM volume scaling helpers for winecoreaudio.drv.
 + * Kept header-only with zero Wine/CoreAudio dependencies so host unit tests
@@ -1345,7 +1345,7 @@ index 00000000..8da78b30
 +
 +static inline float ca_clamp_gain(float v)
 +{
-+    return (v > 0.0f) ? v : 0.0f;
++    return (v > 0.0f && v < 1e20f) ? v : 0.0f;
 +}
 +
 +static inline void ca_compute_channel_gains(unsigned int nch, float master,
@@ -1362,7 +1362,7 @@ index 00000000..8da78b30
 +        float cv = stream_vols ? ca_clamp_gain(stream_vols[ch]) : 1.0f;
 +        float g = master * sv * cv;
 +
-+        if (!(g > 0.0f)) g = 0.0f;
++        if (!(g > 0.0f) || !(g < 1e20f)) g = 0.0f;
 +        out_gains[ch] = g;
 +        if (g != 1.0f) all_unity = 0;
 +        if (g != 0.0f) all_muted = 0;
@@ -1397,7 +1397,8 @@ index 00000000..8da78b30
 +            {
 +                unsigned int idx = f * nch + ch;
 +                double v = (double)s[idx] * (double)gains[ch];
-+                if (v > 32767.0) v = 32767.0;
++                if (!(v == v)) v = 0.0;
++                else if (v > 32767.0) v = 32767.0;
 +                else if (v < -32768.0) v = -32768.0;
 +                s[idx] = (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
 +            }
@@ -1418,7 +1419,8 @@ index 00000000..8da78b30
 +                int32_t raw = (int32_t)(u ^ 0x800000u) - 0x800000;
 +                double v = (double)raw * (double)gains[ch];
 +                uint32_t out;
-+                if (v > 8388607.0) v = 8388607.0;
++                if (!(v == v)) v = 0.0;
++                else if (v > 8388607.0) v = 8388607.0;
 +                else if (v < -8388608.0) v = -8388608.0;
 +                out = (uint32_t)(int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
 +                p[off]     = (uint8_t)(out & 0xffu);
@@ -1437,7 +1439,8 @@ index 00000000..8da78b30
 +            {
 +                unsigned int idx = f * nch + ch;
 +                double v = (double)s[idx] * (double)gains[ch];
-+                if (v > 2147483647.0) v = 2147483647.0;
++                if (!(v == v)) v = 0.0;
++                else if (v > 2147483647.0) v = 2147483647.0;
 +                else if (v < -2147483648.0) v = -2147483648.0;
 +                s[idx] = (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
 +            }
@@ -1453,7 +1456,8 @@ index 00000000..8da78b30
 +            {
 +                unsigned int idx = f * nch + ch;
 +                double v = ((double)s[idx] - 128.0) * (double)gains[ch] + 128.0;
-+                if (v > 255.0) v = 255.0;
++                if (!(v == v)) v = 128.0;
++                else if (v > 255.0) v = 255.0;
 +                else if (v < 0.0) v = 0.0;
 +                s[idx] = (uint8_t)(v + 0.5);
 +            }
