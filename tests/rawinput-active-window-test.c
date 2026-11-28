@@ -1,5 +1,5 @@
 /*
- * Regression test for patch 0042: RawInput keyboard delivery when a top-level
+ * Regression test for patch 0012: RawInput keyboard delivery when a top-level
  * window registers with hwndTarget == NULL and is active without keyboard focus
  * (GetFocus() == NULL, GetActiveWindow() == hwnd).
  *

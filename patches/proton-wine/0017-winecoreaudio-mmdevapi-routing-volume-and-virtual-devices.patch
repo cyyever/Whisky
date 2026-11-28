@@ -1,42 +1,110 @@
-Subject: winecoreaudio: per-stream volume, DefaultOutput routing, callback-driven events, GetDevicePosition, SetSampleRate, layouts, and endpoint properties
+Subject: [PATCH] winecoreaudio/mmdevapi: hide virtual devices, fix friendly names, per-stream volume, and default routing
 
-1. Replace hardware kAudioDevicePropertyVolumeScalar calls in unix_set_volumes()
-   with per-stream software PCM scaling (volume_scale.h, applied in ca_render_cb)
-   across FLOAT32, PCM16, PCM24, PCM32, and PCM8 with unity/mute fast paths.
-   WASAPI stream volume/mute no longer clobbers macOS host system volume and now
-   works on HDMI/USB/Bluetooth outputs that lack hardware volume controls.
-2. Open kAudioUnitSubType_DefaultOutput (without pinning CurrentDevice) when a
-   render stream targets the current macOS default output device, so connecting
-   or disconnecting AirPods/headphones or switching system output re-routes live
-   game audio seamlessly without restarting. Resolve the live default device in
-   unix_get_latency().
-3. For pinned non-default / capture streams, register a CoreAudio
-   kAudioDevicePropertyDeviceIsAlive listener (lock-only + Mach semaphore wake,
-   no Wine syscalls from foreign threads) and return AUDCLNT_E_DEVICE_INVALIDATED
-   once unplugged.
-4. Drive AUDCLNT_STREAMFLAGS_EVENTCALLBACK from CoreAudio RT render/capture
-   callbacks via a Mach semaphore bridged to unix_timer_loop() (Wine thread)
-   while playing, and fall back to periodic semaphore timeout pacing after
-   Stop()/Reset() until Release() to match Windows WASAPI behavior (passing all
-   4,459 mmdevapi:render tests with 0 failures).
-5. Defer AudioOutputUnitStart() from unix_create_stream() to unix_start() and
-   stop the AudioUnit in unix_stop() (outside stream->lock to avoid lock-order
-   inversion with RT callbacks), eliminating idle RT audio thread overhead.
-6. Implement IAudioClock2::GetDevicePosition (params->device == TRUE in
-   unix_get_position()) returning raw hardware frames instead of E_NOTIMPL.
-7. Implement IAudioClockAdjustment::SetSampleRate (unix_set_sample_rate(),
-   wired in both 64-bit and WoW64 unix call tables) with live AudioUnit
-   reconfiguration, error recovery, and synchronized unix_get_frequency().
-8. Parse CoreAudio kAudioChannelLayoutTag_* (bitmap, Mono, Stereo/Headphones/
-   Binaural, Quad, 5.1, 7.1, and generic channel-count tags) via shared
-   get_device_channel_layout().
-9. Implement unix_get_prop_value() for PKEY_AudioEndpoint_FormFactor (mapped
-   from CoreAudio data source and transport type: headphones/headset/speakers/
-   HDMI/DP/line/SPDIF/microphone) and PKEY_AudioEndpoint_PhysicalSpeakers
-   (speaker channel mask from get_device_channel_layout()).
+Consolidated patches:
+  - (0009) mmdevapi, winecoreaudio: hide virtual audio devices and avoid friendly-name rewrap
+subj='mmdevapi, winecoreaudio: hide virtual audio devices and avoid friendly-name rewrap'
+  - (0028) winecoreaudio: per-stream volume, DefaultOutput routing, callback-driven events, GetDevicePosition, SetSampleRate, layouts, and endpoint properties
 
+---
+diff --git a/dlls/mmdevapi/devenum.c b/dlls/mmdevapi/devenum.c
+index 7fd518de..1c73feb0 100644
+--- a/dlls/mmdevapi/devenum.c
++++ b/dlls/mmdevapi/devenum.c
+@@ -664,6 +664,12 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+     {
+         HKEY keyprop;
+         RegSetValueExW(key, L"DeviceState", 0, REG_DWORD, (const BYTE*)&state, sizeof(DWORD));
++        /* The driver id, kept as itself. Every friendly name in the block below
++         * is derived from it, so it is the one value that must survive a
++         * round-trip through the registry undecorated -- see
++         * load_devices_from_reg. */
++        RegSetValueExW(key, L"DriverId", 0, REG_SZ, (const BYTE*)cur->drv_id,
++                       (wcslen(cur->drv_id) + 1) * sizeof(WCHAR));
+         if (!RegCreateKeyExW(key, L"Properties", 0, NULL, 0, KEY_WRITE|KEY_READ|KEY_WOW64_64KEY, NULL, &keyprop, NULL))
+         {
+             PROPVARIANT pv;
+@@ -706,10 +712,20 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
+ 
+             if (FAILED(set_driver_prop_value(id, flow, &PKEY_AudioEndpoint_FormFactor)))
+             {
+-                pv.vt = VT_UI4;
+-                pv.ulVal = (flow == eCapture) ? Microphone : Speakers;
++                PROPVARIANT pv2;
++
++                PropVariantInit(&pv2);
+ 
+-                MMDevice_SetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv);
++                /* make read-write by not overwriting if already set: a device
++                 * that is no longer present has no driver to ask, and the
++                 * generic value would replace whatever it was stored as */
++                if (FAILED(MMDevice_GetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv2)) || pv2.vt != VT_UI4)
++                {
++                    pv.vt = VT_UI4;
++                    pv.ulVal = (flow == eCapture) ? Microphone : Speakers;
++
++                    MMDevice_SetPropValue(id, flow, &PKEY_AudioEndpoint_FormFactor, &pv);
++                }
+             }
+ 
+             if (flow != eCapture)
+@@ -770,6 +786,12 @@ HRESULT load_devices_from_reg(void)
+         return E_FAIL;
+     }
+ 
++    /* Keep the property-store keys initialized even when cached devices are
++     * hidden. Live devices still need these keys for their properties. */
++    const char *hide_virtual = getenv("WHISKY_HIDE_VIRTUAL_AUDIO");
++    if (!hide_virtual || strcmp(hide_virtual, "0") != 0)
++        return S_OK;
++
+     do {
+         WCHAR guidvalue[39];
+         GUID guid;
+@@ -791,13 +813,36 @@ HRESULT load_devices_from_reg(void)
+         }
+         if (ret != ERROR_SUCCESS)
+             continue;
+-        if (SUCCEEDED(CLSIDFromString(guidvalue, &guid))
+-            && SUCCEEDED(MMDevice_GetPropValue(&guid, curflow, (const PROPERTYKEY*)&DEVPKEY_Device_FriendlyName, &pv))
+-            && pv.vt == VT_LPWSTR)
++        if (SUCCEEDED(CLSIDFromString(guidvalue, &guid)))
+         {
+-            MMDevice_Create(pv.pwszVal, &guid, curflow,
+-                    DEVICE_STATE_NOTPRESENT, FALSE);
+-            CoTaskMemFree(pv.pwszVal);
++            WCHAR *driver_id = NULL;
++            DWORD size = 0;
++
++            /* MMDevice_Create derives the friendly name from the driver id as
++             * "Speakers (%s)". Seeding it from that name instead fed the
++             * derivation its own output, so every enumeration of a device that
++             * is no longer present wrapped the stored name in another layer --
++             * unboundedly, and persisted. Prefer the id kept for this purpose;
++             * fall back to the interface friendly name, which is the id
++             * undecorated, for keys written before it existed. Doing so also
++             * writes DriverId, so a bottle converges after one enumeration. */
++            if (!RegGetValueW(cur, guidvalue, L"DriverId", RRF_RT_REG_SZ, NULL, NULL, &size)
++                && (driver_id = malloc(size))
++                && !RegGetValueW(cur, guidvalue, L"DriverId", RRF_RT_REG_SZ, NULL,
++                                 driver_id, &size))
++            {
++                MMDevice_Create(driver_id, &guid, curflow,
++                        DEVICE_STATE_NOTPRESENT, FALSE);
++            }
++            else if (SUCCEEDED(MMDevice_GetPropValue(&guid, curflow,
++                        (const PROPERTYKEY*)&DEVPKEY_DeviceInterface_FriendlyName, &pv))
++                     && pv.vt == VT_LPWSTR)
++            {
++                MMDevice_Create(pv.pwszVal, &guid, curflow,
++                        DEVICE_STATE_NOTPRESENT, FALSE);
++                CoTaskMemFree(pv.pwszVal);
++            }
++            free(driver_id);
+         }
+     } while (1);
+ 
 diff --git a/dlls/winecoreaudio.drv/coreaudio.c b/dlls/winecoreaudio.drv/coreaudio.c
-index 20d84a89..02ba9cb8 100644
+index b9c6e705..02ba9cb8 100644
 --- a/dlls/winecoreaudio.drv/coreaudio.c
 +++ b/dlls/winecoreaudio.drv/coreaudio.c
 @@ -47,7 +47,10 @@
@@ -82,7 +150,45 @@ index 20d84a89..02ba9cb8 100644
      REFERENCE_TIME period;
      UINT32 period_frames;
      UINT32 bufsize_frames, resamp_bufsize_frames;
-@@ -412,6 +424,79 @@ static void silence_buffer(struct coreaudio_stream *stream, BYTE *buffer, UINT32
+@@ -221,6 +233,29 @@ static NTSTATUS unix_main_loop(void *args)
+     return STATUS_SUCCESS;
+ }
+ 
++/* Hide virtual audio devices (Steam Streaming, Teams, loopback, ...) from apps
++ * by default. Some games hang forever enumerating them. Physical
++ * (built-in/USB/Bluetooth) and aggregate devices are left untouched; set
++ * WHISKY_HIDE_VIRTUAL_AUDIO=0 to disable. */
++static BOOL device_is_hidden_virtual(AudioDeviceID device)
++{
++    static int hide = -1;
++    AudioObjectPropertyAddress addr;
++    UInt32 transport, size;
++    OSStatus sc;
++
++    if(hide == -1) { const char *e = getenv("WHISKY_HIDE_VIRTUAL_AUDIO"); hide = (!e || strcmp(e, "0") != 0) ? 1 : 0; }
++    if(!hide) return FALSE;
++
++    addr.mSelector = kAudioDevicePropertyTransportType;
++    addr.mScope = kAudioObjectPropertyScopeGlobal;
++    addr.mElement = kAudioObjectPropertyElementMain;
++    size = sizeof(transport);
++    sc = AudioObjectGetPropertyData(device, &addr, 0, NULL, &size, &transport);
++    if(sc != noErr) return FALSE;
++    return transport == kAudioDeviceTransportTypeVirtual;
++}
++
+ static NTSTATUS unix_get_endpoint_ids(void *args)
+ {
+     struct get_endpoint_ids_params *params = args;
+@@ -289,6 +324,7 @@ static NTSTATUS unix_get_endpoint_ids(void *args)
+ 
+     for(i = 0; i < num_devices; i++){
+         if(!device_has_channels(devices[i], params->flow)) continue;
++        if(device_is_hidden_virtual(devices[i])) continue;
+ 
+         addr.mSelector = kAudioObjectPropertyName;
+         size = sizeof(CFStringRef);
+@@ -388,6 +424,79 @@ static void silence_buffer(struct coreaudio_stream *stream, BYTE *buffer, UINT32
          memset(buffer, 0, frames * stream->fmt->nBlockAlign);
  }
  
@@ -162,7 +268,7 @@ index 20d84a89..02ba9cb8 100644
  /* CA is pulling data from us */
  static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
          const AudioTimeStamp *ts, UInt32 bus, UInt32 nframes,
-@@ -419,10 +504,11 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
+@@ -395,10 +504,11 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
  {
      struct coreaudio_stream *stream = user;
      UINT32 to_copy_bytes, to_copy_frames, chunk_bytes, lcl_offs_bytes;
@@ -175,7 +281,7 @@ index 20d84a89..02ba9cb8 100644
          lcl_offs_bytes = stream->lcl_offs_frames * stream->fmt->nBlockAlign;
          to_copy_frames = min(nframes, stream->held_frames);
          to_copy_bytes = to_copy_frames * stream->fmt->nBlockAlign;
-@@ -435,9 +521,28 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
+@@ -411,9 +521,28 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
          }else
              memcpy(data->mBuffers[0].mData, stream->local_buffer + lcl_offs_bytes, to_copy_bytes);
  
@@ -204,7 +310,7 @@ index 20d84a89..02ba9cb8 100644
      }else
          to_copy_bytes = to_copy_frames = 0;
  
-@@ -446,6 +551,10 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
+@@ -422,6 +551,10 @@ static OSStatus ca_render_cb(void *user, AudioUnitRenderActionFlags *flags,
  
      os_unfair_lock_unlock(&stream->lock);
  
@@ -215,7 +321,7 @@ index 20d84a89..02ba9cb8 100644
      return noErr;
  }
  
-@@ -502,7 +611,9 @@ static OSStatus ca_capture_cb(void *user, AudioUnitRenderActionFlags *flags,
+@@ -478,7 +611,9 @@ static OSStatus ca_capture_cb(void *user, AudioUnitRenderActionFlags *flags,
          return sc;
      }
  
@@ -226,7 +332,7 @@ index 20d84a89..02ba9cb8 100644
          if(list.mBuffers[0].mData == stream->wrap_buffer){
              ca_wrap_buffer(stream->cap_buffer,
                      cap_wri_offs_frames * stream->fmt->nBlockAlign,
-@@ -510,19 +621,35 @@ static OSStatus ca_capture_cb(void *user, AudioUnitRenderActionFlags *flags,
+@@ -486,19 +621,35 @@ static OSStatus ca_capture_cb(void *user, AudioUnitRenderActionFlags *flags,
                      stream->wrap_buffer, list.mBuffers[0].mDataByteSize);
          }
  
@@ -264,7 +370,7 @@ index 20d84a89..02ba9cb8 100644
  {
      AudioComponentInstance unit;
      AudioComponent comp;
-@@ -531,7 +658,9 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
+@@ -507,7 +658,9 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
  
      memset(&desc, 0, sizeof(desc));
      desc.componentType = kAudioUnitType_Output;
@@ -275,7 +381,7 @@ index 20d84a89..02ba9cb8 100644
      desc.componentManufacturer = kAudioUnitManufacturer_Apple;
  
      if(!(comp = AudioComponentFindNext(NULL, &desc))){
-@@ -567,12 +696,14 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
+@@ -543,12 +696,14 @@ static AudioComponentInstance get_audiounit(EDataFlow dataflow, AudioDeviceID ad
          }
      }
  
@@ -296,7 +402,7 @@ index 20d84a89..02ba9cb8 100644
      }
  
      return unit;
-@@ -628,6 +759,8 @@ static HRESULT ca_get_audiodesc(AudioStreamBasicDescription *desc,
+@@ -604,6 +759,8 @@ static HRESULT ca_get_audiodesc(AudioStreamBasicDescription *desc,
      return S_OK;
  }
  
@@ -305,7 +411,7 @@ index 20d84a89..02ba9cb8 100644
  static HRESULT ca_setup_audiounit(EDataFlow dataflow, AudioComponentInstance unit,
                                    const WAVEFORMATEX *fmt, AudioStreamBasicDescription *dev_desc,
                                    AudioConverterRef *converter)
-@@ -700,9 +833,14 @@ static HRESULT ca_setup_audiounit(EDataFlow dataflow, AudioComponentInstance uni
+@@ -676,9 +833,14 @@ static HRESULT ca_setup_audiounit(EDataFlow dataflow, AudioComponentInstance uni
              return osstatus_to_hresult(sc);
          }
  
@@ -322,7 +428,7 @@ index 20d84a89..02ba9cb8 100644
          layout.mNumberChannelDescriptions = 0;
  
          sc = AudioUnitSetProperty(unit, kAudioUnitProperty_AudioChannelLayout,
-@@ -757,12 +895,21 @@ static NTSTATUS unix_create_stream(void *args)
+@@ -733,12 +895,21 @@ static NTSTATUS unix_create_stream(void *args)
          params->result = E_OUTOFMEMORY;
          return STATUS_SUCCESS;
      }
@@ -344,7 +450,7 @@ index 20d84a89..02ba9cb8 100644
  
      stream->period = params->period;
      stream->period_frames = muldiv(params->period, stream->fmt->nSamplesPerSec, 10000000);
-@@ -770,12 +917,18 @@ static NTSTATUS unix_create_stream(void *args)
+@@ -746,12 +917,18 @@ static NTSTATUS unix_create_stream(void *args)
      stream->flow = params->flow;
      stream->flags = params->flags;
      stream->share = params->share;
@@ -364,7 +470,7 @@ index 20d84a89..02ba9cb8 100644
          params->result = AUDCLNT_E_DEVICE_INVALIDATED;
          goto end;
      }
-@@ -806,14 +959,10 @@ static NTSTATUS unix_create_stream(void *args)
+@@ -782,14 +959,10 @@ static NTSTATUS unix_create_stream(void *args)
          goto end;
      }
  
@@ -383,7 +489,7 @@ index 20d84a89..02ba9cb8 100644
  
      size = stream->bufsize_frames * stream->fmt->nBlockAlign;
      if(NtAllocateVirtualMemory(GetCurrentProcess(), (void **)&stream->local_buffer, zero_bits,
-@@ -827,12 +976,34 @@ static NTSTATUS unix_create_stream(void *args)
+@@ -803,12 +976,34 @@ static NTSTATUS unix_create_stream(void *args)
          stream->cap_bufsize_frames = muldiv(params->duration, stream->dev_desc.mSampleRate, 10000000);
          stream->cap_buffer = malloc(stream->cap_bufsize_frames * stream->fmt->nBlockAlign);
      }
@@ -418,7 +524,7 @@ index 20d84a89..02ba9cb8 100644
          free(stream->fmt);
          free(stream);
      } else {
-@@ -851,16 +1022,36 @@ static NTSTATUS unix_release_stream( void *args )
+@@ -827,16 +1022,36 @@ static NTSTATUS unix_release_stream( void *args )
  
      if(params->timer_thread){
          stream->please_quit = TRUE;
@@ -456,7 +562,7 @@ index 20d84a89..02ba9cb8 100644
      free(stream->resamp_buffer);
      free(stream->wrap_buffer);
      free(stream->cap_buffer);
-@@ -1024,85 +1215,144 @@ static DWORD get_channel_mask(unsigned int channels)
+@@ -1000,85 +1215,144 @@ static DWORD get_channel_mask(unsigned int channels)
      return 0;
  }
  
@@ -608,8 +714,8 @@ index 20d84a89..02ba9cb8 100644
  
 -        params->fmt->dwChannelMask = get_channel_mask(params->fmt->Format.nChannels);
 +        fmt->dwChannelMask = get_channel_mask(fmt->Format.nChannels);
-     }
- 
++    }
++
 +    return S_OK;
 +}
 +
@@ -629,14 +735,14 @@ index 20d84a89..02ba9cb8 100644
 +    if(FAILED(hr)){
 +        params->result = hr;
 +        return STATUS_SUCCESS;
-+    }
-+
+     }
+ 
 +    addr.mScope = get_scope(params->flow);
 +    addr.mElement = 0;
      addr.mSelector = kAudioDevicePropertyNominalSampleRate;
      size = sizeof(Float64);
      sc = AudioObjectGetPropertyData(dev_id, &addr, 0, NULL, &size, &rate);
-@@ -1135,7 +1385,7 @@ static NTSTATUS unix_is_format_supported(void *args)
+@@ -1111,7 +1385,7 @@ static NTSTATUS unix_is_format_supported(void *args)
      AudioComponentInstance unit;
      const AudioDeviceID dev_id = dev_id_from_device(params->device);
  
@@ -645,7 +751,7 @@ index 20d84a89..02ba9cb8 100644
  
      converter = NULL;
      params->result = ca_setup_audiounit(params->flow, unit, params->fmt_in, &dev_desc, &converter);
-@@ -1271,7 +1521,7 @@ static NTSTATUS unix_get_buffer_size(void *args)
+@@ -1247,7 +1521,7 @@ static NTSTATUS unix_get_buffer_size(void *args)
      return STATUS_SUCCESS;
  }
  
@@ -654,7 +760,7 @@ index 20d84a89..02ba9cb8 100644
  {
      AudioObjectPropertyAddress addr;
      AudioStreamID *ids;
-@@ -1279,11 +1529,11 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
+@@ -1255,11 +1529,11 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
      OSStatus sc;
      int nstreams, i;
  
@@ -668,7 +774,7 @@ index 20d84a89..02ba9cb8 100644
      if(sc != noErr){
          WARN("Unable to get size for _Streams property: %x\n", (int)sc);
          return osstatus_to_hresult(sc);
-@@ -1293,7 +1543,7 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
+@@ -1269,7 +1543,7 @@ static HRESULT ca_get_max_stream_latency(struct coreaudio_stream *stream, UInt32
      if(!ids)
          return E_OUTOFMEMORY;
  
@@ -677,7 +783,7 @@ index 20d84a89..02ba9cb8 100644
      if(sc != noErr){
          WARN("Unable to get _Streams property: %x\n", (int)sc);
          free(ids);
-@@ -1327,18 +1577,31 @@ static NTSTATUS unix_get_latency(void *args)
+@@ -1303,18 +1577,31 @@ static NTSTATUS unix_get_latency(void *args)
  {
      struct get_latency_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -710,7 +816,7 @@ index 20d84a89..02ba9cb8 100644
      if(sc != noErr){
          WARN("Couldn't get _Latency property: %x\n", (int)sc);
          os_unfair_lock_unlock(&stream->lock);
-@@ -1346,7 +1609,7 @@ static NTSTATUS unix_get_latency(void *args)
+@@ -1322,7 +1609,7 @@ static NTSTATUS unix_get_latency(void *args)
          return STATUS_SUCCESS;
      }
  
@@ -719,7 +825,7 @@ index 20d84a89..02ba9cb8 100644
      if(FAILED(params->result)){
          os_unfair_lock_unlock(&stream->lock);
          return STATUS_SUCCESS;
-@@ -1374,6 +1637,11 @@ static NTSTATUS unix_get_current_padding(void *args)
+@@ -1350,6 +1637,11 @@ static NTSTATUS unix_get_current_padding(void *args)
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
  
      os_unfair_lock_lock(&stream->lock);
@@ -731,7 +837,7 @@ index 20d84a89..02ba9cb8 100644
      *params->padding = get_current_padding_nolock(stream);
      os_unfair_lock_unlock(&stream->lock);
      params->result = S_OK;
-@@ -1384,20 +1652,51 @@ static NTSTATUS unix_start(void *args)
+@@ -1360,20 +1652,51 @@ static NTSTATUS unix_start(void *args)
  {
      struct start_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -784,7 +890,7 @@ index 20d84a89..02ba9cb8 100644
      return STATUS_SUCCESS;
  }
  
-@@ -1405,18 +1704,36 @@ static NTSTATUS unix_stop(void *args)
+@@ -1381,18 +1704,36 @@ static NTSTATUS unix_stop(void *args)
  {
      struct stop_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -821,7 +927,7 @@ index 20d84a89..02ba9cb8 100644
      return STATUS_SUCCESS;
  }
  
-@@ -1441,6 +1758,7 @@ static NTSTATUS unix_reset(void *args)
+@@ -1417,6 +1758,7 @@ static NTSTATUS unix_reset(void *args)
          stream->wri_offs_frames = 0;
          stream->cap_offs_frames = 0;
          stream->cap_held_frames = 0;
@@ -829,7 +935,7 @@ index 20d84a89..02ba9cb8 100644
          params->result = S_OK;
      }
  
-@@ -1452,26 +1770,107 @@ static NTSTATUS unix_timer_loop(void *args)
+@@ -1428,26 +1770,107 @@ static NTSTATUS unix_timer_loop(void *args)
  {
      struct timer_loop_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -910,7 +1016,10 @@ index 20d84a89..02ba9cb8 100644
 +                }
 +                pthread_mutex_unlock(&stream->unit_lock);
 +            }
-+
+ 
+-    while(!stream->please_quit){
+-        NtSetEvent(stream->event, NULL);
+-        NtDelayExecution(FALSE, &delay);
 +            if(should_signal)
 +                NtSetEvent(stream->event, NULL);
 +        }
@@ -920,10 +1029,7 @@ index 20d84a89..02ba9cb8 100644
 +    {
 +        LARGE_INTEGER delay, next, last;
 +        int adjust;
- 
--    while(!stream->please_quit){
--        NtSetEvent(stream->event, NULL);
--        NtDelayExecution(FALSE, &delay);
++
 +        delay.QuadPart = -stream->period;
          NtQueryPerformanceCounter(&last, NULL);
 +        next.QuadPart = last.QuadPart + stream->period;
@@ -952,7 +1058,7 @@ index 20d84a89..02ba9cb8 100644
      }
  
      return STATUS_SUCCESS;
-@@ -1486,6 +1885,11 @@ static NTSTATUS unix_get_render_buffer(void *args)
+@@ -1462,6 +1885,11 @@ static NTSTATUS unix_get_render_buffer(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -964,7 +1070,7 @@ index 20d84a89..02ba9cb8 100644
      pad = get_current_padding_nolock(stream);
  
      if(stream->getbuf_last){
-@@ -1542,7 +1946,9 @@ static NTSTATUS unix_release_render_buffer(void *args)
+@@ -1518,7 +1946,9 @@ static NTSTATUS unix_release_render_buffer(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -975,7 +1081,7 @@ index 20d84a89..02ba9cb8 100644
          stream->getbuf_last = 0;
          params->result = S_OK;
      }else if(!stream->getbuf_last)
-@@ -1588,6 +1994,11 @@ static NTSTATUS unix_get_capture_buffer(void *args)
+@@ -1564,6 +1994,11 @@ static NTSTATUS unix_get_capture_buffer(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -987,7 +1093,7 @@ index 20d84a89..02ba9cb8 100644
      if(stream->getbuf_last){
          params->result = AUDCLNT_E_OUT_OF_ORDER;
          goto end;
-@@ -1641,7 +2052,9 @@ static NTSTATUS unix_release_capture_buffer(void *args)
+@@ -1617,7 +2052,9 @@ static NTSTATUS unix_release_capture_buffer(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -998,7 +1104,7 @@ index 20d84a89..02ba9cb8 100644
          stream->getbuf_last = 0;
          params->result = S_OK;
      }else if(!stream->getbuf_last)
-@@ -1669,6 +2082,12 @@ static NTSTATUS unix_get_next_packet_size(void *args)
+@@ -1645,6 +2082,12 @@ static NTSTATUS unix_get_next_packet_size(void *args)
  
      os_unfair_lock_lock(&stream->lock);
  
@@ -1011,7 +1117,7 @@ index 20d84a89..02ba9cb8 100644
      capture_resample(stream);
  
      if(stream->held_frames >= stream->period_frames)
-@@ -1688,17 +2107,20 @@ static NTSTATUS unix_get_position(void *args)
+@@ -1664,17 +2107,20 @@ static NTSTATUS unix_get_position(void *args)
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
      LARGE_INTEGER stamp;
  
@@ -1038,7 +1144,7 @@ index 20d84a89..02ba9cb8 100644
          *params->pos *= stream->fmt->nBlockAlign;
  
      if(params->qpctime){
-@@ -1717,10 +2139,12 @@ static NTSTATUS unix_get_frequency(void *args)
+@@ -1693,10 +2139,12 @@ static NTSTATUS unix_get_frequency(void *args)
      struct get_frequency_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
  
@@ -1051,7 +1157,7 @@ index 20d84a89..02ba9cb8 100644
  
      params->result = S_OK;
      return STATUS_SUCCESS;
-@@ -1739,12 +2163,120 @@ static NTSTATUS unix_is_started(void *args)
+@@ -1715,12 +2163,120 @@ static NTSTATUS unix_is_started(void *args)
      return STATUS_SUCCESS;
  }
  
@@ -1173,7 +1279,7 @@ index 20d84a89..02ba9cb8 100644
      return STATUS_SUCCESS;
  }
  
-@@ -1752,31 +2284,19 @@ static NTSTATUS unix_set_volumes(void *args)
+@@ -1728,31 +2284,19 @@ static NTSTATUS unix_set_volumes(void *args)
  {
      struct set_volumes_params *params = args;
      struct coreaudio_stream *stream = handle_get_stream(params->stream);
@@ -1194,9 +1300,9 @@ index 20d84a89..02ba9cb8 100644
 -
 -    for (i = 1; i <= stream->fmt->nChannels; ++i) {
 -        const float vol = level * params->session_volumes[i - 1] * params->volumes[i - 1];
- 
--        prop_addr.mElement = i;
 -
+-        prop_addr.mElement = i;
+ 
 -        sc = AudioObjectSetPropertyData(stream->dev_id, &prop_addr, 0, NULL, sizeof(float), &vol);
 -        if (sc != noErr) {
 -            WARN("Couldn't set channel #%u volume: %x\n", i, (int)sc);
@@ -1216,7 +1322,7 @@ index 20d84a89..02ba9cb8 100644
  
      return STATUS_SUCCESS;
  }
-@@ -1802,6 +2322,82 @@ static NTSTATUS unix_set_event_handle(void *args)
+@@ -1778,6 +2322,82 @@ static NTSTATUS unix_set_event_handle(void *args)
      return STATUS_SUCCESS;
  }
  
@@ -1299,7 +1405,7 @@ index 20d84a89..02ba9cb8 100644
  const unixlib_entry_t __wine_unix_call_funcs[] =
  {
      unix_process_attach,
-@@ -1830,7 +2426,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+@@ -1806,7 +2426,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
      unix_get_position,
      unix_set_volumes,
      unix_set_event_handle,
@@ -1308,7 +1414,7 @@ index 20d84a89..02ba9cb8 100644
      unix_not_implemented,
      unix_is_started,
      unix_get_prop_value,
-@@ -2286,7 +2882,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+@@ -2262,7 +2882,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
      unix_wow64_get_position,
      unix_wow64_set_volumes,
      unix_wow64_set_event_handle,
@@ -1319,7 +1425,7 @@ index 20d84a89..02ba9cb8 100644
      unix_wow64_get_prop_value,
 diff --git a/dlls/winecoreaudio.drv/volume_scale.h b/dlls/winecoreaudio.drv/volume_scale.h
 new file mode 100644
-index 00000000..8da78b30
+index 00000000..7a9c5009
 --- /dev/null
 +++ b/dlls/winecoreaudio.drv/volume_scale.h
 @@ -0,0 +1,147 @@

@@ -1,5 +1,5 @@
 /*
- * Regression test for patches/proton-wine/0027-ntdll-propagate-steam-appid-to-unix-env.patch.
+ * Regression test for patches/proton-wine/0007-ntdll-kernelbase-macos-and-steam-defaults.patch.
  *
  * Verifies that when a Windows parent process (such as Steam.exe) launches a
  * child via CreateProcessW with SteamAppId / SteamGameId in the Windows

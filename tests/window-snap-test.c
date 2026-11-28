@@ -1,5 +1,5 @@
 /*
- * window-snap-test — assert the borderless-fullscreen snap (patches/proton-wine/0023)
+ * window-snap-test — assert the borderless-fullscreen snap (patches/proton-wine/0012)
  * moves exactly the windows it should and no others, and that Wine's own idea of
  * the window position agrees with where the window ended up.
  *

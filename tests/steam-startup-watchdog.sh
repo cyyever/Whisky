@@ -79,7 +79,7 @@ capture() {
     ps -eo pid,ppid,etime,%cpu,args >"$OUT/ps.txt" 2>&1
 
     # 3. Logs. cef_log.txt now carries the CEF children's own account of why they
-    #    exit (patch 0025 adds --enable-logging --v=1); the Whisky run log carries
+    #    exit (patch 0007 adds --enable-logging --v=1); the Whisky run log carries
     #    the Wine side, including +process exit codes when Steam.exe's per-program
     #    WINEDEBUG asks for them.
     for f in cef_log.txt webhelper.txt bootstrap_log.txt console_log.txt \

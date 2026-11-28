@@ -137,7 +137,7 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     -Dgst-plugins-base:gl_api=opengl
     -Dgst-plugins-base:gl_platform=cgl
     -Dgst-plugins-base:gl_winsys=cocoa
-    # Since proton-wine patch 0004 (no GL display on macOS) winegstreamer's GL
+    # Since proton-wine patch 0019 (no GL display on macOS) winegstreamer's GL
     # element chain is never built; Wine's configure needs only libgstgl-1.0,
     # so skip gl-graphene and avoid building the entire graphene wrap subproject.
     -Dgst-plugins-base:gl-graphene=disabled
@@ -166,7 +166,7 @@ meson_args=( "$BUILD_DIR" "$GST_SRC"
     # h264parse. wg_transform's decoder chain looks for a parser first and only
     # falls back to feeding the decoder the raw input caps; without it Steam's
     # CEF video hits that fallback, where an avdec_h264 workaround tries to
-    # rewrite caps it does not own -- see patch 0004. The parser is the path
+    # rewrite caps it does not own -- see patch 0019. The parser is the path
     # that code was written for, so build it rather than only fixing the
     # fallback.
     -Dgst-plugins-bad:videoparsers=enabled )

@@ -1,7 +1,7 @@
 /*
  * msync close-during-wait regression probe.
  *
- * Verifies proton-wine patch 0007 (msync last-handle-close mutex retention +
+ * Verifies proton-wine patch 0002 (msync last-handle-close mutex retention +
  * client per-wait object snapshot) preserves correctness for non-mutex objects
  * (events / semaphores).
  *

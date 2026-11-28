@@ -40,7 +40,7 @@ Wine on macOS never delivered `WM_ACTIVATEAPP`, so a game that re-Acquires its
 DirectInput device on focus change never did. `input-after-switch-test.c`
 polls XInput and DirectInput side by side to show which layer stopped;
 `tests/app-activation-test.sh` is the one that reproduces the cause, without a
-human at the keyboard. Fixed by `patches/proton-wine/0038`.
+human at the keyboard. Fixed by `patches/proton-wine/0016`.
 
 ## Hardware notes
 

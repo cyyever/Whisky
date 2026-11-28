@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Verify patches/proton-wine/0017-macos-metal-builtin-dll-loadorder.patch: the
+# Verify patches/proton-wine/0006-ntdll-macos-builtin-loadorder-and-native-warning.patch: the
 # D3D/Vulkan stack must default to *builtin* in Wine's load order, with NO
 # WINEDLLOVERRIDES set. Cross-compiles loadorder_probe.exe and, for each module,
 # LoadLibrary's it under WINEDEBUG=+module (the channel loadorder.c logs on) and
@@ -21,7 +21,7 @@ set -euo pipefail
 # if DXVK happens to be unsigned. The placeholder is never loaded: builtin
 # resolution pulls the real module from Wine's lib dir.
 #
-# Uses a throwaway prefix (.build/run.*/prefix) so a bottle's own — or stale, pre-0017 —
+# Uses a throwaway prefix (.build/run.*/prefix) so a bottle's own — or stale, pre-0006 —
 # DllOverrides can't mask the load-order DEFAULT this is testing.
 #
 # Usage: tests/loadorder/run.sh
@@ -78,11 +78,11 @@ for d in d3d9 d3d8 d3d11 d3d10core dxgi d3d12 d3d12core vulkan-1 xaudio2_7 xaudi
     status=0
     WINEDEBUG=+module timeout 60 "$WINE" "$EXE" "$d.dll" > "$TRACE" 2>&1 || status=$?
     rm -f "$WORK/$d.dll"
-    # patch 0017 logs: got fork builtin b for L"...\<d>.dll"
+    # patch 0006 logs: got fork builtin b for L"...\<d>.dll"
     if [ "$status" -eq 0 ] && grep -qiE "fork builtin b for .*\\\\${d}\.dll" "$TRACE"; then
         echo "  $d: builtin ✓"; pass=$((pass + 1))
     else
-        echo "  $d: NOT builtin ✗  (0017 not applied/superseded — see $TRACE)"; fail=$((fail + 1))
+        echo "  $d: NOT builtin ✗  (0006 not applied/superseded — see $TRACE)"; fail=$((fail + 1))
     fi
 done
 

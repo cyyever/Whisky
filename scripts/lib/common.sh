@@ -54,7 +54,7 @@ export DEVELOPER_DIR
 # that signature (dlls/setupapi/fakedll.c read_file/install_lib_dir). winebuild
 # stamps Wine's own builtins; DXVK is built by mingw and lacks it, so
 # on a fresh bottle LoadLibraryA("d3d9.dll") would fail with STATUS_DLL_NOT_FOUND
-# *before* patch 0012's load order (which forces builtin) ever runs. We overwrite
+# *before* patch 0006's load order (which forces builtin) ever runs. We overwrite
 # only the DOS stub at offset 64 — never executed by the PE loader; e_lfanew (128)
 # is well clear, so the NT header is untouched.
 mark_wine_builtin() {  # <pe-file>
@@ -130,7 +130,7 @@ apply_patches() {
     # so there is nothing to do -- and the loop below could not do it anyway. Its
     # "is this applied?" test reverse-checks one patch against the working tree,
     # which cannot hold whenever a later patch edits a file an earlier one CREATES
-    # (for example, a follow-up patch touching msync_*.c created by 0007). That
+    # (for example, a follow-up patch touching msync_*.c created by 0002). That
     # test only ever held because `reset` guaranteed an unpatched base, and reset
     # is itself a no-op here -- the patched state is committed, not a working-tree
     # edit.
@@ -177,10 +177,10 @@ apply_patches() {
 #   * PATH gains Wine/bin so wine64/wineserver are directly on PATH;
 #   * WINEPREFIX points at the bottle;
 #   * DYLD_FALLBACK_LIBRARY_PATH points at Wine/lib (dylib resolution);
-#   * WINEMSYNC defaults to 1 (matching patch 0007's inproc_sync backend).
+#   * WINEMSYNC defaults to 1 (matching patch 0002's inproc_sync backend).
 #     An existing WINEMSYNC override takes precedence for diagnostic runs.
 # Deliberately does NOT emit WINEDLLOVERRIDES (the app no longer sets it — patch
-# 0012's builtin load order handles D3D/Vulkan).
+# 0006's builtin load order handles D3D/Vulkan).
 bottle_shellenv() {
     local bottle_dir="$1"
     if [ -z "$bottle_dir" ] || [ ! -d "$bottle_dir" ]; then

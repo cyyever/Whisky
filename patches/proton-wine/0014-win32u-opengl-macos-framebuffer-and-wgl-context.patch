@@ -1,0 +1,127 @@
+Subject: [PATCH] win32u/opengl32: macOS framebuffer surface and safe WGL context attribute copy
+
+Consolidated patches:
+  - (0003) win32u/opengl: macOS framebuffer-surface build and DSA guard
+subj='win32u/opengl: macOS framebuffer-surface build and DSA guard'
+  - (0025) opengl32: copy context attributes safely before calling the driver
+
+---
+diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
+index 5f6449b7..718c5db0 100644
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -574,19 +574,34 @@ static void update_teb32_context( TEB *teb )
+ #endif
+ }
+ 
+-static int *memdup_attribs( const int *attribs )
++static BOOL memdup_attribs( const int *attribs, int **ret )
+ {
+     const int *attr;
+     size_t size;
+-    int *copy;
++    int *volatile copy = NULL;
+ 
+-    if (!(attr = attribs)) return NULL;
+-    while (*attr++) { /* nothing */ }
+-
+-    size = (attr - attribs) * sizeof(*attr);
+-    if (!(copy = malloc( size ))) return NULL;
+-    memcpy( copy, attribs, size );
+-    return copy;
++    *ret = NULL;
++    if (!attribs) return TRUE;
++    __TRY
++    {
++        for (attr = attribs; *attr; attr += 2) { /* name/value pairs */ }
++        size = (attr - attribs + 1) * sizeof(*attr);
++        if ((copy = malloc( size ))) memcpy( copy, attribs, size );
++    }
++    __EXCEPT
++    {
++        free( copy );
++        RtlSetLastWin32Error( ERROR_NOACCESS );
++        return FALSE;
++    }
++    __ENDTRY
++    if (!copy)
++    {
++        RtlSetLastWin32Error( ERROR_NOT_ENOUGH_MEMORY );
++        return FALSE;
++    }
++    *ret = copy;
++    return TRUE;
+ }
+ 
+ /* check if the extension is present in the list */
+@@ -1946,7 +1961,11 @@ HGLRC wrap_wglCreateContextAttribsARB( TEB *teb, HDC hdc, HGLRC share, const int
+     {
+         context->hdc = hdc;
+         context->share = (HGLRC)-1; /* initial shared context */
+-        context->attribs = memdup_attribs( attribs );
++        if (!memdup_attribs( attribs, &context->attribs ))
++        {
++            free( context );
++            return 0;
++        }
+         if (is_win64 && is_wow64())
+         {
+             if (share_ctx)
+@@ -1966,7 +1985,7 @@ HGLRC wrap_wglCreateContextAttribsARB( TEB *teb, HDC hdc, HGLRC share, const int
+                 rb_init( &context->buffers->map, compare_buffer_name );
+             }
+         }
+-        if (!(funcs->p_wgl_context_reset( &context->base, hdc, share_ctx ? &share_ctx->base : NULL, attribs ))) free_context( context );
++        if (!(funcs->p_wgl_context_reset( &context->base, hdc, share_ctx ? &share_ctx->base : NULL, context->attribs ))) free_context( context );
+         else if (!(ret = alloc_handle( HANDLE_CONTEXT, funcs, context )))
+         {
+             funcs->p_wgl_context_reset( &context->base, NULL, NULL, NULL );
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index c7aeea13..e8c72e3e 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -186,7 +186,11 @@ static int get_window_swap_interval( HWND hwnd )
+     return interval;
+ }
+ 
+-#ifdef SONAME_LIBEGL
++/* The framebuffer-surface and fullscreen-hack helpers below are EGL-independent
++ * (they only use the generic opengl_drawable / GL entry points) and are used
++ * unconditionally by the driver-agnostic code further down, so they must be
++ * compiled even without libEGL (e.g. on macOS, where GL comes from winemac.drv).
++ * Only the actual EGL platform code stays behind SONAME_LIBEGL, lower down. */
+ 
+ struct framebuffer_surface
+ {
+@@ -994,6 +998,8 @@ static BOOL needs_framebuffer_surface( HWND hwnd )
+     return get_float_gamma_ramp( gamma_ramp, &gamma_serial );
+ }
+ 
++#ifdef SONAME_LIBEGL
++
+ static const struct opengl_drawable_funcs egldrv_pbuffer_funcs;
+ 
+ static EGLConfig egl_config_for_format( const struct egl_platform *egl, int format )
+@@ -3380,6 +3386,22 @@ static void display_funcs_init(void)
+     USE_GL_FUNC(glViewportIndexedfv)
+ #undef USE_GL_FUNC
+ 
++    /* The framebuffer surface uses direct-state-access entry points. Drivers
++     * such as macOS OpenGL can create native drawables without providing them. */
++    if (fshack_enabled && (!display_funcs.p_glCreateFramebuffers ||
++        !display_funcs.p_glCreateRenderbuffers ||
++        !display_funcs.p_glNamedRenderbufferStorageMultisample ||
++        !display_funcs.p_glNamedFramebufferRenderbuffer ||
++        !display_funcs.p_glNamedFramebufferTexture ||
++        !display_funcs.p_glNamedFramebufferDrawBuffer ||
++        !display_funcs.p_glNamedFramebufferReadBuffer ||
++        !display_funcs.p_glGetNamedFramebufferAttachmentParameteriv ||
++        !display_funcs.p_glCheckNamedFramebufferStatus))
++    {
++        WARN( "Disabling framebuffer surfaces: required OpenGL DSA entry points are unavailable.\n" );
++        fshack_enabled = FALSE;
++    }
++
+     display_funcs.p_wglGetProcAddress = win32u_wglGetProcAddress;
+     display_funcs.p_get_pixel_formats = win32u_get_pixel_formats;
+ 

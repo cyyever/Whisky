@@ -1,9 +1,93 @@
-Subject: ntdll, server: de-linux TEB/futex paths and macOS TEB fix
+Subject: [PATCH] macos: de-linux ntdll/server/amd_ags_x64, configure loader64 wine64, disable d3dcompiler_47
 
-macOS x86_64 build: guard Linux-only futex/CPU paths in ntdll and server/fsync.c,
-and make set_thread_teb a no-op on Apple (the dispatcher manages %gs/pthread TSD;
-writing the raw TEB clobbers it -> SIGBUS).
+Consolidated patches:
+  - (0001) ntdll, server: de-linux TEB/futex paths and macOS TEB fix
+subj='ntdll, server: de-linux TEB/futex paths and macOS TEB fix'
+  - (0005) amd_ags_x64: guard libdrm/amdgpu use behind __linux__
+subj='amd_ags_x64: guard libdrm/amdgpu use behind __linux__'
+  - (0006) loader64: build a 64-bit wine64 loader on macOS
+subj='loader64: build a 64-bit wine64 loader on macOS'
+  - (0024) configure: do not build Wine's d3dcompiler_47 DLL
 
+---
+diff --git a/configure.ac b/configure.ac
+index be6e92be..1efa19de 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2138,6 +2138,8 @@ fi
+ dnl **** Platform-specific checks ****
+ 
+ AC_SUBST(WINELOADER_PROGRAMS,"wine")
++dnl macOS also builds a 64-bit loader (loader64); keep its program list in step.
++AC_SUBST(WINELOADER64_PROGRAMS,"wine64")
+ 
+ case $host_os in
+   linux*)
+@@ -2151,6 +2153,7 @@ esac
+ if test "$wine_use_preloader" = "yes"
+ then
+   WINELOADER_PROGRAMS="$WINELOADER_PROGRAMS wine-preloader"
++  WINELOADER64_PROGRAMS="$WINELOADER64_PROGRAMS wine64-preloader"
+   AC_DEFINE(HAVE_WINE_PRELOADER, 1, [Define to 1 if the Wine preloader is being used.])
+ fi
+ 
+@@ -2656,8 +2659,6 @@ WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_43)
+ WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_43/tests)
+ WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_46)
+ WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_46/tests)
+-WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_47)
+-WINE_CONFIG_MAKEFILE(dlls/d3dcompiler_47/tests)
+ WINE_CONFIG_MAKEFILE(dlls/d3dim)
+ WINE_CONFIG_MAKEFILE(dlls/d3dim700)
+ WINE_CONFIG_MAKEFILE(dlls/d3drm)
+diff --git a/dlls/amd_ags_x64/unixlib.c b/dlls/amd_ags_x64/unixlib.c
+index d34a162b..fbfaed9e 100644
+--- a/dlls/amd_ags_x64/unixlib.c
++++ b/dlls/amd_ags_x64/unixlib.c
+@@ -31,9 +31,11 @@
+ #include <fcntl.h>
+ #include <errno.h>
+ 
++#ifdef __linux__
+ #include <xf86drm.h>
+ #include <amdgpu_drm.h>
+ #include <amdgpu.h>
++#endif
+ 
+ #include "ntstatus.h"
+ #define WIN32_NO_STATUS
+@@ -48,6 +50,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(amd_ags);
+ 
+ #define MAX_DEVICE_COUNT 64
+ 
++#ifdef __linux__
++
+ static unsigned int device_count;
+ static struct drm_amdgpu_info_device *amd_info;
+ 
+@@ -276,6 +280,22 @@ static NTSTATUS get_device_info( void *args )
+     return STATUS_NOT_FOUND;
+ }
+ 
++#else /* __linux__ */
++
++/* No libdrm/amdgpu outside Linux (e.g. macOS); Apple Silicon has no AMD GPU.
++ * Report no device so games fall back to generic, non-AMD rendering paths. */
++static NTSTATUS init( void *args )
++{
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS get_device_info( void *args )
++{
++    return STATUS_NOT_FOUND;
++}
++
++#endif /* __linux__ */
++
+ const unixlib_entry_t __wine_unix_call_funcs[] =
+ {
+     init,
 diff --git a/dlls/ntdll/unix/fsync.c b/dlls/ntdll/unix/fsync.c
 index 25d41cac..97968ebc 100644
 --- a/dlls/ntdll/unix/fsync.c
@@ -113,6 +197,33 @@ index f1af6b5e..65999886 100644
  #ifdef linux
  
  /* Helper function for counting bitmap values as commonly used by the Linux kernel
+diff --git a/loader64/Makefile.in b/loader64/Makefile.in
+index cfbe51d4..83d8adf4 100644
+--- a/loader64/Makefile.in
++++ b/loader64/Makefile.in
+@@ -3,10 +3,11 @@ PARENTSRC = ../loader
+ SOURCES = \
+ 	main.c \
+ 	preloader.c \
+-	preloader_mac.c
++	preloader_mac.c \
++	wine_info.plist.in
+ 
+-PROGRAMS = wine64 wine64-preloader
+-INSTALL_LIB = wine64 wine64-preloader
++PROGRAMS = $(WINELOADER64_PROGRAMS)
++INSTALL_LIB = $(WINELOADER64_PROGRAMS)
+ UNIX_CFLAGS = -fPIE
+ 
+ preloader_EXTRADEFS = -fno-builtin
+@@ -15,6 +16,6 @@ wine64_OBJS = main.o
+ wine64_DEPS = $(WINELOADER_DEPENDS)
+ wine64_LDFLAGS = $(WINELOADER_LDFLAGS) $(LDEXECFLAGS) $(PTHREAD_LIBS)
+ 
+-wine64_preloader_OBJS = preloader.o
++wine64_preloader_OBJS = preloader.o preloader_mac.o
+ wine64_preloader_DEPS = $(WINELOADER_DEPENDS)
+ wine64_preloader_LDFLAGS = $(WINEPRELOADER_LDFLAGS)
 diff --git a/server/fsync.c b/server/fsync.c
 index 7d3ec646..ce4370fd 100644
 --- a/server/fsync.c

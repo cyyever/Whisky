@@ -5,7 +5,7 @@ set -e
 # cross-compiled with mingw-w64 -- and install them as the Wine *builtin* DLLs,
 # overwriting wined3d's (broken for D3D9 on macOS, and capped at feature level 9_3
 # for D3D11 on its GL 2.1). Mullion provides D3D10/11/12 and DXGI directly on Metal.
-# proton-wine patch 0012 defaults the shipped DLLs to
+# proton-wine patch 0006 defaults the shipped DLLs to
 # builtin in the load order, so no bottle needs a WINEDLLOVERRIDES. DXVK renders
 # through winevulkan on KosmicKrisp.
 #
@@ -88,7 +88,7 @@ setup_arch() {  # <cross-file> <build-dir> <install-subdir>
 }
 
 # Install DXVK as the Wine *builtin* DLLs (overwriting wined3d's). `patches/proton-wine`
-# 0012 defaults them to builtin in the load order, so no bottle needs a
+# 0006 defaults them to builtin in the load order, so no bottle needs a
 # WINEDLLOVERRIDES. win64 -> x86_64-windows, win32 -> i386-windows.
 WINE_LIB="$INSTALL_DIR/Wine/lib/wine"
 [ -d "$WINE_LIB/x86_64-windows" ] || {

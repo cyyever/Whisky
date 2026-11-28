@@ -1,0 +1,461 @@
+Subject: [PATCH] media: winegstreamer macOS fixes, mfplat copy bounds, qasf live/stopped seek, and dsoundrender flush/pause
+
+Consolidated patches:
+  - (0004) winegstreamer: macOS build, GL display, and decoder autoplug fixes
+subj='winegstreamer: macOS build, GL display, and decoder autoplug fixes'
+  - (0032) 
+subj=''
+  - (0039) qasf: decommit allocators before stopping WMReader and flush all streams on seek
+subj='qasf: decommit allocators before stopping WMReader and flush all streams on seek'
+  - (0041) quartz/dsoundrender: fix flush sample release, pause wait, wrap check, and queue leak
+
+---
+diff --git a/dlls/mfplat/sample.c b/dlls/mfplat/sample.c
+index 60d78dc8..6de99239 100644
+--- a/dlls/mfplat/sample.c
++++ b/dlls/mfplat/sample.c
+@@ -880,12 +880,20 @@ static HRESULT WINAPI sample_CopyToBuffer(IMFSample *iface, IMFMediaBuffer *buff
+             && SUCCEEDED(IMFMediaBuffer_QueryInterface(buffer, &IID_IMF2DBuffer, (void **)&buffer2d)))
+     {
+         if (SUCCEEDED(IMFMediaBuffer_GetCurrentLength(sample->buffers[0], &current_length))
+-                && SUCCEEDED(IMF2DBuffer_GetContiguousLength(buffer2d, &dst_length))
+-                && current_length == dst_length
+-                && SUCCEEDED(IMFMediaBuffer_Lock(sample->buffers[0], &src_ptr, &src_max_length, &current_length)))
++                && SUCCEEDED(IMF2DBuffer_GetContiguousLength(buffer2d, &dst_length)))
+         {
+-            hr = IMF2DBuffer_ContiguousCopyFrom(buffer2d, src_ptr, current_length);
+-            IMFMediaBuffer_Unlock(sample->buffers[0]);
++            if (current_length > dst_length)
++            {
++                hr = MF_E_BUFFERTOOSMALL;
++                IMF2DBuffer_Release(buffer2d);
++                goto done;
++            }
++            if (current_length == dst_length
++                    && SUCCEEDED(IMFMediaBuffer_Lock(sample->buffers[0], &src_ptr, &src_max_length, &current_length)))
++            {
++                hr = IMF2DBuffer_ContiguousCopyFrom(buffer2d, src_ptr, current_length);
++                IMFMediaBuffer_Unlock(sample->buffers[0]);
++            }
+         }
+         IMF2DBuffer_Release(buffer2d);
+         if (SUCCEEDED(hr))
+diff --git a/dlls/qasf/asfreader.c b/dlls/qasf/asfreader.c
+index 46a3d7e4..937dd3af 100644
+--- a/dlls/qasf/asfreader.c
++++ b/dlls/qasf/asfreader.c
+@@ -285,9 +285,9 @@ static HRESULT asf_reader_start_stream(struct asf_reader *filter, LONGLONG start
+ 
+     EnterCriticalSection(&filter->status_cs);
+ 
++    filter->status = -1;
+     if (SUCCEEDED(hr = IWMReader_Start(filter->reader, start, duration, rate, NULL)))
+     {
+-        filter->status = -1;
+         while (filter->status != WMT_STARTED)
+             SleepConditionVariableCS(&filter->status_cv, &filter->status_cs, INFINITE);
+         hr = filter->result;
+@@ -304,9 +304,9 @@ static HRESULT asf_reader_stop_stream(struct asf_reader *filter)
+ 
+     EnterCriticalSection(&filter->status_cs);
+ 
++    filter->status = -1;
+     if (SUCCEEDED(hr = IWMReader_Stop(filter->reader)))
+     {
+-        filter->status = -1;
+         while (filter->status != WMT_STOPPED)
+             SleepConditionVariableCS(&filter->status_cv, &filter->status_cs, INFINITE);
+         hr = filter->result;
+@@ -332,21 +332,34 @@ static HRESULT WINAPI media_seeking_ChangeCurrent(IMediaSeeking *iface)
+ 
+     TRACE("iface %p.\n", iface);
+ 
+-    /* Send begin flush commands downstream. */
++    /* Do not stop/start WMReader while the filter is stopped; the updated
++     * seek->llCurrent will be honored when asf_reader_init_stream() starts. */
++    if (filter->filter.state == State_Stopped)
++        return S_OK;
++
++    /* Send begin flush commands downstream and decommit allocators so any
++     * stream_read_thread blocked in IMemAllocator_GetBuffer() wakes up before
++     * asf_reader_stop_stream() waits for WMT_STOPPED (prevents AB-BA deadlock). */
+     for (i = 0; i < filter->stream_count; ++i)
+     {
+-        if (FAILED(IPin_BeginFlush(stream->source.pin.peer)))
++        struct asf_stream *s = &filter->streams[i];
++        if (s->source.pin.peer && FAILED(IPin_BeginFlush(s->source.pin.peer)))
+             WARN("Failed to BeginFlush for stream %u.\n", i);
++        if (s->source.pin.peer && s->source.pAllocator && FAILED(IMemAllocator_Decommit(s->source.pAllocator)))
++            WARN("Failed to decommit allocator for stream %u.\n", i);
+     }
+ 
+     /* Stop the reader. */
+     hr = asf_reader_stop_stream(filter);
+ 
+-    /* Send end flush commands downstream. */
++    /* Send end flush commands downstream and re-commit allocators. */
+     for (i = 0; i < filter->stream_count; ++i)
+     {
+-        if (FAILED(IPin_EndFlush(stream->source.pin.peer)))
++        struct asf_stream *s = &filter->streams[i];
++        if (s->source.pin.peer && FAILED(IPin_EndFlush(s->source.pin.peer)))
+             WARN("Failed to EndFlush for stream %u.\n", i);
++        if (s->source.pin.peer && s->source.pAllocator && FAILED(IMemAllocator_Commit(s->source.pAllocator)))
++            WARN("Failed to commit allocator for stream %u.\n", i);
+     }
+ 
+     /* Start the reader. */
+@@ -566,7 +579,14 @@ static HRESULT asf_reader_init_stream(struct strmbase_filter *iface)
+     if (FAILED(hr))
+         return hr;
+ 
+-    if (FAILED(hr = asf_reader_start_stream(filter, 0, 0, 1.0)))
++    if (filter->stream_count)
++    {
++        struct SourceSeeking *seek = &filter->streams[0].seek;
++        hr = asf_reader_start_stream(filter, seek->llCurrent, 0, seek->dRate);
++    }
++    else
++        hr = asf_reader_start_stream(filter, 0, 0, 1.0);
++    if (FAILED(hr))
+         WARN("Failed to start WMReader %p, hr %#lx\n", filter->reader, hr);
+ 
+     return hr;
+@@ -575,28 +595,35 @@ static HRESULT asf_reader_init_stream(struct strmbase_filter *iface)
+ static HRESULT asf_reader_cleanup_stream(struct strmbase_filter *iface)
+ {
+     struct asf_reader *filter = impl_from_strmbase_filter(iface);
+-    HRESULT hr = S_OK;
++    HRESULT hr = S_OK, decommit_hr;
+     int i;
+ 
+     TRACE("iface %p\n", iface);
+ 
+-    if (FAILED(hr = asf_reader_stop_stream(filter)))
+-        WARN("Failed to stop WMReader %p, hr %#lx\n", filter->reader, hr);
+-
++    /* Decommit downstream allocators before stopping WMReader so any
++     * stream_read_thread blocked in IMemAllocator_GetBuffer() wakes up with
++     * VFW_E_NOT_COMMITTED instead of deadlocking ASYNC_OP_STOP -> WMT_STOPPED. */
+     for (i = 0; i < filter->stream_count; ++i)
+     {
+         struct asf_stream *stream = filter->streams + i;
+ 
+-        if (!stream->source.pin.peer)
++        if (!stream->source.pin.peer || !stream->source.pAllocator)
+             continue;
+ 
+-        if (FAILED(hr = IMemAllocator_Decommit(stream->source.pAllocator)))
++        if (FAILED(decommit_hr = IMemAllocator_Decommit(stream->source.pAllocator)) && SUCCEEDED(hr))
+         {
+-            WARN("Failed to decommit stream %u allocator, hr %#lx\n", i, hr);
+-            break;
++            WARN("Failed to decommit stream %u allocator, hr %#lx\n", i, decommit_hr);
++            hr = decommit_hr;
+         }
+     }
+ 
++    if (FAILED(decommit_hr = asf_reader_stop_stream(filter)))
++    {
++        WARN("Failed to stop WMReader %p, hr %#lx\n", filter->reader, decommit_hr);
++        if (SUCCEEDED(hr))
++            hr = decommit_hr;
++    }
++
+     return hr;
+ }
+ 
+@@ -697,9 +724,9 @@ static HRESULT WINAPI file_source_Load(IFileSourceFilter *iface, LPCOLESTR file_
+     }
+ 
+     EnterCriticalSection(&filter->status_cs);
++    filter->status = -1;
+     if (SUCCEEDED(hr = IWMReader_Open(filter->reader, filter->file_name, filter->callback, NULL)))
+     {
+-        filter->status = -1;
+         while (filter->status != WMT_OPENED)
+             SleepConditionVariableCS(&filter->status_cv, &filter->status_cs, INFINITE);
+         hr = filter->result;
+diff --git a/dlls/quartz/dsoundrender.c b/dlls/quartz/dsoundrender.c
+index e72b743e..1a19941a 100644
+--- a/dlls/quartz/dsoundrender.c
++++ b/dlls/quartz/dsoundrender.c
+@@ -51,6 +51,7 @@ struct dsound_render
+     IMediaSample **queued_samples;
+     size_t queued_sample_count, queued_samples_capacity;
+     bool render_thread_shutdown;
++    bool render_running;
+ 
+     /* Signaled when the filter has completed a state change. The filter waits
+      * for this event in IBaseFilter::GetState(). */
+@@ -112,14 +113,11 @@ static void update_positions(struct dsound_render *filter, DWORD *seqwritepos, D
+ {
+     WAVEFORMATEX *wfx = (WAVEFORMATEX *)filter->sink.pin.mt.pbFormat;
+     BYTE *buf1, *buf2;
+-    DWORD size1, size2, playpos, writepos, old_writepos, old_playpos, adv;
++    DWORD size1, size2, playpos, writepos, old_playpos, adv;
+     BOOL writepos_set = filter->writepos < filter->buf_size;
+ 
+     /* Update position and zero */
+-    old_writepos = filter->writepos;
+     old_playpos = filter->last_playpos;
+-    if (old_writepos <= old_playpos)
+-        old_writepos += filter->buf_size;
+ 
+     IDirectSoundBuffer_GetCurrentPosition(filter->dsbuffer, &playpos, &writepos);
+     if (old_playpos > playpos)
+@@ -137,17 +135,26 @@ static void update_positions(struct dsound_render *filter, DWORD *seqwritepos, D
+         IDirectSoundBuffer_Unlock(filter->dsbuffer, buf1, size1, buf2, size2);
+     }
+     *minwritepos = writepos;
+-    if (!writepos_set || old_writepos < writepos)
++    if (!writepos_set)
+     {
+-        if (writepos_set)
++        *seqwritepos = writepos;
++    }
++    else
++    {
++        DWORD write_dist = adv + (writepos >= playpos ? writepos - playpos : filter->buf_size + writepos - playpos);
++        DWORD old_write_dist = filter->writepos > old_playpos
++                ? filter->writepos - old_playpos
++                : filter->buf_size + filter->writepos - old_playpos;
++
++        if (old_write_dist < write_dist)
+         {
+             filter->writepos = filter->buf_size;
+-            FIXME("Underrun of data occurred!\n");
++            WARN("Underrun of data occurred!\n");
++            *seqwritepos = writepos;
+         }
+-        *seqwritepos = writepos;
++        else
++            *seqwritepos = filter->writepos;
+     }
+-    else
+-        *seqwritepos = filter->writepos;
+ }
+ 
+ static void get_write_pos(struct dsound_render *filter,
+@@ -224,7 +231,7 @@ static HRESULT send_sample_data(struct dsound_render *filter,
+         DWORD writepos, free, size1, size2;
+         BYTE *buf1, *buf2;
+ 
+-        if (filter->filter.state == State_Running)
++        if (filter->render_running && filter->filter.state != State_Stopped)
+         {
+             get_write_pos(filter, &writepos, tStart, &free);
+             hr = free ? S_OK : S_FALSE;
+@@ -391,7 +398,7 @@ static DWORD WINAPI render_thread_run(void *arg)
+             return 0;
+         }
+ 
+-        if (!filter->queued_sample_count)
++        if (!filter->queued_sample_count || !filter->render_running)
+         {
+             SleepConditionVariableCS(&filter->render_cv, &filter->render_cs, INFINITE);
+             continue;
+@@ -490,6 +497,7 @@ static HRESULT dsound_render_sink_connect(struct strmbase_sink *iface, IPin *pee
+     buf_desc.lpwfxFormat = (WAVEFORMATEX *)format;
+     hr = IDirectSound8_CreateSoundBuffer(filter->dsound, &buf_desc, &filter->dsbuffer, NULL);
+     filter->writepos = filter->buf_size;
++    filter->last_playpos = 0;
+     if (FAILED(hr))
+         ERR("Failed to create sound buffer, hr %#lx.\n", hr);
+ 
+@@ -546,6 +554,12 @@ static HRESULT dsound_render_sink_begin_flush(struct strmbase_sink *iface)
+     struct dsound_render *filter = impl_from_strmbase_pin(&iface->pin);
+ 
+     SetEvent(filter->flush_event);
++    EnterCriticalSection(&filter->render_cs);
++    for (unsigned int i = 0; i < filter->queued_sample_count; ++i)
++        IMediaSample_Release(filter->queued_samples[i]);
++    filter->queued_sample_count = 0;
++    LeaveCriticalSection(&filter->render_cs);
++    WakeConditionVariable(&filter->render_cv);
+     return S_OK;
+ }
+ 
+@@ -579,6 +593,7 @@ static HRESULT dsound_render_sink_end_flush(struct strmbase_sink *iface)
+         IDirectSoundBuffer_Lock(filter->dsbuffer, 0, 0, &buffer, &size, NULL, NULL, DSBLOCK_ENTIREBUFFER);
+         memset(buffer, 0, size);
+         IDirectSoundBuffer_Unlock(filter->dsbuffer, buffer, size, NULL, 0);
++        IDirectSoundBuffer_GetCurrentPosition(filter->dsbuffer, &filter->last_playpos, NULL);
+         filter->writepos = filter->buf_size;
+     }
+ 
+@@ -624,6 +639,7 @@ static void dsound_render_destroy(struct strmbase_filter *iface)
+ 
+     strmbase_passthrough_cleanup(&filter->passthrough);
+     strmbase_filter_cleanup(&filter->filter);
++    free(filter->queued_samples);
+     free(filter);
+ }
+ 
+@@ -672,6 +688,7 @@ static HRESULT dsound_render_init_stream(struct strmbase_filter *iface)
+     ResetEvent(filter->state_event);
+ 
+     filter->render_thread_shutdown = false;
++    filter->render_running = false;
+     if (!(filter->render_thread = CreateThread(NULL, 0, render_thread_run, filter, 0, NULL)))
+         return HRESULT_FROM_WIN32(GetLastError());
+ 
+@@ -689,7 +706,15 @@ static HRESULT dsound_render_start_stream(struct strmbase_filter *iface, REFEREN
+     SetEvent(filter->state_event);
+ 
+     if (filter->sink.pin.peer)
++    {
++        IDirectSoundBuffer_GetCurrentPosition(filter->dsbuffer, &filter->last_playpos, NULL);
+         IDirectSoundBuffer_Play(filter->dsbuffer, 0, 0, DSBPLAY_LOOPING);
++    }
++
++    EnterCriticalSection(&filter->render_cs);
++    filter->render_running = true;
++    LeaveCriticalSection(&filter->render_cs);
++    WakeConditionVariable(&filter->render_cv);
+ 
+     if ((filter->eos || !filter->sink.pin.peer) && graph
+             && SUCCEEDED(IFilterGraph_QueryInterface(graph,
+@@ -710,8 +735,13 @@ static HRESULT dsound_render_stop_stream(struct strmbase_filter *iface)
+     if (filter->sink.pin.peer)
+     {
+         IDirectSoundBuffer_Stop(filter->dsbuffer);
++        IDirectSoundBuffer_GetCurrentPosition(filter->dsbuffer, &filter->last_playpos, NULL);
+         filter->writepos = filter->buf_size;
+     }
++    EnterCriticalSection(&filter->render_cs);
++    filter->render_running = false;
++    LeaveCriticalSection(&filter->render_cs);
++    WakeConditionVariable(&filter->render_cv);
+     return S_OK;
+ }
+ 
+diff --git a/dlls/winegstreamer/media-converter/media-converter.h b/dlls/winegstreamer/media-converter/media-converter.h
+index 3dd8864d..c893a217 100644
+--- a/dlls/winegstreamer/media-converter/media-converter.h
++++ b/dlls/winegstreamer/media-converter/media-converter.h
+@@ -22,6 +22,7 @@
+ #define _FILE_OFFSET_BITS 64
+ 
+ #include <string.h>
++#include <pthread.h>
+ #include <utime.h>
+ #include <stdarg.h>
+ #include <stdbool.h>
+diff --git a/dlls/winegstreamer/unixlib.c b/dlls/winegstreamer/unixlib.c
+index b2593880..1d4c7166 100644
+--- a/dlls/winegstreamer/unixlib.c
++++ b/dlls/winegstreamer/unixlib.c
+@@ -323,8 +323,22 @@ NTSTATUS wg_init_gstreamer(void *arg)
+     if (!gst_element_register_winegstreamerstepper(NULL))
+         GST_ERROR("Failed to register the stepper element");
+ 
++    /* Not on macOS. The display itself is harmless (with GST_GL_WINDOW=x11
++     * unavailable it is an inert dummy), but a non-NULL display flips
++     * wg_parser_create()'s "use_opengl && gl_display" gate, and the glupload
++     * chain then creates a Cocoa GL CONTEXT -- whose gst_gl_invoke_on_main()
++     * block faults on the Cocoa main thread, where Wine's init_handler has no
++     * TEB and poisons the thread. The whole process's main thread freezes and
++     * every winemac.drv OnMainThread() caller deadlocks: a 32-bit DirectShow
++     * RenderFile that never returns (tests/gstreamer/dshow-render-test.sh).
++     * The trade: 32-bit wm_reader loses its GL I420->RGBA converter and falls
++     * back to videoconvert on the CPU. */
++#ifdef __APPLE__
++    GST_INFO("Not creating a GL display; the GL element chain deadlocks on macOS.");
++#else
+     if (!(gl_display = gst_gl_display_new()))
+         GST_ERROR("Failed to create OpenGL display");
++#endif
+ 
+     if (!media_converter_init())
+     {
+diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
+index d03b4d91..362b14bd 100644
+--- a/dlls/winegstreamer/wg_parser.c
++++ b/dlls/winegstreamer/wg_parser.c
+@@ -581,9 +581,18 @@ static GstAutoplugSelectResult autoplug_select_cb(GstElement *bin, GstPad *pad,
+         GST_WARNING("Disabled video acceleration since it breaks in wine.");
+         return GST_AUTOPLUG_SELECT_SKIP;
+     }
+-    if (!strcmp(name, "Proton video converter") && !parser->use_mediaconv)
+-    {
+-        GST_INFO("Skipping \"Proton video converter\".");
++    /* The audio converters belong under the same guard as the video one: they
++     * are the mediaconv transcoding path, they only work when Proton's launcher
++     * has set MEDIACONV_AUDIO_DUMP_FILE et al, and they outrank the real decoder.
++     * Without this they are autoplugged, fail in change_state ("Failed to open
++     * dump fozdb"), and the audio branch never links -- so wg_parser_connect
++     * waits for a stream that never arrives and Open() blocks forever. */
++    if (!parser->use_mediaconv
++            && (!strcmp(name, "Proton video converter")
++                || !strcmp(name, "Proton audio converter")
++                || !strcmp(name, "Proton audio converter with rate fixup")))
++    {
++        GST_INFO("Skipping \"%s\".", name);
+         return GST_AUTOPLUG_SELECT_SKIP;
+     }
+ 
+@@ -1305,7 +1314,17 @@ static bool stream_decodebin_create(struct wg_parser_stream *stream)
+     gst_bin_add(GST_BIN(parser->container), stream->decodebin);
+ 
+     g_signal_connect(stream->decodebin, "pad-added", G_CALLBACK(stream_decodebin_pad_added_cb), stream);
+-    g_signal_connect(stream->decodebin, "autoplug-select", G_CALLBACK(autoplug_select_cb), stream);
++    /* autoplug_select_cb takes a struct wg_parser *, not a stream: passing the
++     * stream reinterprets it as a parser, so the very first thing the callback
++     * reads -- parser->error -- comes from whatever wg_parser_stream field
++     * lands at that offset. It is reliably non-zero, so the callback returns
++     * SKIP for every factory decodebin proposes, silently. The main decodebin
++     * (which gets the demuxer) connects the same callback with `parser` and
++     * works; only the per-stream decodebins, which autoplug the DECODERS, are
++     * affected. Net effect: every codec is rejected and decodebin reports
++     * "no suitable plugins found: Missing decoder", so a WMV looks exactly
++     * like a GStreamer with no libav installed. */
++    g_signal_connect(stream->decodebin, "autoplug-select", G_CALLBACK(autoplug_select_cb), parser);
+     g_signal_connect(stream->decodebin, "no-more-pads", G_CALLBACK(stream_decodebin_no_more_pads_cb), stream);
+ 
+     pthread_mutex_lock(&parser->mutex);
+diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
+index 04eff28d..67e6ad92 100644
+--- a/dlls/winegstreamer/wg_transform.c
++++ b/dlls/winegstreamer/wg_transform.c
+@@ -621,6 +621,7 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
+     GstElement *element, *capsfilter;
+     const char *shortname = NULL;
+     GstElementFactory *factory;
++    bool have_parser = true;
+     bool ret = false;
+     char *str;
+ 
+@@ -658,6 +659,7 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
+     {
+         gst_caps_unref(parsed_caps);
+         parsed_caps = gst_caps_ref(transform->input_caps);
++        have_parser = false;
+     }
+ 
+     if (!(element = find_element(GST_ELEMENT_FACTORY_TYPE_DECODER, parsed_caps, sink_caps)))
+@@ -669,10 +671,21 @@ static bool transform_create_decoder_elements(struct wg_transform *transform,
+      * packet it receives.
+      * As a workaround, we need to insert a capsfilter for avdec_h264 in order for it to use
+      * the byte-stream stream-format.
++     *
++     * Only when a parser was actually found -- it is h264parse's bug, so with no
++     * h264parse there is nothing to work around. It was unconditional, and the
++     * no-parser case was doubly wrong: parsed_caps is then a second reference to
++     * transform->input_caps, so gst_caps_set_simple() refused to touch it and
++     * only logged a GLib CRITICAL (leaving the filter equal to the input caps),
++     * and had it succeeded the filter would have been the FIRST element, forced
++     * to byte-stream, with the input caps event carrying stream-format=avc --
++     * an empty intersection, so push_event fails and creation dies at the
++     * "caps event accepted" gate instead.
+      */
+-    if ((factory = gst_element_get_factory(element)) &&
+-            (shortname = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory))) &&
+-            !strcmp(shortname, "avdec_h264"))
++    if (have_parser
++            && (factory = gst_element_get_factory(element))
++            && (shortname = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)))
++            && !strcmp(shortname, "avdec_h264"))
+     {
+         if (!(capsfilter = create_element("capsfilter", "good")) ||
+                 !append_element(transform->container, capsfilter, first, last))

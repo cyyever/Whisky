@@ -1,23 +1,71 @@
-Subject: ntdll: propagate SteamAppId/SteamGameId from Windows env to child Unix env
+Subject: [PATCH] ntdll/kernelbase: macOS NX compat, Steam AppID env propagation, lsteamclient and steamwebhelper defaults
 
-Proton contains ~70 per-game fixes across win32u, winegstreamer, ntdll/unix,
-opengl32, mfreadwrite, gameinput, etc. gated on Unix getenv("SteamGameId"),
-getenv("SteamAppId"), or getenv("STEAM_COMPAT_APP_ID"). On Linux those are
-injected into the host Unix environment by the native Steam client before
-launching Wine.
+Consolidated patches:
+  - (0008) ntdll: keep DEP on for legacy images by default (macOS)
+subj='ntdll: keep DEP on for legacy images by default (macOS)'
+  - (0014) kernelbase: append --no-sandbox --in-process-gpu to steamwebhelper.exe
+subj='kernelbase: append --no-sandbox --in-process-gpu to steamwebhelper.exe'
+  - (0018) ntdll: disable the lsteamclient bridge by default on macOS
+subj='ntdll: disable the lsteamclient bridge by default on macOS'
+  - (0027) ntdll: propagate SteamAppId/SteamGameId from Windows env to child Unix env
 
-When running the Windows Steam client inside Wine (as on macOS/Whisky),
-Steam.exe passes SteamAppId and SteamGameId only in the child's Windows PE
-environment block (params->Environment). Previously NtCreateUserProcess only
-propagated WINEDEBUG= to the spawned child's Unix environ, leaving almost all
-Unix-side Proton game adaptations inert.
-
-Extract SteamGameId, SteamAppId, and STEAM_COMPAT_APP_ID case-insensitively
-from params->Environment in get_env_size(), normalize their Unix names (and
-mirror SteamAppId <-> SteamGameId / STEAM_COMPAT_APP_ID when only one is set),
-and putenv() them in the forked grandchild before exec_wineloader() so the
-parent process's own Unix environment is never polluted.
-
+---
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index fe337dcf..4f7bf301 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -630,6 +630,7 @@ static const WCHAR *hack_append_command_line( const WCHAR *cmd )
+         {L"Red Tie Runner.exe", L" --use-angle=gl"},
+         {L"UnrealCEFSubProcess.exe", L" --use-gl=swiftshader", "2316580"},
+         {L"UnrealCEFSubProcess.exe", L" --use-angle=d3d9", "2684500"},
++        {L"steamwebhelper.exe", L" --no-sandbox --in-process-gpu"},
+     };
+     unsigned int i;
+     char sgi[64];
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 52b6e705..24a741c1 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -1156,7 +1156,12 @@ static int use_lsteamclient(void)
+ 
+     if (use != -1) return use;
+ 
+-    use = !get_env( L"PROTON_DISABLE_LSTEAMCLIENT", env, sizeof(env) ) || *env == '0';
++    /* Off unless PROTON_DISABLE_LSTEAMCLIENT=0 asks for it. The bridge redirects
++     * steamclient64/gameoverlayrenderer64 imports to Proton's Linux-host tier0
++     * shims, which can never reach a Linux Steam on macOS -- and against the real
++     * Windows client it strands g_pMemAllocSteam on ntdll stubs this fork does not
++     * have, so steamclient64's DllMain access-violates and Steam says "reinstall". */
++    use = get_env( L"PROTON_DISABLE_LSTEAMCLIENT", env, sizeof(env) ) && *env == '0';
+     if (!use)
+         ERR("lsteamclient disabled.\n");
+     return use;
+@@ -1680,9 +1685,22 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
+ 
+     if (!(nt->OptionalHeader.DllCharacteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT))
+     {
+-        ULONG flags = MEM_EXECUTE_OPTION_ENABLE;
+-        WARN( "disabling no-exec because of %s\n", debugstr_w(wm->ldr.BaseDllName.Buffer) );
+-        NtSetInformationProcess( GetCurrentProcess(), ProcessExecuteFlags, &flags, sizeof(flags) );
++        /* Keep DEP enabled for legacy (non-NX_COMPAT) images; WINE_NX_COMPAT=0
++         * restores upstream behaviour, per program, for a game that needs the
++         * DEP-off legacy handling. Disabling no-exec forces PROT_EXEC on data
++         * pages used by the Metal-backed Vulkan driver. Keep data non-executable
++         * unless the application explicitly needs the legacy behaviour. */
++        UNICODE_STRING nx_name = RTL_CONSTANT_STRING( L"WINE_NX_COMPAT" );
++        WCHAR nx_buf[8];
++        UNICODE_STRING nx_value = { 0, sizeof(nx_buf), nx_buf };
++        NTSTATUS nx_status = RtlQueryEnvironmentVariable_U( NULL, &nx_name, &nx_value );
++
++        if (!nx_status && nx_value.Length == sizeof(WCHAR) && nx_buf[0] == '0')
++        {
++            ULONG flags = MEM_EXECUTE_OPTION_ENABLE;
++            WARN( "disabling no-exec because of %s\n", debugstr_w(wm->ldr.BaseDllName.Buffer) );
++            NtSetInformationProcess( GetCurrentProcess(), ProcessExecuteFlags, &flags, sizeof(flags) );
++        }
+     }
+     return wm;
+ }
 diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
 index ef1ab960..031e718d 100644
 --- a/dlls/ntdll/unix/process.c

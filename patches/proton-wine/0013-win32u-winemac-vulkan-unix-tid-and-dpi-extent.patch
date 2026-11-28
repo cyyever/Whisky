@@ -1,46 +1,46 @@
-Subject: winemac,win32u: scale CAMetalLayer contentsScale by window DPI and skip Vulkan fshack double-blit on macOS
+Subject: [PATCH] win32u/winemac: macOS Vulkan unix_tid and DPI-aware surface extent
 
-When a DPI-unaware window (e.g. a 1280x720 D3D9/DXVK game at 96 DPI) runs on a
-macOS Retina display (RetinaMode="y", LogPixels=192), Wine maps its 1280x720
-logical client area to a 1280x720 pt NSWindow.
+Consolidated patches:
+  - (0023) win32u: provide a macOS get_unix_tid for the vulkan signaller
+subj='win32u: provide a macOS get_unix_tid for the vulkan signaller'
+  - (0034) winemac,win32u: scale CAMetalLayer contentsScale by window DPI and skip Vulkan fshack double-blit on macOS
 
-Previously, two compounding issues occurred:
-  1. winemac.drv hardcoded WineMetalView's CAMetalLayer.contentsScale = 2.0
-     whenever RetinaMode="y", making KosmicKrisp's Metal WSI report the layer
-     size as 2560x1440 pixels (4x the pixel count of the 96-DPI swapchain) and
-     return VK_SUBOPTIMAL_KHR on every frame whenever swapchain extent != layer
-     pixel size.
-  2. Proton's X11-oriented Vulkan fshack_dpi path in win32u_vkCreateSwapchainKHR()
-     tried to paper over that mismatch by allocating a 2560x1440 host swapchain
-     (which also broke on Metal WSI because minImageExtent is {1, 1} instead of
-     currentExtent) and running a full 2560x1440 compute-shader blit + extra
-     vkQueueSubmit on every frame, followed by KosmicKrisp's own 2560x1440
-     render-pass blit into the CAMetalDrawable -- doubling 4x-pixel blits and
-     driving WindowServer to ~50% CPU.
-
-Fix the architecture at the root on macOS:
-  1. winemac.drv: Give WineMetalView a per-view _dpiRatio (default 1.0 for
-     DPI-aware apps and Mullion) and conform to NSViewLayerContentScaleDelegate
-     so AppKit never overwrites layer.contentsScale back to backingScaleFactor.
-     For Vulkan surfaces (macdrv_vulkan_surface_create / macdrv_client_surface_update),
-     set _dpiRatio = NtUserGetDpiForWindow(hwnd) / NtUserGetWinMonitorDpi(MDT_RAW_DPI)
-     (cached on macdrv_client_surface for zero per-frame main-thread dispatch):
-       - DPI-aware windows (dpi == raw): contentsScale = 2.0 (full Retina).
-       - DPI-unaware windows (96 vs 192): contentsScale = 1.0, so KosmicKrisp
-         sees a matching 1280x720 layer, blits 1/4 the pixels with VK_SUCCESS
-         (zero VK_SUBOPTIMAL_KHR), and Apple's display compositor scales
-         1280x720 -> 2560x1440 in hardware at zero GPU cost.
-  2. win32u: Skip X11 compute-shader fshack_dpi on __APPLE__ in
-     surface_get_fshack_dpi(), while retaining the defensive currentExtent,
-     mutable-format, and pNext chaining fixes in win32u_vkCreateSwapchainKHR().
-
-Regression: tests/vulkan-dpi-swapchain-test.c (DPI-unaware + --dpi-aware + no-fshack check)
-
+---
 diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
-index 71fcda2e..47b8fcc3 100644
+index 5401c56d..47b8fcc3 100644
 --- a/dlls/win32u/vulkan.c
 +++ b/dlls/win32u/vulkan.c
-@@ -3072,8 +3072,15 @@ fail:
+@@ -642,11 +642,28 @@ signal_op_complete:
+     return add_sem_wait( wait_info, wait_alloc_count, sem->shared_sem, global_sem_wait_value );
+ }
+ 
++/* gettid(2) is Linux-only. The id is used to label debug output, so the pthread
++ * id truncated to int is as good here, and this keeps the one call site common. */
++#ifdef __APPLE__
++static int get_unix_tid(void)
++{
++    uint64_t tid = 0;
++
++    pthread_threadid_np( NULL, &tid );
++    return (int)tid;
++}
++#else
++static int get_unix_tid(void)
++{
++    return gettid();
++}
++#endif
++
+ #define SIGNALLER_INITIAL_WAIT_COUNT 256
+ 
+ static void *signaller_worker( void *arg )
+ {
+-    int unix_tid = gettid();
++    int unix_tid = get_unix_tid();
+     struct vulkan_device *device = arg;
+     struct semaphore *sem;
+     VkSemaphoreWaitInfo wait_info = { 0 };
+@@ -3055,8 +3072,15 @@ fail:
  
  static BOOL surface_get_fshack_dpi( struct surface *surface )
  {
@@ -56,7 +56,7 @@ index 71fcda2e..47b8fcc3 100644
  }
  
  static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwapchainCreateInfoKHR *create_info,
-@@ -3107,24 +3114,12 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
+@@ -3090,24 +3114,12 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
      create_info_host.imageExtent.width = max( create_info_host.imageExtent.width, capabilities.minImageExtent.width );
      create_info_host.imageExtent.height = max( create_info_host.imageExtent.height, capabilities.minImageExtent.height );
  
@@ -82,7 +82,7 @@ index 71fcda2e..47b8fcc3 100644
  
          if ((res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device,
                                                                            create_info_host.surface, &caps )))
-@@ -3137,15 +3132,53 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
+@@ -3120,15 +3132,53 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
          if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT))
              FIXME( "Swapchain does not support required VK_IMAGE_USAGE_STORAGE_BIT\n" );
  
@@ -139,7 +139,7 @@ index 71fcda2e..47b8fcc3 100644
      if ((res = device->p_vkCreateSwapchainKHR( device->host.device, &create_info_host, NULL, &host_swapchain )))
      {
 diff --git a/dlls/winemac.drv/cocoa_window.m b/dlls/winemac.drv/cocoa_window.m
-index 032f6ac1..03d227fb 100644
+index 43a0d60b..1da45004 100644
 --- a/dlls/winemac.drv/cocoa_window.m
 +++ b/dlls/winemac.drv/cocoa_window.m
 @@ -346,12 +346,14 @@ @interface WineBaseView : NSView
@@ -158,7 +158,7 @@ index 032f6ac1..03d227fb 100644
  
  @end
  
-@@ -959,6 +961,7 @@ - (id) initWithFrame:(NSRect)frame device:(id<MTLDevice>)device
+@@ -964,6 +966,7 @@ - (id) initWithFrame:(NSRect)frame device:(id<MTLDevice>)device
          if (self)
          {
              _device = [device retain];
@@ -166,7 +166,7 @@ index 032f6ac1..03d227fb 100644
              self.wantsLayer = YES;
              self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
          }
-@@ -971,20 +974,36 @@ - (void) dealloc
+@@ -976,20 +979,36 @@ - (void) dealloc
          [super dealloc];
      }
  
@@ -206,7 +206,7 @@ index 032f6ac1..03d227fb 100644
          return layer;
      }
  
-@@ -3993,6 +4012,15 @@ macdrv_metal_view macdrv_view_create_metal_view(macdrv_view v, macdrv_metal_devi
+@@ -3998,6 +4017,15 @@ macdrv_metal_view macdrv_view_create_metal_view(macdrv_view v, macdrv_metal_devi
      return (macdrv_metal_view)metalView;
  }
  

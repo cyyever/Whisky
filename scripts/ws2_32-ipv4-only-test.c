@@ -1,5 +1,5 @@
 /*
- * ws2_32 IPv4-only resolution test — verifies patches/proton-wine/0019.
+ * ws2_32 IPv4-only resolution test — verifies patches/proton-wine/0011.
  *
  * The Steam login hang on IPv6-dead networks is caused by Wine's getaddrinfo()
  * returning IPv6 (AAAA) addresses for Steam's CM/directory hosts; steamclient
@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
         return v4 ? 1 : 0;
     }
     if (disabled && v6 > 0) {
-        printf("FAIL: IPv6 not suppressed (patch 0013's default is not in this build)\n");
+        printf("FAIL: IPv6 not suppressed (patch 0011's default is not in this build)\n");
         return 1;
     }
     if (disabled && v4 == 0) {

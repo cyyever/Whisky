@@ -10,12 +10,12 @@
  *      CAMetalLayer at contentsScale=2.0 (1280x720 physical pixels), while
  *      NtUserGetDpiForWindow(hwnd) == 96 != NtUserGetWinMonitorDpi(MDT_RAW_DPI) == 192,
  *      activating win32u's Vulkan fshack scaling path.
- *   3. Before patch 0034-win32u-vulkan-dpi-surface-extent.patch,
+ *   3. Before patch 0013-win32u-winemac-vulkan-unix-tid-and-dpi-extent.patch,
  *      win32u_vkCreateSwapchainKHR() initialized the host swapchain extent from
  *      capabilities.minImageExtent ({1, 1} on KosmicKrisp Metal WSI) instead of
  *      capabilities.currentExtent ({1280, 720}), causing vkQueuePresentKHR() to
  *      return VK_SUBOPTIMAL_KHR (1000001003) on every frame forever.
- *   4. After patch 0034, the host swapchain is created at currentExtent
+ *   4. After patch 0013, the host swapchain is created at currentExtent
  *      (1280x720) with VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR cleared, and
  *      vkQueuePresentKHR() returns VK_SUCCESS (0) on every frame.
  *

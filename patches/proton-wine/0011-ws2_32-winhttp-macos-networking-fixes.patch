@@ -1,13 +1,26 @@
-Subject: ws2_32: prefix hosts resolution, IPv4-only default, and WSALookupServiceBegin semi-stub
+Subject: [PATCH] ws2_32/winhttp: macOS IPv4/hosts lookup fixes and skip DHCP-disabled adapters
 
-1. Consult %SystemRoot%\system32\drivers\etc\hosts before host DNS resolution.
-2. Default getaddrinfo() to IPv4-only (WINE_DISABLE_IPV6=0 opts out) to avoid
-   long IPv6 blackhole stalls behind proxies/VPNs.
-3. Make WSALookupServiceBegin{A,W}/Next/End return an empty set instead of
-   WSA_NOT_ENOUGH_MEMORY so Steam CEF's network_change_notifier does not stall.
+Consolidated patches:
+  - (0013) ws2_32: prefix hosts resolution, IPv4-only default, and WSALookupServiceBegin semi-stub
+subj='ws2_32: prefix hosts resolution, IPv4-only default, and WSALookupServiceBegin semi-stub'
+  - (0016) winhttp: skip adapters without DHCP when detecting WPAD
 
+---
+diff --git a/dlls/winhttp/session.c b/dlls/winhttp/session.c
+index 22f209ff..8faf2b3c 100644
+--- a/dlls/winhttp/session.c
++++ b/dlls/winhttp/session.c
+@@ -1551,7 +1551,7 @@ static WCHAR *detect_autoproxyconfig_url_dhcp(void)
+         TRACE( "adapter '%s' type %lu dhcpv4 enabled %d\n", wine_dbgstr_w(name), ptr->IfType, ptr->Dhcpv4Enabled );
+ 
+         if (ptr->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+-        /* FIXME: also skip adapters where DHCP is disabled */
++        if (!ptr->Dhcpv4Enabled) continue;
+ 
+         size = 256;
+         if (!(buf = malloc( size ))) goto done;
 diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
-index 3e91ab8..2fd275c 100644
+index 3e91ab80..2fd275ca 100644
 --- a/dlls/ws2_32/protocol.c
 +++ b/dlls/ws2_32/protocol.c
 @@ -167,6 +167,91 @@ static BOOL eac_download_hack(void)
@@ -158,7 +171,7 @@ index 3e91ab8..2fd275c 100644
  
  
 diff --git a/dlls/ws2_32/unixlib.c b/dlls/ws2_32/unixlib.c
-index e0e1263..4b71d56 100644
+index e0e1263e..4b71d560 100644
 --- a/dlls/ws2_32/unixlib.c
 +++ b/dlls/ws2_32/unixlib.c
 @@ -704,7 +704,7 @@ static NTSTATUS unix_getaddrinfo( void *args )

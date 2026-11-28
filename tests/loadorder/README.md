@@ -1,7 +1,7 @@
 # Graphics builtin load-order regression test
 
 Run `tests/loadorder/run.sh` after `make proton`, `make dxvk`, and optionally
-`make vkd3d`. Patch 0017 resolves d3d8/d3d9/d3d10core/d3d11/dxgi,
+`make vkd3d`. Patch 0006 resolves d3d8/d3d9/d3d10core/d3d11/dxgi,
 d3d12/d3d12core and vulkan-1 to builtins ahead of stale registry overrides.
 Explicit environment overrides still win. D3D12 uses Wine's builtins until
 vkd3d-proton is installed.

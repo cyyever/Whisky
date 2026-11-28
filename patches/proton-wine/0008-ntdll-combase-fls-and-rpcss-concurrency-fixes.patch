@@ -1,30 +1,13 @@
-Subject: combase: wait for the RpcSs endpoint on cold start
+Subject: [PATCH] ntdll/combase: unlock around FLS callbacks and fix rpcss cold-start race
 
-COM out-of-process activation binds to RpcSs via ncalrpc:[irpcss]. On a cold
-start the client can race ahead of rpcss and try to connect to
-\\.\pipe\lrpc\irpcss before rpcss has created it, getting RPC_S_SERVER_UNAVAILABLE.
-combase's retry path (RPCSS_CALL_END -> start_rpcss) is meant to cover this, but
-start_rpcss() gave up (returned FALSE) whenever OpenService("RpcSs") failed --
-which happens during the same cold-start window before services.exe is fully up.
-With no retry, the exception propagates and the client (e.g. steam.exe) crashes.
+Consolidated patches:
+  - (0010) combase: wait for the RpcSs endpoint on cold start
+subj='combase: wait for the RpcSs endpoint on cold start'
+  - (0011) ntdll: do not hold fls_section while running FLS callbacks
 
-This is easy to lose on macOS under Rosetta, where services boot much more
-slowly and asynchronously, widening the race window; on native x86 Linux rpcss
-almost always wins the sprint so the bug rarely shows.
-
-Make start_rpcss() best-effort about the SCM/StartService calls (they may
-legitimately fail this early, and rpcss is auto-started by services.exe anyway)
-and, crucially, wait for the ncalrpc endpoint pipe to actually become
-connectable before returning success -- so the caller's retry connects instead
-of failing. Bounded so we still give up if rpcss genuinely never appears. This
-also covers the case where the service reports SERVICE_RUNNING before it has
-created its endpoint.
-
-Signed-off-by: cyy <cyyever@gmail.com>
-
-
+---
 diff --git a/dlls/combase/rpc.c b/dlls/combase/rpc.c
-index c51b59d..c5baab8 100644
+index c51b59de..c5baab84 100644
 --- a/dlls/combase/rpc.c
 +++ b/dlls/combase/rpc.c
 @@ -184,53 +184,57 @@ static LONG WINAPI rpc_filter(EXCEPTION_POINTERS *eptr)
@@ -123,3 +106,82 @@ index c51b59d..c5baab8 100644
  }
  
  static RPC_BINDING_HANDLE get_rpc_handle(unsigned short *protseq, unsigned short *endpoint)
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 0869b3b4..437dca66 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -621,20 +621,29 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH RtlFlsFree( ULONG index )
+         return STATUS_INVALID_PARAMETER;
+     }
+ 
++restart:
+     for (entry = fls_data.fls_list_head.Flink; entry != &fls_data.fls_list_head; entry = entry->Flink)
+     {
+         TEB_FLS_DATA *fls = CONTAINING_RECORD(entry, TEB_FLS_DATA, fls_list_entry);
++        void *fls_arg;
+ 
+-        if (fls->fls_data_chunks[chunk_index] && fls->fls_data_chunks[chunk_index][idx + 1])
++        if (!fls->fls_data_chunks[chunk_index] || !(fls_arg = fls->fls_data_chunks[chunk_index][idx + 1]))
++            continue;
++
++        /* Clear the slot before invoking so a rescan or concurrent teardown
++         * never calls it twice. */
++        fls->fls_data_chunks[chunk_index][idx + 1] = NULL;
++        if (callback != (void *)~(ULONG_PTR)0)
+         {
+-            if (callback != (void *)~(ULONG_PTR)0)
+-            {
+-                TRACE_(relay)("Calling FLS callback %p, arg %p.\n", callback,
+-                        fls->fls_data_chunks[chunk_index][idx + 1]);
++            TRACE_(relay)("Calling FLS callback %p, arg %p.\n", callback, fls_arg);
+ 
+-                callback( fls->fls_data_chunks[chunk_index][idx + 1] );
+-            }
+-            fls->fls_data_chunks[chunk_index][idx + 1] = NULL;
++            /* Call without fls_section held: a callback may block on a thread
++             * that itself needs the lock (Windows holds no lock here). The list
++             * can change while unlocked, so rescan from the head afterwards. */
++            unlock_fls_data();
++            callback( fls_arg );
++            lock_fls_data();
++            goto restart;
+         }
+     }
+ 
+@@ -711,6 +720,7 @@ void WINAPI DECLSPEC_HOTPATCH RtlProcessFlsData( void *teb_fls_data, ULONG flags
+     if (flags & 1)
+     {
+         lock_fls_data();
++restart:
+         for (i = 0; i < ARRAY_SIZE(fls->fls_data_chunks); ++i)
+         {
+             if (!fls->fls_data_chunks[i] || !fls_data.fls_callback_chunks[i]
+@@ -720,18 +730,23 @@ void WINAPI DECLSPEC_HOTPATCH RtlProcessFlsData( void *teb_fls_data, ULONG flags
+             for (index = 0; index < fls_chunk_size( i ); ++index)
+             {
+                 PFLS_CALLBACK_FUNCTION callback = fls_data.fls_callback_chunks[i]->callbacks[index].callback;
++                void *fls_arg = fls->fls_data_chunks[i][index + 1];
+ 
+-                if (!fls->fls_data_chunks[i][index + 1])
++                if (!fls_arg)
+                     continue;
+ 
++                /* Clear before invoking so a rescan or concurrent free can't double-call. */
++                fls->fls_data_chunks[i][index + 1] = NULL;
+                 if (callback && callback != (void *)~(ULONG_PTR)0)
+                 {
+-                    TRACE_(relay)("Calling FLS callback %p, arg %p.\n", callback,
+-                            fls->fls_data_chunks[i][index + 1]);
++                    TRACE_(relay)("Calling FLS callback %p, arg %p.\n", callback, fls_arg);
+ 
+-                    callback( fls->fls_data_chunks[i][index + 1] );
++                    /* Call without fls_section held (see RtlFlsFree); rescan after. */
++                    unlock_fls_data();
++                    callback( fls_arg );
++                    lock_fls_data();
++                    goto restart;
+                 }
+-                fls->fls_data_chunks[i][index + 1] = NULL;
+             }
+         }
+         /* Not using RemoveEntryList() as Windows does not zero list entry here. */

@@ -1,6 +1,6 @@
 /*
  * Regression test for macOS BSD getsockopt/setsockopt normalization in
- * ntdll/unix/socket.c (patch 0029):
+ * ntdll/unix/socket.c (patch 0009):
  *   1. Boolean socket options (SO_BROADCAST, SO_OOBINLINE, SO_KEEPALIVE,
  *      TCP_NODELAY) return normalized 0/1 instead of macOS kernel bitmasks
  *      (0x20, 0x100, 0x08, 0x04), including 1-byte reads where 0x100 used to
@@ -178,7 +178,7 @@ int main(void)
         closesocket(s);
     }
 
-    /* 7. WSARecvMsg returns IP_TOS and IP_TTL ancillary data on macOS (patch 0040) */
+    /* 7. WSARecvMsg returns IP_TOS and IP_TTL ancillary data on macOS (patch 0009) */
     {
         SOCKET rx = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         SOCKET tx = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);

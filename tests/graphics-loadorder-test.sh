@@ -5,7 +5,7 @@
 #
 # This tree provides d3d9/d3d8/d3d11/d3d10core/dxgi (DXVK) and vulkan-1
 # (winevulkan), plus optional d3d12/d3d12core (vkd3d-proton), as Wine
-# *builtins*. Patch 0017 resolves those
+# *builtins*. Patch 0006 resolves those
 # basenames to LO_BUILTIN ahead of the DllOverrides registry. Two kinds of
 # leftover state used to defeat that, and both were written by the same retired
 # feature -- Whisky's old per-game DXVK install, which dropped a copy of
@@ -16,13 +16,13 @@
 #      our DXVK carries the "Wine builtin DLL" signature, "native" does not
 #      select a different provider -- it matches *nothing*. Super Street Fighter
 #      IV died on exit c0000135 (STATUS_DLL_NOT_FOUND) with a perfectly good
-#      d3d9.dll in system32, in syswow64, and in its own directory. Patch 0017
+#      d3d9.dll in system32, in syswow64, and in its own directory. Patch 0006
 #      now resolves ahead of the registry, so this is a guard against the patch
 #      regressing, not against the value existing.
 #
 #   2. The app-directory copy. Windows resolves a DLL from the application's own
 #      directory first, so it wins over system32 no matter what the load order
-#      says. Under patch 0017 an unsigned copy is skipped (LO_BUILTIN rejects
+#      says. Under patch 0006 an unsigned copy is skipped (LO_BUILTIN rejects
 #      it) and a *signed* copy loads -- pinning the bottle to whatever DXVK was
 #      current when it was written. Identical-to-builtin is reported but passes;
 #      differing is the failure.
@@ -35,7 +35,7 @@ set -uo pipefail
 
 WINE_LIB="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Libraries/Wine/lib/wine"
 
-# The modules patch 0017 owns. Registry names carry no .dll extension; the file
+# The modules patch 0006 owns. Registry names carry no .dll extension; the file
 # check only applies to the ones a game would ship beside its .exe.
 MODULES=(d3d9 d3d8 d3d11 d3d10core dxgi vulkan-1 d3d12 d3d12core)
 DLLS=(d3d9.dll d3d8.dll d3d11.dll d3d10core.dll dxgi.dll d3d12.dll d3d12core.dll)
@@ -83,18 +83,18 @@ for bottle in "${bottles[@]}"; do
                 # (rayne1.exe d3d8=native, RDR2.exe vulkan-1=native, ...), are
                 # rewritten by every wineboot, and cannot be "cleaned up" -- so
                 # failing on them would fail on every bottle forever. They are
-                # still worth printing: patch 0017 resolves ahead of the
+                # still worth printing: patch 0006 resolves ahead of the
                 # registry, which means those upstream per-game workarounds are
                 # inert in this tree.
                 case "$section" in
                     *AppDefaults*)
                         echo "  -  $reg $section  $line"
-                        echo "       Wine's own per-app default; inert under patch 0017"
+                        echo "       Wine's own per-app default; inert under patch 0006"
                         continue
                         ;;
                 esac
                 echo "  !! $reg $section  $line"
-                echo "       overrides the builtin we ship; patch 0017 must resolve ahead of it"
+                echo "       overrides the builtin we ship; patch 0006 must resolve ahead of it"
                 overrides=$((overrides + 1))
             done
         done < "$bottle/$reg"
@@ -141,7 +141,7 @@ echo
 status=0
 if [ "$overrides" -gt 0 ]; then
     echo "FAIL: $overrides DllOverrides entry/entries on modules this tree ships as builtins."
-    echo "      Remove each so the load order is decided by patch 0017 alone:"
+    echo "      Remove each so the load order is decided by patch 0006 alone:"
     echo "          wine reg delete 'HKCU\\Software\\Wine\\DllOverrides' /v <name> /f"
     status=1
 fi

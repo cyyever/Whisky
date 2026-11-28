@@ -2,7 +2,7 @@
 # Build + run scripts/msync-close-during-wait-test.c inside a bottle under
 # WINEMSYNC=1 (msync) and WINEMSYNC=0 (wineserver oracle), restarting
 # wineserver between arms so the STATUS and timing can be diffed cleanly.
-# See the C file's header for what it probes (patch 0007 close-during-wait).
+# See the C file's header for what it probes (patch 0002 close-during-wait).
 #
 # Usage: scripts/run-msync-close-test.sh <bottle-dir> [iters]   (default iters: 1)
 #   <bottle-dir> is a bottle's WINEPREFIX directory, e.g.

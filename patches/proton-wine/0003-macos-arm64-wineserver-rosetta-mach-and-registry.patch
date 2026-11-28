@@ -1,50 +1,18 @@
-Subject: [PATCH] server,ntdll: fix arm64 wineserver Mach, view alignment, and Rosetta 2 icache invalidation
+Subject: [PATCH] server: arm64 wineserver Mach/Rosetta support, AMD64 machine, and registry null-parent UB fix
 
-When wineserver is built natively for arm64 on Apple Silicon (while wine64
-clients run as x86_64/i386 under Rosetta 2), five mismatches occur:
+Consolidated patches:
+  - (0026) server: advertise AMD64/I386 machines for arm64 wineserver on macOS
+subj='server: advertise AMD64/I386 machines for arm64 wineserver on macOS'
+  - (0036) server,ntdll: fix arm64 wineserver Mach, view alignment, and Rosetta 2 icache invalidation
+subj='server,ntdll: fix arm64 wineserver Mach, view alignment, and Rosetta 2 icache invalidation'
+  - (0043) server/registry: avoid null parent member access UB in open_key/create_key
 
-  1. server/mach.c: is_rosetta() queries sysctl.proc_translated on wineserver
-     itself, which returns 0 for native arm64 wineserver. In
-     write_process_memory(), Rosetta 2 downgrades executed RWX pages to R-X
-     (causing mach_vm_write to return KERN_INVALID_ADDRESS), and the fallback
-     check `!is_rosetta() && !(info.protection & VM_PROT_WRITE)` wrongly
-     rejects the write with KERN_PROTECTION_FAILURE (STATUS_ACCESS_DENIED).
-
-  2. server/mach.c + ntdll: When wineserver patches an already-executed RWX
-     page via cross-process mach_vm_protect/mach_vm_write, Rosetta 2's
-     user-space JIT translation cache inside the target process is never
-     notified (unlike in-process mprotect or in-process writes), so the target
-     continues executing stale translated ARM64 code! Signal flush_icache in
-     the write_process_memory reply whenever an executable page was modified
-     in a Rosetta process, implement NtFlushInstructionCache() on x86_64 macOS
-     by re-applying mprotect_range() in the target process (via a synchronous
-     APC_FLUSH_ICACHE system APC for remote processes), and invoke it from
-     NtWriteVirtualMemory() when flush_icache is set.
-
-  3. server/mach.c: get_thread_context() is wrapped in
-     `#if defined(__i386__) || defined(__x86_64__)`, compiling to an empty
-     no-op on arm64 wineserver. It fails to zero context->debug and fails to
-     set SERVER_CTX_DEBUG_REGISTERS, leaving caller DR0..DR7 uninitialized
-     when the server path is taken.
-
-  4. server/mach.c: set_thread_context() is likewise compiled out on arm64
-     wineserver and wrongly returns STATUS_SUCCESS for non-zero DR0..DR7 on
-     Rosetta 2. At the same time, callers that do GetThreadContext(CONTEXT_ALL)
-     followed by SetThreadContext() pass CONTEXT_DEBUG_REGISTERS with all-zero
-     DR0..DR7; allow all-zero debug registers to succeed as a no-op on Rosetta
-     and reject non-zero debug registers with STATUS_UNSUCCESSFUL.
-
-  5. server/mapping.c: is_valid_view_addr() validates client view addresses
-     against arm64 wineserver's 16KB host_page_mask (0x3fff) instead of the
-     Rosetta 2 x86_64/i386 client's 4KB page_mask (0xfff), rejecting valid
-     4KB-aligned views (such as MapViewOfFile3 with MEM_REPLACE_PLACEHOLDER)
-     with STATUS_INVALID_PARAMETER.
-
+---
 diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
-index c41bf2e..8c529a1 100644
+index 39ec9c90..c4323fd0 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -562,6 +562,15 @@ static BOOL invoke_system_apc( const union apc_call *call, union apc_result *res
+@@ -562,6 +562,15 @@ static void invoke_system_apc( const union apc_call *call, union apc_result *res
          }
          else result->virtual_flush.status = STATUS_INVALID_PARAMETER;
          break;
@@ -61,10 +29,10 @@ index c41bf2e..8c529a1 100644
          result->type = call->type;
          addr = wine_server_get_ptr( call->virtual_lock.addr );
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index d42f831..99c3b12 100644
+index 3efac71e..a974299c 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -7280,6 +7280,7 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
+@@ -7241,6 +7241,7 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
                                        SIZE_T size, SIZE_T *bytes_written )
  {
      unsigned int status;
@@ -72,7 +40,7 @@ index d42f831..99c3b12 100644
  
      if (virtual_check_buffer_for_read( buffer, size ))
      {
-@@ -7290,8 +7291,13 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
+@@ -7251,8 +7252,13 @@ NTSTATUS WINAPI NtWriteVirtualMemory( HANDLE process, void *addr, const void *bu
              wine_server_add_data( req, buffer, size );
              status = wine_server_call( req );
              size = reply->written;
@@ -86,7 +54,7 @@ index d42f831..99c3b12 100644
      }
      else
      {
-@@ -7443,7 +7449,33 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+@@ -7404,7 +7410,33 @@ NTSTATUS WINAPI NtSetInformationVirtualMemory( HANDLE process,
   */
  NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T size )
  {
@@ -122,7 +90,7 @@ index d42f831..99c3b12 100644
  #elif defined(HAVE___CLEAR_CACHE)
      if (handle == GetCurrentProcess())
 diff --git a/server/mach.c b/server/mach.c
-index 0f75d89..a83e49c 100644
+index 0f75d892..c1e415df 100644
 --- a/server/mach.c
 +++ b/server/mach.c
 @@ -93,6 +93,34 @@ static int is_rosetta( void )
@@ -270,10 +238,10 @@ index 0f75d89..a83e49c 100644
  
  #endif  /* USE_MACH */
 diff --git a/server/mapping.c b/server/mapping.c
-index 1596c56..89a078a 100644
+index b9b1b630..097f052b 100644
 --- a/server/mapping.c
 +++ b/server/mapping.c
-@@ -460,9 +460,16 @@ static struct memory_view *find_mapped_addr( struct process *process, client_ptr
+@@ -457,9 +457,16 @@ static struct memory_view *find_mapped_addr( struct process *process, client_ptr
  static int is_valid_view_addr( struct process *process, client_ptr_t addr, mem_size_t size )
  {
      struct memory_view *view;
@@ -292,10 +260,10 @@ index 1596c56..89a078a 100644
  
      /* check for overlapping view */
 diff --git a/server/process.c b/server/process.c
-index 1e543a1..c44b21f 100644
+index 287718ad..f92041f8 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -1825,7 +1825,9 @@ DECL_HANDLER(write_process_memory)
+@@ -1808,7 +1808,9 @@ DECL_HANDLER(write_process_memory)
      {
          data_size_t len = get_req_data_size();
          reply->written = 0;
@@ -307,7 +275,7 @@ index 1e543a1..c44b21f 100644
      }
  }
 diff --git a/server/protocol.def b/server/protocol.def
-index 9c1b29f..b5e1d4c 100644
+index ba0f2b8f..2d79a27f 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
 @@ -502,6 +502,7 @@ enum apc_type
@@ -319,31 +287,31 @@ index 9c1b29f..b5e1d4c 100644
      APC_VIRTUAL_UNLOCK,
      APC_MAP_VIEW,
 @@ -583,6 +584,13 @@ union apc_call
-         client_ptr_t     addr;      /* requested address */
          mem_size_t       size;      /* requested size */
      } virtual_flush;
-+    struct
+     struct
 +    {
 +        enum apc_type    type;      /* APC_FLUSH_ICACHE */
 +        int              __pad;
 +        client_ptr_t     addr;      /* requested address */
 +        mem_size_t       size;      /* requested size */
 +    } flush_icache;
-     struct
++    struct
      {
          enum apc_type    type;      /* APC_VIRTUAL_LOCK */
+         int              __pad;
 @@ -706,6 +714,11 @@ union apc_result
-         client_ptr_t     addr;      /* resulting address */
          mem_size_t       size;      /* resulting size */
      } virtual_flush;
-+    struct
+     struct
 +    {
 +        enum apc_type    type;      /* APC_FLUSH_ICACHE */
 +        unsigned int     status;    /* status returned by call */
 +    } flush_icache;
-     struct
++    struct
      {
          enum apc_type    type;      /* APC_VIRTUAL_LOCK */
+         unsigned int     status;    /* status returned by call */
 @@ -2059,6 +2072,7 @@ struct process_info
      VARARG(data,bytes);        /* data to write */
  @REPLY
@@ -352,11 +320,42 @@ index 9c1b29f..b5e1d4c 100644
  @END
  
  
+diff --git a/server/registry.c b/server/registry.c
+index bf42c8e0..83e69129 100644
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -838,7 +838,7 @@ static struct key *open_key( struct key *parent, const struct unicode_str *name,
+ 
+     if (!(access & KEY_WOW64_64KEY)) attributes |= OBJ_KEY_WOW64;
+ 
+-    if (!(key = open_named_object( &parent->obj, &key_ops, name, attributes ))) return NULL;
++    if (!(key = open_named_object( parent ? &parent->obj : NULL, &key_ops, name, attributes ))) return NULL;
+ 
+     if (!(access & KEY_WOW64_64KEY)) key = grab_wow6432node( key );
+     if (debug_level > 1) dump_operation( key, NULL, "Open" );
+@@ -864,7 +864,7 @@ static struct key *create_key( struct key *parent, const struct unicode_str *nam
+ 
+     if (!(access & KEY_WOW64_64KEY)) attributes |= OBJ_KEY_WOW64;
+ 
+-    if (!(key = create_key_object( &parent->obj, name, attributes, options, current_time, sd )))
++    if (!(key = create_key_object( parent ? &parent->obj : NULL, name, attributes, options, current_time, sd )))
+         return NULL;
+ 
+     if (get_error() == STATUS_OBJECT_NAME_EXISTS)
+@@ -1871,7 +1871,7 @@ static void init_supported_machines(void)
+     unsigned int count = 0;
+ #ifdef __i386__
+     if (prefix_type == PREFIX_32BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_I386;
+-#elif defined(__x86_64__)
++#elif defined(__x86_64__) || (defined(__aarch64__) && defined(__APPLE__))
+     if (prefix_type == PREFIX_64BIT) supported_machines[count++] = IMAGE_FILE_MACHINE_AMD64;
+     supported_machines[count++] = IMAGE_FILE_MACHINE_I386;
+ #elif defined(__arm__)
 diff --git a/server/thread.c b/server/thread.c
-index 4b61f29..a9923d1 100644
+index 4ac38e26..157b77d1 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -2242,6 +2242,9 @@ DECL_HANDLER(queue_apc)
+@@ -2203,6 +2203,9 @@ DECL_HANDLER(queue_apc)
      case APC_UNMAP_VIEW:
          process = get_process_from_handle( req->handle, PROCESS_VM_OPERATION );
          break;
@@ -367,10 +366,10 @@ index 4b61f29..a9923d1 100644
          process = get_process_from_handle( req->handle, PROCESS_QUERY_LIMITED_INFORMATION );
          break;
 diff --git a/server/trace.c b/server/trace.c
-index 7a11420..88a2e1d 100644
+index cf49a1bf..83713a9c 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -244,6 +244,10 @@ static void dump_apc_call( const union apc_call *call )
+@@ -244,6 +244,10 @@ static void dump_apc_call( const char *prefix, const union apc_call *call )
          dump_uint64( "APC_VIRTUAL_FLUSH,addr=", &call->virtual_flush.addr );
          dump_uint64( ",size=", &call->virtual_flush.size );
          break;
@@ -381,7 +380,7 @@ index 7a11420..88a2e1d 100644
      case APC_VIRTUAL_LOCK:
          dump_uint64( "APC_VIRTUAL_LOCK,addr=", &call->virtual_lock.addr );
          dump_uint64( ",size=", &call->virtual_lock.size );
-@@ -338,6 +342,10 @@ static void dump_apc_result( const union apc_result *result )
+@@ -339,6 +343,10 @@ static void dump_apc_result( const char *prefix, const union apc_result *result
          dump_uint64( ",addr=", &result->virtual_flush.addr );
          dump_uint64( ",size=", &result->virtual_flush.size );
          break;

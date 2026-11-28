@@ -1,10 +1,44 @@
-Subject: server: Clear connection failure events in IOCTL_AFD_WINE_CONNECT.
+Subject: [PATCH] server: clear connect failure events and fix socket/fd write re-arming
 
-Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=53574
+Consolidated patches:
+  - (0015) server: Clear connection failure events in IOCTL_AFD_WINE_CONNECT.
+subj='server: Clear connection failure events in IOCTL_AFD_WINE_CONNECT.'
+  - (0037) server,ntdll: fix FD_WRITE re-arming on non-WSAEWOULDBLOCK send errors and trim socket_get_events overhead
 
-
+---
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 77be1b1b..09a8e73f 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -1800,21 +1800,21 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+                 break;
+             }
+ 
+-            if ((status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, &options )))
+-                return status;
+-            if (needs_close) close( fd );
+-
+             SERVER_START_REQ( socket_get_events )
+             {
+                 req->handle = wine_server_obj_handle( handle );
+                 req->event = wine_server_obj_handle( reset_event );
+                 wine_server_set_reply( req, params->status, sizeof(params->status) );
+                 if (!(status = wine_server_call( req )))
++                {
+                     params->flags = reply->flags;
++                    options = reply->options;
++                }
+             }
+             SERVER_END_REQ;
+ 
+-            file_complete_async( handle, options, event, apc, apc_user, io, status, 0 );
++            if (!status)
++                file_complete_async( handle, options, event, apc, apc_user, io, status, 0 );
+             return status;
+         }
+ 
 diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
-index e587006..6bd0a4f 100644
+index e5870063..6bd0a4fa 100644
 --- a/dlls/ws2_32/tests/sock.c
 +++ b/dlls/ws2_32/tests/sock.c
 @@ -6819,6 +6819,7 @@ static void test_connect_events(struct event_test_ctx *ctx)
@@ -137,11 +171,23 @@ index e587006..6bd0a4f 100644
  }
  
  static void test_ipv6only(void)
+diff --git a/server/protocol.def b/server/protocol.def
+index 2d79a27f..cae478be 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1775,6 +1775,7 @@ enum server_fd_type
+     obj_handle_t event;         /* event to reset */
+ @REPLY
+     unsigned int flags;         /* event mask */
++    unsigned int options;       /* device open options */
+     VARARG(status,uints);       /* array of status codes */
+ @END
+ 
 diff --git a/server/sock.c b/server/sock.c
-index 7a7d3af..5f9b15a 100644
+index 0337d8d3..d5e71708 100644
 --- a/server/sock.c
 +++ b/server/sock.c
-@@ -2744,6 +2744,11 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
+@@ -2743,6 +2743,11 @@ static void sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
              set_error( STATUS_INVALID_ADDRESS );
              return;
          }
@@ -153,3 +199,30 @@ index 7a7d3af..5f9b15a 100644
          if (unix_addr.addr.sa_family == AF_INET && !memcmp( &unix_addr.in.sin_addr, magic_loopback_addr, 4 ))
              unix_addr.in.sin_addr.s_addr = htonl( INADDR_LOOPBACK );
  
+@@ -4055,9 +4060,11 @@ static void send_socket_completion_callback( void *private )
+     struct iosb *iosb = send_req->iosb;
+     struct sock *sock = send_req->sock;
+ 
+-    if (iosb->status != STATUS_SUCCESS)
++    if (iosb->status == STATUS_DEVICE_NOT_READY)
+     {
+-        /* send() calls only clear and reselect events if unsuccessful. */
++        /* Per Winsock2 / AFD semantics, FD_WRITE is only re-armed after a send
++         * fails with WSAEWOULDBLOCK (STATUS_DEVICE_NOT_READY), not on hard
++         * errors like ENETUNREACH or EMSGSIZE. */
+         sock->pending_events &= ~AFD_POLL_WRITE;
+         sock->reported_events &= ~AFD_POLL_WRITE;
+         sock_reselect( sock );
+@@ -4199,11 +4206,11 @@ DECL_HANDLER(socket_get_events)
+     }
+ 
+     reply->flags = sock->pending_events & sock->mask;
++    reply->options = get_fd_options( sock->fd );
+     for (i = 0; i < ARRAY_SIZE( status ); ++i)
+         status[i] = sock_get_ntstatus( sock->errors[i] );
+ 
+     sock->pending_events &= ~sock->mask;
+-    sock_reselect( sock );
+ 
+     if (event)
+     {

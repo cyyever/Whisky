@@ -1,14 +1,9 @@
-Subject: bcrypt: use GnuTLS 3.8+ privkey_derive_secret for ECDH and GMP for BCRYPT_PAD_NONE RSA
+Subject: [PATCH] bcrypt: GnuTLS ECDH and GMP raw RSA fixes
 
-Proton's bcrypt/gnutls.c relied on libgcrypt (not shipped on macOS) for two
-operations, causing 27 failures in bcrypt:bcrypt:
-1. ECDH P-256/P-384/P-521 secret agreement (BCryptDeriveKey) returned
-   STATUS_NOT_IMPLEMENTED even though gnutls.c already dynamically loads
-   gnutls_privkey_derive_secret (GnuTLS >= 3.8.2; Whisky ships 3.8.13).
-2. RSA BCRYPT_PAD_NONE raw encrypt/decrypt fell through to GnuTLS PKCS#1 v1.5
-   padding instead of raw modular exponentiation. Implement raw RSA using GMP
-   (libgmp is already loaded in gnutls.c for DH).
+Consolidated patches:
+  - (0030) bcrypt: use GnuTLS 3.8+ privkey_derive_secret for ECDH and GMP for BCRYPT_PAD_NONE RSA
 
+---
 diff --git a/dlls/bcrypt/gnutls.c b/dlls/bcrypt/gnutls.c
 index 4603c7d4..76ce11ab 100644
 --- a/dlls/bcrypt/gnutls.c

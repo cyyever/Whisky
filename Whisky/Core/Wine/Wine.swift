@@ -273,8 +273,8 @@ public class Wine {
         // Only what the launcher alone can know. The constants that used to sit
         // here — WINEMSYNC, WINE_DISABLE_IPV6, WHISKY_HIDE_VIRTUAL_AUDIO,
         // WINE_NX_COMPAT, PROTON_DISABLE_LSTEAMCLIENT, SDL_JOYSTICK_MFI — are
-        // now defaults in the code that reads them (patches 0007, 0008, 0009,
-        // 0013, 0018, 0019), each still overridable by setting the variable to
+        // now defaults in the code that reads them (patches 0002, 0007, 0011,
+        // 0016, 0017), each still overridable by setting the variable to
         // "0". A constant set here has to be mirrored by hand in every harness
         // that stands in for a GUI launch, and those mirrors drift.
         var result: [String: String] = [

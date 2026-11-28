@@ -232,7 +232,7 @@ fi
 
 # Build wineserver as native arm64: it is an independent daemon that executes
 # no x86 Windows code and communicates with Rosetta x86_64 wine64 clients over
-# LP64 little-endian Unix sockets / shared memory (patch 0026 advertises AMD64).
+# LP64 little-endian Unix sockets / shared memory (patch 0003 advertises AMD64).
 echo "=== Building native arm64 wineserver ==="
 WS_OBJ="$WINE_SRC/build/server-arm64"
 rm -rf "$WS_OBJ" && mkdir -p "$WS_OBJ"

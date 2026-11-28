@@ -35,7 +35,7 @@ name it built earlier — so every enumeration added a layer.
 *enumeration*, not per plug event, so anything that opens the audio stack
 advances it — which is how a machine nobody was stressing reached 97 layers.
 
-**Result: +22 bytes per enumeration before `patches/proton-wine/0037`, +0
+**Result: +22 bytes per enumeration before `patches/proton-wine/0017`, +0
 after** (2026-08-20).
 
 Three things it refuses to do, each of which would have made it pass while
@@ -55,6 +55,6 @@ in it** — pass the bottle explicitly if you have more than one.
 The bug is in WineHQ master, not something this fork introduced: `devenum.c`
 there still seeds `load_devices_from_reg` from `DEVPKEY_Device_FriendlyName`
 and still derives the name with `swprintf(… L"%ls (%ls)" …)`, and no `DriverId`
-exists anywhere in the file. `patches/proton-wine/0037` applies to upstream
+exists anywhere in the file. `patches/proton-wine/0017` applies to upstream
 master unmodified (two hunks, −170 line offset), so it is submittable to
 wine-devel as is — not to Valve's fork, which takes no external PRs.

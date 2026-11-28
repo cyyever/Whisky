@@ -1,23 +1,7 @@
 Subject: [PATCH] msync: Mach semaphore inproc_sync backend for macOS
 
-Implement macOS msync cleanly on top of Wine 10's official inproc_sync
-interface (matching Proton's fsync integration) instead of modifying
-every server object and protocol request:
-
-- server/inproc_sync.c: macOS inproc_sync_ops backed by msync shm slots
-  (events, mutexes, semaphores, internal server syncs, thread alert_sync).
-- include/wine/msync_abi.h: lock-free pre-allocated shm page table (zero
-  realloc UAF), 16-byte slot layout, and ulock/Mach wake helper.
-- server/msync.c: Mach message pump with doubly-linked wait_group/sem_node
-  tracking, per-thread cleanup on abnormal exit (MSYNC_MSG_CLEANUP_TID_FLAG),
-  FD_CLOEXEC on shm fd, bootstrap_port deallocation, retained-mutex cleanup,
-  and destroy-before-alive-clear ordering.
-- dlls/ntdll/unix/msync_*.c: negotiated via init_first_thread's
-  inproc_device == FSYNC_USED_BY_SERVER, 64-bit atomic handle cache under
-  fd_cache_mutex, stack-local wait arrays, far-future timeout clamping, and
-  native STATUS_NOT_IMPLEMENTED fallback to server_wait (e.g. KeyedEvent).
-- Zero edits to server/queue.c, protocol.def, or server_protocol.h so
-  Wine 10's QS_DRIVER input/message queue polling works unmodified.
+Consolidated patches:
+  - (0007) msync: Mach semaphore inproc_sync backend for macOS
 
 ---
 diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in

@@ -8,13 +8,13 @@
  * the socket, so a later operation on a reused socket reported the old failure:
  *
  *   - the AFD_POLL_CONNECT_ERR event bits   -> fixed upstream by 864ca426
- *     (patch 0022, "server: Clear connection failure events in
+ *     (patch 0010, "server: Clear connection failure events in
  *     IOCTL_AFD_WINE_CONNECT")
  *   - the errors[AFD_POLL_BIT_CONNECT_ERR] code itself -> NOT cleared by that
  *     commit. IOCTL_AFD_WINE_GET_SO_ERROR falls back to scanning errors[] when
  *     the socket has no current error, so the stale code resurfaced on the next
  *     operation — an overlapped send on an already-connected socket returning
- *     network-unreachable. Patch 0023 clears it alongside the event bits.
+ *     network-unreachable. Patch 0010 clears it alongside the event bits.
  *
  * The tests below fail on an unpatched Wine and pass on a patched one. They
  * only need loopback plus one unroutable address, so they are hermetic — no

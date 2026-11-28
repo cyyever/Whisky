@@ -1,5 +1,5 @@
 /*
- * Regression test for patches/proton-wine/0030-bcrypt-gnutls-ecdh-and-gmp-raw-rsa.patch:
+ * Regression test for patches/proton-wine/0020-bcrypt-gnutls-ecdh-and-gmp-raw-rsa.patch:
  *   1. ECDH_P256, ECDH_P384, ECDH_P521 key exchange via BCryptSecretAgreement +
  *      BCryptDeriveKey(BCRYPT_KDF_RAW_SECRET) derives matching 32/48/66-byte
  *      shared secrets on both peers without libgcrypt.

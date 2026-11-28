@@ -1,6 +1,6 @@
 /*
  * libFuzzer target for macOS/BSD -> Windows WSACMSGHDR IP_RECVTOS / IP_RECVTTL
- * control-header conversion logic (patches/proton-wine/0040).
+ * control-header conversion logic (patches/proton-wine/0009).
  * Verifies zero out-of-bounds reads/writes and zero UB on arbitrary or
  * truncated cmsghdr streams and tight destination buffers.
  */

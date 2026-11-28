@@ -1,0 +1,513 @@
+Subject: [PATCH] ntdll/wow64cpu: Rosetta signal handling, XState, foreign-thread fault guard, and WoW64 CS recovery
+
+Consolidated patches:
+  - (0020) ntdll: classify macOS faulting threads without reading pthread TLS
+subj='ntdll: classify macOS faulting threads without reading pthread TLS'
+  - (0033) wow64cpu,ntdll: recover Rosetta 2 32<->64 far-jump CS mismatches
+subj='wow64cpu,ntdll: recover Rosetta 2 32<->64 far-jump CS mismatches'
+  - (0035) ntdll: fix macOS/Rosetta AVX XState, GS fault loop, privileged MSRs, foreign signals, and RO write faults
+
+---
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 52b87652..2b448d69 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -308,6 +308,12 @@ _STRUCT_MCONTEXT_AVX64_FULL
+ #endif
+ 
+ /* AVX512 structs were added in the macOS 10.13 SDK/Xcode 9. */
++#ifdef _STRUCT_MCONTEXT_AVX512_64
++#define SIZEOF_STRUCT_MCONTEXT_AVX512_64 sizeof(_STRUCT_MCONTEXT_AVX512_64)
++#else
++#define SIZEOF_STRUCT_MCONTEXT_AVX512_64 2632
++#endif
++
+ #ifdef _STRUCT_MCONTEXT_AVX512_64_FULL
+ #define SIZEOF_STRUCT_MCONTEXT_AVX512_64_FULL sizeof(_STRUCT_MCONTEXT_AVX512_64_FULL)
+ #else
+@@ -366,7 +372,20 @@ static inline const WORD *SS_sig_ptr( const ucontext_t *context )
+ }
+ #define SS_sig(context) (*SS_sig_ptr(context))
+ 
+-#define XState_sig(context)  NULL
++static inline void *YMMH_sig( const ucontext_t *context )
++{
++    if (context->uc_mcsize == sizeof(_STRUCT_MCONTEXT_AVX64_FULL) ||
++        context->uc_mcsize == SIZEOF_STRUCT_MCONTEXT_AVX512_64_FULL)
++    {
++        return &((_STRUCT_MCONTEXT_AVX64_FULL *)context->uc_mcontext)->__fs.__fpu_ymmh0;
++    }
++    if (context->uc_mcsize == sizeof(_STRUCT_MCONTEXT_AVX64) ||
++        context->uc_mcsize == SIZEOF_STRUCT_MCONTEXT_AVX512_64)
++    {
++        return &((_STRUCT_MCONTEXT_AVX64 *)context->uc_mcontext)->__fs.__fpu_ymmh0;
++    }
++    return NULL;
++}
+ 
+ #else
+ #error You must define the signal context functions for your platform
+@@ -520,6 +539,10 @@ struct amd64_thread_data
+     DWORD                 fs;            /* 0338 WOW TEB selector */
+     DWORD                 mxcsr;         /* 033c Unix-side mxcsr register */
+     char                  syscall_dispatch; /* 0340 */
++#ifdef __APPLE__
++    const void           *gs_fault_rip;  /* 0348 */
++    const void           *gs_fault_addr; /* 0350 */
++#endif
+ };
+ 
+ C_ASSERT( sizeof(struct amd64_thread_data) <= sizeof(((struct ntdll_thread_data *)0)->cpu_data) );
+@@ -570,6 +593,9 @@ struct xcontext
+ {
+     CONTEXT c;
+     CONTEXT_EX c_ex;
++#ifdef __APPLE__
++    DECLSPEC_ALIGN(64) XSTATE xstate;
++#endif
+ };
+ 
+ static inline XSAVE_AREA_HEADER *xstate_from_context( const CONTEXT *context )
+@@ -1023,18 +1049,43 @@ static void save_context( struct xcontext *xcontext, const ucontext_t *sigcontex
+     context->Dr7    = amd64_thread_data()->dr7;
+     if (FPU_sig(sigcontext))
+     {
+-        XSAVE_AREA_HEADER *xs;
+-
+         context->ContextFlags |= CONTEXT_FLOATING_POINT;
+         memcpy( &context->FltSave, FPU_sig(sigcontext), sizeof(context->FltSave) );
+         context->MxCsr = context->FltSave.MxCsr;
+-        if (xstate_extended_features && (xs = XState_sig(FPU_sig(sigcontext))))
++#ifdef __APPLE__
++        if ((xstate_extended_features & XSTATE_MASK_AVX) && YMMH_sig( sigcontext ))
+         {
+-            /* xcontext and sigcontext are both on the signal stack, so we can
+-             * just reference sigcontext without overflowing 32 bit XState.Offset */
+-            context_init_xstate( context, xs );
+-            assert( xcontext->c_ex.XState.Offset == (BYTE *)xs - (BYTE *)&xcontext->c_ex );
++            const M128A *ymmh = YMMH_sig( sigcontext );
++            unsigned int i;
++
++            memset( &xcontext->xstate, 0, sizeof(xcontext->xstate) );
++            if (user_shared_data->XState.CompactionEnabled)
++                xcontext->xstate.CompactionMask = 0x8000000000000000 | XSTATE_MASK_LEGACY | XSTATE_MASK_AVX;
++            xcontext->xstate.Mask = XSTATE_MASK_LEGACY;
++            for (i = 0; i < 16; i++)
++            {
++                if (ymmh[i].Low || ymmh[i].High)
++                {
++                    memcpy( &xcontext->xstate.YmmContext, ymmh, sizeof(xcontext->xstate.YmmContext) );
++                    xcontext->xstate.Mask |= XSTATE_MASK_AVX;
++                    break;
++                }
++            }
++            context_init_xstate( context, &xcontext->xstate );
+         }
++#else
++        if (xstate_extended_features)
++        {
++            XSAVE_AREA_HEADER *xs = XState_sig(FPU_sig(sigcontext));
++            if (xs)
++            {
++                /* xcontext and sigcontext are both on the signal stack, so we can
++                 * just reference sigcontext without overflowing 32 bit XState.Offset */
++                context_init_xstate( context, xs );
++                assert( xcontext->c_ex.XState.Offset == (BYTE *)xs - (BYTE *)&xcontext->c_ex );
++            }
++        }
++#endif
+     }
+     if (is_16bit( sigcontext ))  /* get the actual selector values */
+     {
+@@ -1072,6 +1123,23 @@ static void fixup_frame_fpu_state( struct syscall_frame *frame, const ucontext_t
+     xsave.MxCsr = frame->xsave.MxCsr;
+     frame->xsave = xsave;
+     frame->xstate.Mask = XSTATE_MASK_LEGACY;
++#ifdef __APPLE__
++    if ((xstate_extended_features & XSTATE_MASK_AVX) && YMMH_sig( sigcontext ))
++    {
++        const M128A *ymmh = YMMH_sig( sigcontext );
++        unsigned int i;
++
++        for (i = 0; i < 16; i++)
++        {
++            if (ymmh[i].Low || ymmh[i].High)
++            {
++                memcpy( (char *)&frame->xstate + sizeof(XSAVE_AREA_HEADER), ymmh, sizeof(YMMCONTEXT) );
++                frame->xstate.Mask |= XSTATE_MASK_AVX;
++                break;
++            }
++        }
++    }
++#endif
+ }
+ 
+ 
+@@ -1092,6 +1160,19 @@ static void restore_context( const struct xcontext *xcontext, ucontext_t *sigcon
+     amd64_thread_data()->dr7 = context->Dr7;
+     set_sigcontext( context, sigcontext );
+     if (FPU_sig(sigcontext)) memcpy( FPU_sig(sigcontext), &context->FltSave, sizeof(context->FltSave) );
++#ifdef __APPLE__
++    if (YMMH_sig( sigcontext ))
++    {
++        const XSAVE_AREA_HEADER *xs = xstate_from_context( context );
++        if (xs && (!xs->CompactionMask || (xs->CompactionMask & XSTATE_MASK_AVX)))
++        {
++            if (xs->Mask & XSTATE_MASK_AVX)
++                memcpy( YMMH_sig( sigcontext ), (const char *)xs + sizeof(XSAVE_AREA_HEADER), sizeof(YMMCONTEXT) );
++            else
++                memset( YMMH_sig( sigcontext ), 0, sizeof(YMMCONTEXT) );
++        }
++    }
++#endif
+     leave_handler( sigcontext );
+ }
+ 
+@@ -2024,6 +2105,9 @@ static inline DWORD is_privileged_instr( CONTEXT *context )
+         case 0x21: /* mov drX, reg */
+         case 0x22: /* mov reg, crX */
+         case 0x23: /* mov reg drX */
++        case 0x30: /* wrmsr */
++        case 0x32: /* rdmsr */
++        case 0x33: /* rdpmc */
+             return EXCEPTION_PRIV_INSTRUCTION;
+         }
+         return 0;
+@@ -2421,7 +2505,7 @@ static BOOL handle_syscall_trap( ucontext_t *sigcontext, siginfo_t *siginfo )
+  *
+  * Check for fault caused by invalid %gs value (some copy protection schemes mess with it).
+  */
+-static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
++static inline BOOL check_invalid_gsbase( ucontext_t *ucontext, const void *fault_addr )
+ {
+     extern const void *__wine_syscall_dispatcher_gs_load_ptr;
+     extern const void *__wine_unix_call_dispatcher_gs_load_ptr;
+@@ -2444,7 +2528,22 @@ static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
+ #elif defined(__NetBSD__)
+     sysarch( X86_64_GET_GSBASE, &cur_gsbase );
+ #elif defined(__APPLE__)
+-    /* init_handler() has already reset GSBASE, we can't determine what it was before the signal */
++    {
++        struct amd64_thread_data *thread_data = amd64_thread_data();
++
++        /* init_handler() has already reset GSBASE, so we cannot inspect what it
++         * was before the signal. Allow at most one recovery retry per (rip, addr)
++         * so a genuinely faulting %gs: access delivers STATUS_ACCESS_VIOLATION
++         * instead of looping forever. */
++        if (thread_data->gs_fault_rip == rip && thread_data->gs_fault_addr == fault_addr)
++        {
++            thread_data->gs_fault_rip = NULL;
++            thread_data->gs_fault_addr = NULL;
++            return FALSE;
++        }
++        thread_data->gs_fault_rip = NULL;
++        thread_data->gs_fault_addr = NULL;
++    }
+ #endif
+ 
+     if (cur_gsbase == (ULONG_PTR)teb) return FALSE;
+@@ -2505,12 +2604,100 @@ static inline BOOL check_invalid_gsbase( ucontext_t *ucontext )
+ #elif defined(__NetBSD__)
+     sysarch( X86_64_SET_GSBASE, &teb );
+ #elif defined(__APPLE__)
+-    /* leave_handler() will set GSBASE to the TEB */
++    {
++        struct amd64_thread_data *thread_data = amd64_thread_data();
++
++        thread_data->gs_fault_rip = rip;
++        thread_data->gs_fault_addr = fault_addr;
++        /* leave_handler() will set GSBASE to the TEB */
++    }
+ #endif
+     return TRUE;
+ }
+ 
+ 
++#ifdef __APPLE__
++/***********************************************************************
++ *           handle_foreign_thread_fault
++ *
++ * Wine's signal stack shares an aligned allocation with the TEB. A native
++ * thread has no such stack, so init_handler() cannot safely derive its TEB.
++ * Check the kernel's alternate-stack description without touching pthread
++ * TLS: GS may still point at the Windows TEB until init_handler() restores it.
++ * Native faults retain the default action instead of entering Wine handlers.
++ */
++static BOOL handle_foreign_thread_fault( int signal )
++{
++    struct sigaction sa;
++    stack_t stack;
++
++    clear_alignment_flag();
++    /* GS can still point at the Windows TEB here. Do not use pthread TLS
++     * until init_handler() has restored the Unix thread environment. */
++    if (!sigaltstack( NULL, &stack ) && (stack.ss_flags & SS_ONSTACK) &&
++        stack.ss_sp == (char *)get_current_teb() + teb_size &&
++        stack.ss_size == signal_stack_size)
++        return FALSE;
++
++    sa.sa_handler = SIG_DFL;
++    sa.sa_flags = 0;
++    sigemptyset( &sa.sa_mask );
++    sigaction( signal, &sa, NULL );
++    raise( signal );
++    return TRUE;
++}
++
++/***********************************************************************
++ *           handle_rosetta_wow64_cs_fault
++ *
++ * Rosetta 2 on Apple Silicon has a concurrency bug when one thread unmaps or
++ * invalidates executable pages (e.g. FreeLibrary -> NtUnmapViewOfSection) while
++ * another 32-bit WoW64 thread executes a 32->64 far jump into wow64cpu.dll:
++ * the target thread lands at syscall_32to64 or unix_call_32to64 with CS still
++ * set to cs32_sel instead of cs64_sel.
++ *
++ * wow64cpu places `movl cs32_sel(%rip), %edx` (8b 15 <disp32>) as the very
++ * first instruction of both entry points, followed by `movl %edx, 0xbc(%r13)`
++ * and `xchgq %r14, %rsp`. In 64-bit mode it is a normal RIP-relative load; in
++ * 32-bit mode it decodes as an absolute read of <disp32> (< 0x10000, always
++ * unmapped), faulting with zero side effects. Detect that exact state here,
++ * restore CS to cs64_sel, and resume cleanly in 64-bit mode.
++ */
++static BOOL handle_rosetta_wow64_cs_fault( ucontext_t *ucontext, void *fault_addr )
++{
++    static const BYTE tail_sig[10] = { 0x41, 0x89, 0x95, 0xbc, 0x00, 0x00, 0x00, 0x4c, 0x87, 0xf4 };
++    const BYTE *rip;
++    ULONG32 disp;
++    TEB *teb;
++    void *cpu_area;
++
++    if (!is_wow64() || CS_sig(ucontext) != cs32_sel) return FALSE;
++    /* Must be a data read fault on the unmapped low 64KB page (neither write nor fetch). */
++    if ((ERROR_sig(ucontext) & 0x12) || (ULONG_PTR)fault_addr >= 0x10000) return FALSE;
++
++    teb = NtCurrentTeb();
++    cpu_area = teb->TlsSlots[WOW64_TLS_CPURESERVED];
++    if (!cpu_area || R13_sig(ucontext) != (ULONG_PTR)cpu_area + 4) return FALSE;
++    if ((void *)R14_sig(ucontext) < teb->DeallocationStack ||
++        (void *)R14_sig(ucontext) >= teb->Tib.StackBase)
++        return FALSE;
++
++    rip = (const BYTE *)RIP_sig(ucontext);
++    if ((ULONG_PTR)rip < 0x10000 || (ULONG_PTR)rip >= 0x100000000ULL) return FALSE;
++    /* Ensure the 16-byte prologue check stays on the already-fetched instruction page. */
++    if (((ULONG_PTR)rip & (page_size - 1)) > page_size - 16) return FALSE;
++    if (rip[0] != 0x8b || rip[1] != 0x15) return FALSE;
++    memcpy( &disp, rip + 2, sizeof(disp) );
++    if ((ULONG_PTR)disp != (ULONG_PTR)fault_addr) return FALSE;
++    if (memcmp( rip + 6, tail_sig, sizeof(tail_sig) )) return FALSE;
++
++    TRACE_(seh)( "Rosetta WoW64 32->64 CS mismatch at %p (cs=%x -> %x), recovering\n",
++                 rip, (unsigned)CS_sig(ucontext), (unsigned)cs64_sel );
++    CS_sig(ucontext) = cs64_sel;
++    return TRUE;
++}
++#endif
++
+ /**********************************************************************
+  *		segv_handler
+  *
+@@ -2523,6 +2710,11 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     struct xcontext context;
+     void *steamclient_addr = NULL;
+ 
++#ifdef __APPLE__
++    /* First statement in the body: init_handler() further down resets GSBASE,
++     * and a foreign thread must return before reaching it. */
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
+     /* cpuid fault may happen in native thread. */
+     if (TRAP_sig(ucontext) == TRAP_x86_PROTFLT && siginfo->si_code == 0x80 && !ERROR_sig(ucontext)
+         && handle_cpuid_fault( (ULONG_PTR *)&RIP_sig(ucontext), (ULONG_PTR *)&RAX_sig(ucontext),
+@@ -2568,11 +2760,19 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+             RIP_sig(ucontext) = (intptr_t)steamclient_addr;
+             return;
+         }
++#ifdef __APPLE__
++        if (handle_rosetta_wow64_cs_fault( ucontext, siginfo->si_addr ))
++        {
++            leave_handler( ucontext );
++            return;
++        }
++#endif
+ 
+         rec.NumberParameters = 2;
+         rec.ExceptionInformation[0] = (ERROR_sig(ucontext) >> 1) & 0x09;
+         rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
+-        if (!virtual_handle_fault( &rec, (void *)RSP_sig(ucontext) ) || check_invalid_gsbase( ucontext ))
++        if (!virtual_handle_fault( &rec, (void *)RSP_sig(ucontext) ) ||
++            check_invalid_gsbase( ucontext, siginfo->si_addr ))
+         {
+             leave_handler( ucontext );
+             return;
+@@ -2623,7 +2823,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    ucontext_t *ucontext = init_handler( sigcontext );
++    ucontext_t *ucontext;
++
++#ifdef __APPLE__
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
++    ucontext = init_handler( sigcontext );
+     EXCEPTION_RECORD rec = { 0 };
+     struct xcontext context;
+ 
+@@ -2657,7 +2862,12 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    ucontext_t *ucontext = init_handler( sigcontext );
++    ucontext_t *ucontext;
++
++#ifdef __APPLE__
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
++    ucontext = init_handler( sigcontext );
+     EXCEPTION_RECORD rec = { .ExceptionAddress = (void *)RIP_sig(ucontext) };
+     struct xcontext context;
+ 
+@@ -2713,9 +2923,14 @@ static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void int_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    ucontext_t *ucontext = init_handler( sigcontext );
++    ucontext_t *ucontext;
+     HANDLE handle;
+ 
++#ifdef __APPLE__
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
++    ucontext = init_handler( sigcontext );
++
+     if (p__wine_ctrl_routine)
+     {
+         if (!NtCreateThreadEx( &handle, THREAD_ALL_ACCESS, NULL, NtCurrentProcess(),
+@@ -2733,9 +2948,13 @@ static void int_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void abrt_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    ucontext_t *ucontext = init_handler( sigcontext );
++    ucontext_t *ucontext;
+     EXCEPTION_RECORD rec = { EXCEPTION_WINE_ASSERTION, EXCEPTION_NONCONTINUABLE };
+ 
++#ifdef __APPLE__
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
++    ucontext = init_handler( sigcontext );
+     setup_exception( ucontext, &rec );
+ }
+ 
+@@ -2747,7 +2966,12 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    ucontext_t *ucontext = init_handler( sigcontext );
++    ucontext_t *ucontext;
++
++#ifdef __APPLE__
++    if (handle_foreign_thread_fault( signal )) return;
++#endif
++    ucontext = init_handler( sigcontext );
+ 
+     if (!is_inside_syscall( RSP_sig(ucontext) )) user_mode_abort_thread( 0, get_syscall_frame() );
+     abort_thread( 0 );
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index a974299c..d156933a 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4895,7 +4895,7 @@ NTSTATUS virtual_handle_fault( EXCEPTION_RECORD *rec, void *stack )
+     if (err == EXCEPTION_READ_FAULT && (get_unix_prot( vprot ) & PROT_READ))
+     {
+         WARN( "treating read fault in a readable page as a write fault, addr %p\n", addr );
+-        err = EXCEPTION_WRITE_FAULT;
++        err = rec->ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
+     }
+ #endif
+ 
+diff --git a/dlls/wow64cpu/cpu.c b/dlls/wow64cpu/cpu.c
+index 4a49989e..56873c45 100644
+--- a/dlls/wow64cpu/cpu.c
++++ b/dlls/wow64cpu/cpu.c
+@@ -179,6 +179,8 @@ __ASM_GLOBAL_FUNC( syscall_32to64,
+                    ".seh_pushreg %rdi\n\t"
+                    ".seh_stackalloc 0x28\n\t"
+                    ".seh_endprologue\n\t"
++                   "movl cs32_sel(%rip),%edx\n\t"
++                   "movl %edx,0xbc(%r13)\n\t"   /* context->SegCs */
+                    "xchgq %r14,%rsp\n\t"
+                    "movl %edi,0x9c(%r13)\n\t"   /* context->Edi */
+                    "movl %esi,0xa0(%r13)\n\t"   /* context->Esi */
+@@ -186,8 +188,6 @@ __ASM_GLOBAL_FUNC( syscall_32to64,
+                    "movl %ebp,0xb4(%r13)\n\t"   /* context->Ebp */
+                    "movl (%r14),%edx\n\t"
+                    "movl %edx,0xb8(%r13)\n\t"   /* context->Eip */
+-                   "movl cs32_sel(%rip),%edx\n\t"
+-                   "movl %edx,0xbc(%r13)\n\t"   /* context->SegCs */
+                    "pushfq\n\t"
+                    "popq %rdx\n\t"
+                    "movl %edx,0xc0(%r13)\n\t"   /* context->EFlags */
+@@ -204,14 +204,21 @@ __ASM_GLOBAL_FUNC( syscall_32to64,
+                    "movl 0xa4(%r13),%ebx\n\t"   /* context->Ebx */
+                    "movl 0xb4(%r13),%ebp\n\t"   /* context->Ebp */
+                    "btrl $0,-4(%r13)\n\t"       /* cpu->Flags & WOW64_CPURESERVED_FLAG_RESET_STATE */
+-                   "jc .Lsyscall_32to64_return\n\t"
+-                   "movl 0xb8(%r13),%edx\n\t"   /* context->Eip */
+-                   "movl %edx,(%rsp)\n\t"
++                   "jc .Lsyscall_32to64_return\n"
++                   ".Lsyscall_32to64_fast_return:\n\t"
++                   "movq %rsp,%r14\n\t"
++                   "movl 0xc8(%r13),%edx\n\t"   /* context->SegSs */
++                   "movq %rdx,0x20(%rsp)\n\t"
++                   "movl 0xc4(%r13),%edx\n\t"   /* context->Esp */
++                   "movq %rdx,0x18(%rsp)\n\t"
++                   "pushfq\n\t"
++                   "popq %rdx\n\t"
++                   "movq %rdx,0x10(%rsp)\n\t"
+                    "movl 0xbc(%r13),%edx\n\t"   /* context->SegCs */
+-                   "movl %edx,4(%rsp)\n\t"
+-                   "movl 0xc4(%r13),%r14d\n\t"  /* context->Esp */
+-                   "xchgq %r14,%rsp\n\t"
+-                   "ljmp *(%r14)\n"
++                   "movq %rdx,0x8(%rsp)\n\t"
++                   "movl 0xb8(%r13),%edx\n\t"   /* context->Eip */
++                   "movq %rdx,(%rsp)\n\t"
++                   "iretq\n"
+                    ".Lsyscall_32to64_return:\n\t"
+                    "movq %rsp,%r14\n\t"
+                    "movl 0xa8(%r13),%edx\n\t"   /* context->Edx */
+@@ -247,6 +254,8 @@ __ASM_GLOBAL_FUNC( unix_call_32to64,
+                    ".seh_pushreg %rdi\n\t"
+                    ".seh_stackalloc 0x28\n\t"
+                    ".seh_endprologue\n\t"
++                   "movl cs32_sel(%rip),%edx\n\t"
++                   "movl %edx,0xbc(%r13)\n\t"   /* context->SegCs */
+                    "xchgq %r14,%rsp\n\t"
+                    "movl %edi,0x9c(%r13)\n\t"   /* context->Edi */
+                    "movl %esi,0xa0(%r13)\n\t"   /* context->Esi */
+@@ -254,8 +263,6 @@ __ASM_GLOBAL_FUNC( unix_call_32to64,
+                    "movl %ebp,0xb4(%r13)\n\t"   /* context->Ebp */
+                    "movl (%r14),%edx\n\t"
+                    "movl %edx,0xb8(%r13)\n\t"   /* context->Eip */
+-                   "movl cs32_sel(%rip),%edx\n\t"
+-                   "movl %edx,0xbc(%r13)\n\t"   /* context->SegCs */
+                    "leaq 20(%r14),%rdx\n\t"
+                    "movl %edx,0xc4(%r13)\n\t"   /* context->Esp */
+                    "movq 4(%r14),%rcx\n\t"      /* handle */
+@@ -265,13 +272,7 @@ __ASM_GLOBAL_FUNC( unix_call_32to64,
+                    "movl %eax,0xb0(%r13)\n\t"   /* context->Eax */
+                    "btrl $0,-4(%r13)\n\t"       /* cpu->Flags & WOW64_CPURESERVED_FLAG_RESET_STATE */
+                    "jc .Lsyscall_32to64_return\n\t"
+-                   "movl 0xb8(%r13),%edx\n\t"   /* context->Eip */
+-                   "movl %edx,(%rsp)\n\t"
+-                   "movl 0xbc(%r13),%edx\n\t"   /* context->SegCs */
+-                   "movl %edx,4(%rsp)\n\t"
+-                   "movl 0xc4(%r13),%r14d\n\t"  /* context->Esp */
+-                   "xchgq %r14,%rsp\n\t"
+-                   "ljmp *(%r14)" )
++                   "jmp .Lsyscall_32to64_fast_return" )
+ 
+ 
+ /**********************************************************************

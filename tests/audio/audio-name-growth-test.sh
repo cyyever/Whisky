@@ -106,7 +106,7 @@ echo
 if [ "$now" -gt "$before" ]; then
     echo "FAIL  names grew by $((now - before)) bytes over $ROUNDS enumerations --"
     echo "      every look at the audio stack is decorating the stored names again"
-    echo "      (patches/proton-wine/0037)"
+    echo "      (patches/proton-wine/0017)"
     echo "1 failed check(s)"
     exit 2
 fi

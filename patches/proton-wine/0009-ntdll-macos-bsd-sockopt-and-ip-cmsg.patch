@@ -1,24 +1,61 @@
-Subject: ntdll: normalize macOS BSD getsockopt/setsockopt booleans and option lengths
+Subject: [PATCH] ntdll: macOS BSD sockopt normalization and IP_RECVTOS/IP_RECVTTL cmsg conversion
 
-On macOS XNU, BSD socket options diverge from Windows/Linux in three ways that
-break Winsock callers (and fail 50+ assertions in ws2_32:sock):
-1. Boolean getsockopt() calls return internal kernel bitflags (e.g.
-   SO_BROADCAST=0x20, SO_OOBINLINE=0x100, SO_KEEPALIVE=0x08, TCP_NODELAY=0x04)
-   instead of 0/1. For 1-byte reads of SO_OOBINLINE, 0x100 even truncates to
-   0x00 (FALSE) when enabled. Normalize boolean options to 0/1.
-2. IP_MULTICAST_LOOP and IP_MULTICAST_TTL take 1-byte u_char on XNU, rejecting
-   2/3-byte lengths with EINVAL and truncating 4-byte 0x100 to 0x00. Adapt
-   1..4-byte Windows inputs and return 1- or 4-byte Windows outputs.
-3. IP_TOS, IP_TTL, IPV6_RECVHOPLIMIT, IPV6_RECVPKTINFO, IPV6_RECVTCLASS enforce
-   exact sizeof(int) on XNU (rejecting 1-, 2-, and 8-byte Windows buffers), and
-   TCP_KEEPCNT allows values > 255. Normalize widths and bounds to match
-   Windows Winsock semantics.
+Consolidated patches:
+  - (0029) ntdll: normalize macOS BSD getsockopt/setsockopt booleans and option lengths
+subj='ntdll: normalize macOS BSD getsockopt/setsockopt booleans and option lengths'
+  - (0040) ntdll: handle macOS IP_RECVTOS and IP_RECVTTL control messages
 
+---
 diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
-index 96e81525..2b089108 100644
+index 96e81525..77be1b1b 100644
 --- a/dlls/ntdll/unix/socket.c
 +++ b/dlls/ntdll/unix/socket.c
-@@ -1595,6 +1595,79 @@ static NTSTATUS do_getsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
+@@ -429,8 +429,13 @@ static int convert_control_headers(struct msghdr *hdr, WSABUF *control)
+                     }
+ #endif /* IP_PKTINFO */
+ 
++#if defined(IP_TOS) || defined(IP_RECVTOS)
+ #if defined(IP_TOS)
+                     case IP_TOS:
++#endif
++#if defined(IP_RECVTOS) && (!defined(IP_TOS) || IP_RECVTOS != IP_TOS)
++                    case IP_RECVTOS:
++#endif
+                     {
+                         INT tos = *(unsigned char *)CMSG_DATA(cmsg_unix);
+                         ptr = fill_control_message( WS_IPPROTO_IP, WS_IP_TOS, ptr, &ctlsize,
+@@ -438,17 +443,27 @@ static int convert_control_headers(struct msghdr *hdr, WSABUF *control)
+                         if (!ptr) goto error;
+                         break;
+                     }
+-#endif /* IP_TOS */
++#endif /* IP_TOS || IP_RECVTOS */
+ 
++#if defined(IP_TTL) || defined(IP_RECVTTL)
+ #if defined(IP_TTL)
+                     case IP_TTL:
++#endif
++#if defined(IP_RECVTTL) && (!defined(IP_TTL) || IP_RECVTTL != IP_TTL)
++                    case IP_RECVTTL:
++#endif
+                     {
++                        INT ttl;
++                        if (cmsg_unix->cmsg_len >= CMSG_LEN(sizeof(INT)))
++                            memcpy( &ttl, CMSG_DATA(cmsg_unix), sizeof(INT) );
++                        else
++                            ttl = *(unsigned char *)CMSG_DATA(cmsg_unix);
+                         ptr = fill_control_message( WS_IPPROTO_IP, WS_IP_TTL, ptr, &ctlsize,
+-                                                    CMSG_DATA(cmsg_unix), sizeof(INT) );
++                                                    &ttl, sizeof(INT) );
+                         if (!ptr) goto error;
+                         break;
+                     }
+-#endif /* IP_TTL */
++#endif /* IP_TTL || IP_RECVTTL */
+ 
+                     default:
+                         FIXME("Unhandled IPPROTO_IP message header type %d\n", cmsg_unix->cmsg_type);
+@@ -1595,6 +1610,79 @@ static NTSTATUS do_getsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
      return STATUS_SUCCESS;
  }
  
@@ -98,7 +135,7 @@ index 96e81525..2b089108 100644
  
  static NTSTATUS do_setsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
                                 int option, const void *optval, socklen_t optlen )
-@@ -1613,6 +1686,25 @@ static NTSTATUS do_setsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
+@@ -1613,6 +1701,25 @@ static NTSTATUS do_setsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
      return STATUS_SUCCESS;
  }
  
@@ -124,7 +161,7 @@ index 96e81525..2b089108 100644
  
  static int get_sock_type( HANDLE handle )
  {
-@@ -2087,13 +2179,13 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2087,13 +2194,13 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
              break;
  
          case IOCTL_AFD_WINE_GET_SO_BROADCAST:
@@ -140,7 +177,7 @@ index 96e81525..2b089108 100644
  
          case IOCTL_AFD_WINE_SET_SO_KEEPALIVE:
              return do_setsockopt( handle, io, SOL_SOCKET, SO_KEEPALIVE, in_buffer, in_size );
-@@ -2133,7 +2225,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2133,7 +2240,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          }
  
          case IOCTL_AFD_WINE_GET_SO_OOBINLINE:
@@ -149,7 +186,7 @@ index 96e81525..2b089108 100644
  
          case IOCTL_AFD_WINE_SET_SO_OOBINLINE:
              return do_setsockopt( handle, io, SOL_SOCKET, SO_OOBINLINE, in_buffer, in_size );
-@@ -2246,28 +2338,59 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2246,28 +2353,59 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          {
              int sock_type = get_sock_type( handle );
              if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
@@ -209,7 +246,7 @@ index 96e81525..2b089108 100644
          }
  
          case IOCTL_AFD_WINE_GET_IP_OPTIONS:
-@@ -2281,7 +2404,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2281,7 +2419,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          {
              int sock_type = get_sock_type( handle );
              if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
@@ -218,7 +255,7 @@ index 96e81525..2b089108 100644
          }
  
          case IOCTL_AFD_WINE_SET_IP_PKTINFO:
-@@ -2295,7 +2418,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2295,7 +2433,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          {
              int sock_type = get_sock_type( handle );
              if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
@@ -227,7 +264,7 @@ index 96e81525..2b089108 100644
          }
  
          case IOCTL_AFD_WINE_SET_IP_PKTINFO:
-@@ -2311,7 +2434,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2311,7 +2449,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          {
              int sock_type = get_sock_type( handle );
              if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
@@ -236,7 +273,7 @@ index 96e81525..2b089108 100644
          }
  
          case IOCTL_AFD_WINE_SET_IP_RECVTOS:
-@@ -2327,7 +2450,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2327,7 +2465,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          {
              int sock_type = get_sock_type( handle );
              if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
@@ -245,7 +282,7 @@ index 96e81525..2b089108 100644
          }
  
          case IOCTL_AFD_WINE_SET_IP_RECVTTL:
-@@ -2339,16 +2462,32 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2339,16 +2477,32 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
  #endif
  
          case IOCTL_AFD_WINE_GET_IP_TOS:
@@ -278,7 +315,7 @@ index 96e81525..2b089108 100644
  
  #ifdef IP_UNBLOCK_SOURCE
          case IOCTL_AFD_WINE_SET_IP_UNBLOCK_SOURCE:
-@@ -2463,7 +2602,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2463,7 +2617,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          {
              int sock_type = get_sock_type( handle );
              if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
@@ -287,7 +324,7 @@ index 96e81525..2b089108 100644
          }
  
          case IOCTL_AFD_WINE_SET_IPV6_MULTICAST_LOOP:
-@@ -2478,14 +2617,18 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2478,14 +2632,18 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          {
              int sock_type = get_sock_type( handle );
              if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
@@ -307,7 +344,7 @@ index 96e81525..2b089108 100644
          }
  #endif
  
-@@ -2494,14 +2637,18 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2494,14 +2652,18 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          {
              int sock_type = get_sock_type( handle );
              if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
@@ -327,7 +364,7 @@ index 96e81525..2b089108 100644
          }
  #endif
  
-@@ -2510,14 +2657,18 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2510,14 +2672,18 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
          {
              int sock_type = get_sock_type( handle );
              if (sock_type != SOCK_DGRAM && sock_type != SOCK_RAW) return STATUS_INVALID_PARAMETER;
@@ -347,7 +384,7 @@ index 96e81525..2b089108 100644
          }
  #endif
  
-@@ -2536,7 +2687,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2536,7 +2702,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
  #endif
  
          case IOCTL_AFD_WINE_GET_IPV6_V6ONLY:
@@ -356,7 +393,7 @@ index 96e81525..2b089108 100644
  
          case IOCTL_AFD_WINE_SET_IPV6_V6ONLY:
          {
-@@ -2645,7 +2796,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2645,7 +2811,7 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
  #endif
  
          case IOCTL_AFD_WINE_GET_TCP_NODELAY:
@@ -365,7 +402,7 @@ index 96e81525..2b089108 100644
  
          case IOCTL_AFD_WINE_SET_TCP_NODELAY:
              return do_setsockopt( handle, io, IPPROTO_TCP, TCP_NODELAY, in_buffer, in_size );
-@@ -2676,7 +2827,11 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+@@ -2676,7 +2842,11 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
              return do_getsockopt( handle, io, IPPROTO_TCP, TCP_KEEPCNT, out_buffer, out_size );
  
          case IOCTL_AFD_WINE_SET_TCP_KEEPCNT:

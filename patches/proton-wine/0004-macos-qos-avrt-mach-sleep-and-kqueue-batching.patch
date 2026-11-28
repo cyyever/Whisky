@@ -1,21 +1,9 @@
-Subject: macos: mach_wait_until NtDelayExecution, avrt MMCSS, LatencyCritical, batched kqueue, and sched debug
+Subject: [PATCH] macos: AVRT QoS, Mach high-res sleep, and kqueue changelist batching
 
-1. dlls/ntdll/unix/sync.c: Use mach_wait_until() for short non-alertable
-   NtDelayExecution() sleeps (<=30s) on macOS instead of select() + spurious
-   NtYieldExecution(), eliminating macOS timer-coalescing jitter on Sleep(1..16).
-   Includes WHISKY_NO_MACH_SLEEP=1 / WHISKY_MACH_SLEEP_YIELD=1 A/B switches.
-2. dlls/avrt/main.c: Implement MMCSS task priority elevation/restoration on
-   top of SetThreadPriority() using a crash-safe opaque handle table (routing
-   through wineserver's existing Mach apply_thread_priority() rather than a
-   redundant ntdll self-only pthread_set_qos_class_self_np override).
-3. dlls/winemac.drv/cocoa_app.m: Add NSActivityLatencyCritical when App Nap is
-   disabled (disableable via WHISKY_NO_LATENCY_CRITICAL=1).
-4. server/fd.c: Batch steady-state kqueue EV_ADD/EV_ENABLE/EV_DISABLE changes
-   into main_loop_epoll()'s kevent() call and emit delta-only filter updates,
-   while flushing synchronously before EV_DELETE to stay fd-reuse safe.
-5. server/thread.c & unix/sync.c & cocoa_app.m: Add zero-overhead
-   WHISKY_SCHED_DEBUG=1 diagnostic logging for Mach QoS/sleep/AppNap state.
+Consolidated patches:
+  - (0038) macos: mach_wait_until NtDelayExecution, avrt MMCSS, LatencyCritical, batched kqueue, and sched debug
 
+---
 diff --git a/dlls/avrt/main.c b/dlls/avrt/main.c
 index 68af35c8..98f1a3ba 100644
 --- a/dlls/avrt/main.c
@@ -267,10 +255,10 @@ index 3814aabf..fe50b45c 100644
          {
              struct timeval tv;
 diff --git a/dlls/winemac.drv/cocoa_app.m b/dlls/winemac.drv/cocoa_app.m
-index 13c8b099..181a3af7 100644
+index 2a9dab26..eb914dca 100644
 --- a/dlls/winemac.drv/cocoa_app.m
 +++ b/dlls/winemac.drv/cocoa_app.m
-@@ -268,7 +268,14 @@ - (void) transformProcessToForeground:(BOOL)activateIfTransformed
+@@ -237,7 +237,14 @@ - (void) transformProcessToForeground:(BOOL)activateIfTransformed
  
              if (!enable_app_nap)
              {

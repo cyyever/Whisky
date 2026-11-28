@@ -24,7 +24,7 @@ import Foundation
 /// single-instance detection and orphaned-process reaping — see
 /// `Steam+LaunchGuard.swift`. Steam's CEF flags (`--no-sandbox --in-process-gpu`)
 /// are no longer configured here: they are appended in Wine itself via
-/// `hack_append_command_line` (patches/proton-wine 0020), so nothing needs to be
+/// `hack_append_command_line` (patches/proton-wine 0007), so nothing needs to be
 /// installed or written per-bottle.
 public enum Steam {
 }
