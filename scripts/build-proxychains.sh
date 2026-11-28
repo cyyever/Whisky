@@ -40,7 +40,7 @@ make -s clean >/dev/null 2>&1 || true
 # -Wno-error=incompatible-function-pointer-types: v4.17's freeaddrinfo hook has a
 # void-vs-int return-type mismatch that newer clang promotes to an error; the
 # return value is unused, so it's benign — keep it a warning so the pin builds.
-make -s CC="clang -arch x86_64 -Wno-error=incompatible-function-pointer-types"
+make -s CC="clang -arch x86_64 $WHISKY_X86_64_ARCH_FLAGS -Wno-error=incompatible-function-pointer-types"
 
 DYLIB="$SRC/libproxychains4.dylib"
 if ! lipo -archs "$DYLIB" 2>/dev/null | grep -qw x86_64; then

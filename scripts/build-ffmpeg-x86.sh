@@ -14,7 +14,7 @@ whisky_link_probe   # fail fast if DEVELOPER_DIR cannot link the installed SDK
 FFMPEG_SRC="$PROJECT_DIR/vendor/ffmpeg"
 FFMPEG_PREFIX="$PROJECT_DIR/vendor/ffmpeg-x86"
 FFMPEG_TAG=n9.0.2
-FFMPEG_CC="clang -arch x86_64"
+FFMPEG_CC="clang -arch x86_64 $WHISKY_X86_64_ARCH_FLAGS"
 if whisky_ccache_on; then FFMPEG_CC="ccache $FFMPEG_CC"; fi
 
 BUILD_DIR="$FFMPEG_SRC/build-x86_64"

@@ -11,7 +11,7 @@ engineering detail live in [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs).
 ## System requirements
 
 - Apple Silicon (M-series)
-- macOS 26.0 or later
+- macOS 27.0 or later
 
 New bottles use Windows 11 mode. Older bottles are migrated to Windows 11 before
 their next program launch; the GUI does not offer a Windows version selector.

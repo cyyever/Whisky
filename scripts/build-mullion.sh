@@ -35,6 +35,8 @@ MESON_OPTIONS=(
     -Dwine_build_path="$WINE_BUILD"
     -Dwine_builtin_dll=true
     -Dbuild_airconv_for_windows=false
+    "-Dc_args=['-march=x86-64-v3','-mprefer-vector-width=128']"
+    "-Dcpp_args=['-march=x86-64-v3','-mprefer-vector-width=128']"
     -Dcpp_link_args=-lstdc++exp
     -Denable_d3d12=true
     -Denable_tests="$TESTS_OPT"
@@ -50,7 +52,8 @@ elif ! grep -Fqx "strip = $STRIP_OPT" "$CMD_LINE_FILE" ||
      ! grep -Fqx "enable_tests = $TESTS_OPT" "$CMD_LINE_FILE" ||
      ! grep -Fqx "native_llvm_path = $LLVM_PREFIX" "$CMD_LINE_FILE" ||
      ! grep -Fqx "wine_build_path = $WINE_BUILD" "$CMD_LINE_FILE" ||
-     ! grep -Fqx "prefix = $MULLION_STAGE" "$CMD_LINE_FILE"; then
+     ! grep -Fqx "prefix = $MULLION_STAGE" "$CMD_LINE_FILE" ||
+     ! grep -Fq "x86-64-v3" "$CMD_LINE_FILE"; then
     (cd "$MULLION_DIR" && meson setup --reconfigure "${MESON_OPTIONS[@]}" "$MULLION_BUILD")
 fi
 

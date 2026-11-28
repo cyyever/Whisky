@@ -22,6 +22,18 @@ INSTALL_DIR="$HOME/Library/Application Support/com.isaacmarovitz.Whisky/Librarie
 # ARM64 brew; there is no x86_64 Homebrew.
 X86_DEPS="$PROJECT_DIR/vendor/x86-deps"
 
+# Unified Rosetta 2 (macOS 27+ Apple Silicon) ISA baseline shared across Wine,
+# DXVK, Mullion, KosmicKrisp, GStreamer, FFmpeg, LLVM, and x86_64 deps:
+#   - x86-64-v3 (SSE4.2 + POPCNT + CX16 + AVX/AVX2 + FMA + BMI1/BMI2 + F16C)
+#     runs natively under Rosetta 2 on macOS 27 (even without ROSETTA_ADVERTISE_AVX).
+#   - -mprefer-vector-width=128 keeps auto-vectorization 1:1 with Apple Silicon's
+#     128-bit NEON while retaining v3's 3-operand VEX, FMA, BMI1/2, and F16C wins.
+#   - On 32-bit PE, -mfpmath=sse eliminates Rosetta software-emulated x87 scalar FP.
+WHISKY_X86_64_ARCH_FLAGS="-march=x86-64-v3 -mprefer-vector-width=128"
+WHISKY_I386_ARCH_FLAGS="-march=haswell -mprefer-vector-width=128 -mfpmath=sse"
+WHISKY_MACOS_DEPLOYMENT_TARGET="27.0"
+export MACOSX_DEPLOYMENT_TARGET="$WHISKY_MACOS_DEPLOYMENT_TARGET"
+
 # Branch maintenance (scripts/proton-branch.sh): when a vendored tree is checked
 # out on WHISKY_PATCH_BRANCH, the patch series is committed one commit per patch
 # file on top of WHISKY_PATCH_BASE, and apply_patches() steps aside.
@@ -333,15 +345,16 @@ wine_configure() {
     cc_cmd="$(wine_cc_cmd)"
     cxx_cmd="$(wine_cxx_cmd)"
     local unix_cflags i386_pe_cflags x86_64_pe_cflags flags_sig flags_stamp
-    # Rosetta 2 baseline ISA is x86-64-v2 (SSE4.2 + POPCNT, no AVX required).
-    # Keep -fno-omit-frame-pointer on the unix side so sample(1) stacks stay
-    # readable at -O2. On the 32-bit PE side, -msse2 ... -mfpmath=sse eliminates
-    # x87 scalar float codegen (which Rosetta 2 emulates in software, ~30-50x
-    # slower than ARM64 FP); GCC pairs it safely with Wine's
-    # -mpreferred-stack-boundary=2 via dynamic stack realignment when needed.
-    unix_cflags="-O2 -fno-omit-frame-pointer -msse4.2 -mpopcnt -I$X86_DEPS/include -I$X86_DEPS/include/freetype2"
-    i386_pe_cflags="-g -O2 -msse2 -msse3 -mssse3 -msse4.1 -msse4.2 -mpopcnt -mfpmath=sse"
-    x86_64_pe_cflags="-g -O2 -msse4.2 -mpopcnt"
+    # Rosetta 2 (macOS 27+) supports x86-64-v3 (SSE4.2, POPCNT, CX16, AVX/AVX2,
+    # FMA, BMI1/2, F16C). Keep -mprefer-vector-width=128 to match ARM64 NEON
+    # width and -fno-omit-frame-pointer on the unix side so sample(1) stacks
+    # stay readable at -O2. On the 32-bit PE side, -mfpmath=sse eliminates x87
+    # scalar float codegen (which Rosetta 2 emulates in software, ~30-50x slower
+    # than ARM64 FP); GCC pairs it safely with Wine's -mpreferred-stack-boundary=2
+    # via dynamic stack realignment when needed.
+    unix_cflags="-O2 -fno-omit-frame-pointer $WHISKY_X86_64_ARCH_FLAGS -I$X86_DEPS/include -I$X86_DEPS/include/freetype2"
+    i386_pe_cflags="-g -O2 $WHISKY_I386_ARCH_FLAGS"
+    x86_64_pe_cflags="-g -O2 $WHISKY_X86_64_ARCH_FLAGS"
     if [ "${WHISKY_WINE_UBSAN_TRAP:-0}" = "1" ]; then
         unix_cflags="$unix_cflags -fsanitize=undefined -fsanitize-trap=undefined"
         i386_pe_cflags="$i386_pe_cflags -fsanitize=undefined -fsanitize-undefined-trap-on-error"
@@ -363,6 +376,7 @@ wine_configure() {
         TMPDIR="${TMPDIR:-/private/tmp}" \
         PATH="$clean_path" \
         DEVELOPER_DIR="$DEVELOPER_DIR" \
+        MACOSX_DEPLOYMENT_TARGET="$WHISKY_MACOS_DEPLOYMENT_TARGET" \
         CC="$cc_cmd" \
         CXX="$cxx_cmd" \
         PKG_CONFIG="$arm_prefix/bin/pkg-config" \

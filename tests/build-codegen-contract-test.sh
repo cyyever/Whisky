@@ -2,12 +2,12 @@
 #
 # tests/build-codegen-contract-test.sh — Verify shipped Wine binaries carry the
 # expected Rosetta 2 / Apple Silicon compiler optimizations:
-#   1. 32-bit PE DLLs (xaudio2_7, dsound, d3dx9_43, msvcrt, ucrtbase) use SSE2
+#   1. 32-bit PE DLLs (xaudio2_7, dsound, d3dx9_43, msvcrt, ucrtbase) use SSE/VEX
 #      scalar math (-mfpmath=sse) rather than Rosetta-emulated x87 arithmetic.
 #   2. Wine Unix .so modules (ntdll, win32u, winemac, winevulkan, winecoreaudio)
 #      are compiled with optimization (-O2, not -O0) and keep frame pointers.
-#   3. Shipped Wine binaries contain no accidental AVX instructions (must stay
-#      within Rosetta 2's universal x86-64-v2 / SSE4.2 baseline).
+#   3. Shipped Wine binaries contain no accidental AVX-512 (%zmm) instructions
+#      (must stay within Rosetta 2's macOS 27 x86-64-v3 / 128-bit preferred width).
 #   4. wineserver is a native arm64 Mach-O binary.
 set -euo pipefail
 
@@ -57,23 +57,23 @@ check_i386_dll() {
         fail=$((fail + 1))
         return
     fi
-    local dis x87_arith sse_cnt avx_cnt
+    local dis x87_arith sse_cnt avx512_cnt
     dis="$("$OBJDUMP" -d "$path")"
     x87_arith=$(printf '%s\n' "$dis" | grep -cE '\b(fmul|fadd|fsub|fdiv|fmulp|faddp|fsubp|fsubrp|fdivp|fdivrp)\b' || true)
-    sse_cnt=$(printf '%s\n' "$dis" | grep -cE '\b(mulss|addss|subss|divss|mulsd|addsd|subsd|divsd|movss|movsd)\b' || true)
-    avx_cnt=$(printf '%s\n' "$dis" | grep -cE '\bv(mov|add|sub|mul|div)(ss|sd|ps|pd|aps|ups|dqa|dqu)\b' || true)
-    printf "%-18s x87_arith=%-4d (max=%-3d)  sse=%-5d (min=%-3d)  avx=%d\n" \
-        "$dll" "$x87_arith" "$max_x87_arith" "$sse_cnt" "$min_sse" "$avx_cnt"
+    sse_cnt=$(printf '%s\n' "$dis" | grep -cE '\bv?(mulss|addss|subss|divss|mulsd|addsd|subsd|divsd|movss|movsd)\b' || true)
+    avx512_cnt=$(printf '%s\n' "$dis" | grep -cE '%zmm[0-9]+' || true)
+    printf "%-18s x87_arith=%-4d (max=%-3d)  sse_vex=%-5d (min=%-3d)  avx512=%d\n" \
+        "$dll" "$x87_arith" "$max_x87_arith" "$sse_cnt" "$min_sse" "$avx512_cnt"
     if [ "$x87_arith" -gt "$max_x87_arith" ]; then
         echo "FAIL: $dll has $x87_arith x87 arithmetic ops (limit $max_x87_arith) — was -mfpmath=sse dropped?"
         fail=$((fail + 1))
     fi
     if [ "$sse_cnt" -lt "$min_sse" ]; then
-        echo "FAIL: $dll has only $sse_cnt SSE scalar FP ops (expected >= $min_sse)"
+        echo "FAIL: $dll has only $sse_cnt SSE/VEX scalar FP ops (expected >= $min_sse)"
         fail=$((fail + 1))
     fi
-    if [ "$avx_cnt" -gt 0 ]; then
-        echo "FAIL: $dll contains $avx_cnt AVX instructions (must stay within Rosetta 2 SSE4.2 baseline)"
+    if [ "$avx512_cnt" -gt 0 ]; then
+        echo "FAIL: $dll contains $avx512_cnt AVX-512 instructions (unsupported by Rosetta 2)"
         fail=$((fail + 1))
     fi
 }
@@ -103,13 +103,13 @@ for mod in ntdll.so win32u.so winemac.so winevulkan.so winecoreaudio.so; do
     total_funcs=$(printf '%s\n' "$dis" | grep -cE '^[0-9a-f]+ <.*>:' || true)
     fp_prologues=$(printf '%s\n' "$dis" | grep -cE 'movq[[:space:]]+%rsp, %rbp' || true)
     o0_spills=$(printf '%s\n' "$dis" | grep -cE 'mov[ql][[:space:]]+%(rdi|edi), -0x[0-9a-f]+\(%rbp\)' || true)
-    avx_cnt=$(printf '%s\n' "$dis" | grep -cE '\bv(mov|add|sub|mul|div)(ss|sd|ps|pd|aps|ups|dqa|dqu)\b' || true)
+    avx512_cnt=$(printf '%s\n' "$dis" | grep -cE '%zmm[0-9]+' || true)
     ratio=0
     if [ "$total_funcs" -gt 0 ]; then
         ratio=$(( o0_spills * 100 / total_funcs ))
     fi
-    printf "%-18s funcs=%-5d fp_prologues=%-5d o0_arg_spills=%-4d (%d%%)  avx=%d\n" \
-        "$mod" "$total_funcs" "$fp_prologues" "$o0_spills" "$ratio" "$avx_cnt"
+    printf "%-18s funcs=%-5d fp_prologues=%-5d o0_arg_spills=%-4d (%d%%)  avx512=%d\n" \
+        "$mod" "$total_funcs" "$fp_prologues" "$o0_spills" "$ratio" "$avx512_cnt"
     if [ "$total_funcs" -gt 20 ] && [ "$ratio" -gt 15 ]; then
         echo "FAIL: $mod looks unoptimized (-O0): $o0_spills/$total_funcs ($ratio%) functions spill %rdi/%edi to -N(%rbp)"
         fail=$((fail + 1))
@@ -118,8 +118,8 @@ for mod in ntdll.so win32u.so winemac.so winevulkan.so winecoreaudio.so; do
         echo "FAIL: $mod lost frame pointers ($fp_prologues/$total_funcs) — keep -fno-omit-frame-pointer for sample(1)"
         fail=$((fail + 1))
     fi
-    if [ "$avx_cnt" -gt 0 ]; then
-        echo "FAIL: $mod contains $avx_cnt AVX instructions (must stay within Rosetta 2 SSE4.2 baseline)"
+    if [ "$avx512_cnt" -gt 0 ]; then
+        echo "FAIL: $mod contains $avx512_cnt AVX-512 instructions (unsupported by Rosetta 2)"
         fail=$((fail + 1))
     fi
 done
@@ -129,10 +129,10 @@ mk="$PROJECT_DIR/vendor/proton-wine/build/Makefile"
 if [ -f "$mk" ]; then
     echo ""
     echo "--- Build Makefile flag check ---"
-    if grep -qE '^CFLAGS = .*-O2.*-fno-omit-frame-pointer.*-msse4\.2' "$mk" && \
-       grep -qE '^i386_CFLAGS = .*-O2.*-msse2.*-mfpmath=sse' "$mk" && \
-       grep -qE '^x86_64_CFLAGS = .*-O2.*-msse4\.2' "$mk"; then
-        echo "PASS: Makefile records optimized unix CFLAGS, i386_CFLAGS (-mfpmath=sse), and x86_64_CFLAGS"
+    if grep -qE '^CFLAGS = .*-O2.*-fno-omit-frame-pointer.*-march=x86-64-v3.*-mprefer-vector-width=128' "$mk" && \
+       grep -qE '^i386_CFLAGS = .*-O2.*-march=haswell.*-mprefer-vector-width=128.*-mfpmath=sse' "$mk" && \
+       grep -qE '^x86_64_CFLAGS = .*-O2.*-march=x86-64-v3.*-mprefer-vector-width=128' "$mk"; then
+        echo "PASS: Makefile records optimized unix/x86_64 CFLAGS (-march=x86-64-v3 -mprefer-vector-width=128) and i386_CFLAGS (-march=haswell -mfpmath=sse)"
     else
         echo "FAIL: Makefile missing expected optimization flags:"
         grep -E '^(CFLAGS|i386_CFLAGS|x86_64_CFLAGS) =' "$mk" || true

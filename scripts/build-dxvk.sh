@@ -65,6 +65,18 @@ fi
 
 setup_arch() {  # <cross-file> <build-dir> <install-subdir>
     local cross_file="$1" build_dir="$2" subdir="$3"
+    local arch_opts=()
+    if [ "$subdir" = "win32" ]; then
+        arch_opts=(
+            "-Dc_args=['-march=haswell','-mprefer-vector-width=128','-mfpmath=sse']"
+            "-Dcpp_args=['-march=haswell','-mprefer-vector-width=128','-mfpmath=sse']"
+        )
+    else
+        arch_opts=(
+            "-Dc_args=['-march=x86-64-v3','-mprefer-vector-width=128']"
+            "-Dcpp_args=['-march=x86-64-v3','-mprefer-vector-width=128']"
+        )
+    fi
     # Fresh dir → configure; existing dir → --reconfigure so option changes
     # (e.g. flipping enable_d3d8 on) actually take, instead of silently reusing
     # the old options and failing on a now-missing ninja target. Both are
@@ -72,17 +84,17 @@ setup_arch() {  # <cross-file> <build-dir> <install-subdir>
     # setups race on the shared subprojects cache.
     if [ ! -d "$DXVK_SRC/$build_dir" ]; then
         echo "=== Configuring DXVK ($subdir) ==="
-        (cd "$DXVK_SRC" && meson setup --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
+        (cd "$DXVK_SRC" && meson setup --cross-file "$cross_file" "${MESON_OPTS[@]}" "${arch_opts[@]}" "$build_dir")
     else
         if ! meson configure "$DXVK_SRC/$build_dir" 2>/dev/null | grep -q 'libdisplay-info:pnp-ids'; then
             # Meson cannot add a newly introduced subproject option to an old
             # coredata cache. Wipe only this stale build directory, then do a
             # fresh setup with the option above; source and install files stay.
             echo "=== Recreating stale DXVK configuration ($subdir lacks pnp-ids option) ==="
-            (cd "$DXVK_SRC" && meson setup --wipe --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
+            (cd "$DXVK_SRC" && meson setup --wipe --cross-file "$cross_file" "${MESON_OPTS[@]}" "${arch_opts[@]}" "$build_dir")
         else
             echo "=== Reconfiguring DXVK ($subdir) ==="
-            (cd "$DXVK_SRC" && meson setup --reconfigure --cross-file "$cross_file" "${MESON_OPTS[@]}" "$build_dir")
+            (cd "$DXVK_SRC" && meson setup --reconfigure --cross-file "$cross_file" "${MESON_OPTS[@]}" "${arch_opts[@]}" "$build_dir")
         fi
     fi
 }

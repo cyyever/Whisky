@@ -75,6 +75,12 @@ ar = 'ar'
 strip = 'strip'
 pkg-config = '$ARM_BREW_PREFIX/bin/pkg-config'
 
+[built-in options]
+c_args = ['-march=x86-64-v3', '-mprefer-vector-width=128']
+cpp_args = ['-march=x86-64-v3', '-mprefer-vector-width=128']
+objc_args = ['-march=x86-64-v3', '-mprefer-vector-width=128']
+objcpp_args = ['-march=x86-64-v3', '-mprefer-vector-width=128']
+
 [host_machine]
 system = 'darwin'
 # Required: gstreamer's meson calls host_machine.subsystem(), which meson cannot
