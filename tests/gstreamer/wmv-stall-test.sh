@@ -70,10 +70,8 @@ if [ ! -f "$EXE" ] || [ "$SRC" -nt "$EXE" ]; then
     "$CC" -O2 -o "$EXE" "$SRC" -lole32 -loleaut32 -lstrmiids -luuid || exit 1
 fi
 
-# bottle_shellenv, not a hand-built env: it emits WINEMSYNC from the bottle's
-# enhancedSync. Get that wrong against a running wineserver and every wine
-# invocation dies in msync_init before main() -- which this test would report
-# as the stall it is hunting.
+# bottle_shellenv, not a hand-built env: keeps PATH, WINEPREFIX,
+# DYLD_FALLBACK_LIBRARY_PATH, and WINEMSYNC aligned with Whisky's launch env.
 eval "$(bottle_shellenv "$BOTTLE")"
 export WINEDEBUG=-all
 

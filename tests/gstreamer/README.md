@@ -79,9 +79,8 @@ Steam and SSFIV are both 32-bit.
 
 Runners take the bottle from `tests/lib/bottles.sh` (`select_bottles`) and the
 environment from `scripts/lib/common.sh` (`bottle_shellenv`) — never a
-hand-built `env`. `bottle_shellenv` emits `WINEMSYNC` from the bottle's
-`enhancedSync`, and getting that wrong kills wine inside `msync_init` before
-`main()`, which looks exactly like the hang these probes hunt.
+hand-built `env`, so `PATH`, `WINEPREFIX`, `DYLD_FALLBACK_LIBRARY_PATH`, and
+`WINEMSYNC` stay aligned with Whisky's launch environment.
 
 Subjects are found by searching the bottle, not by hardcoding a game path: a
 probe that skips because one title is not installed reports green for a broken

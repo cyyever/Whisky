@@ -79,10 +79,8 @@ fi
 
 echo
 echo "=== 2. WMCreateSyncReader returns a reader (bottle: $(basename "$BOTTLE")) ==="
-# bottle_shellenv, not a hand-built `env -i`: it emits WINEMSYNC from the
-# bottle's enhancedSync. Get that wrong against a running wineserver and the
-# probe dies in msync_init before main(), printing nothing at all -- which this
-# script then reports as "failed before reaching WMCreateSyncReader".
+# bottle_shellenv, not a hand-built `env -i`: keeps PATH, WINEPREFIX,
+# DYLD_FALLBACK_LIBRARY_PATH, and WINEMSYNC aligned with Whisky's launch env.
 eval "$(bottle_shellenv "$BOTTLE")"
 export WINEDEBUG=-all
 out=$( "$WHISKY_LIB/bin/wine64" "$PROBE_EXE" </dev/null 2>/dev/null )

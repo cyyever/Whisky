@@ -68,10 +68,8 @@ for bits in 64 32; do
     fi
 done
 
-# bottle_shellenv, not a hand-built `env -i`: it emits WINEMSYNC from the
-# bottle's enhancedSync. Get that wrong against a running wineserver and every
-# wine invocation dies in msync_init before main(), which looks exactly like the
-# hang this test is looking for.
+# bottle_shellenv, not a hand-built `env -i`: keeps PATH, WINEPREFIX,
+# DYLD_FALLBACK_LIBRARY_PATH, and WINEMSYNC aligned with Whisky's launch env.
 eval "$(bottle_shellenv "$BOTTLE")"
 export WINEDEBUG=-all
 

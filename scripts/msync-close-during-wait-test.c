@@ -1,9 +1,9 @@
 /*
  * msync close-during-wait regression probe.
  *
- * Investigates whether proton-wine patch 0016 (msync last-handle-close mutex
- * retention + client per-wait object snapshot) introduced a CORRECTNESS
- * regression for NON-mutex objects (events / semaphores).
+ * Verifies proton-wine patch 0007 (msync last-handle-close mutex retention +
+ * client per-wait object snapshot) preserves correctness for non-mutex objects
+ * (events / semaphores).
  *
  * Scenario (the concern): thread A blocks in a wait on an event or semaphore;
  * another thread closes the LAST handle to that object while A is still

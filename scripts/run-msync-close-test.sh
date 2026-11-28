@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build + run scripts/msync-close-during-wait-test.c inside a bottle under
-# WINEMSYNC=1 (full msync, event masks unset) and WINEM
-# oracle), and print both so the STATUS and timing can be diffed. See the C
-# file's header for what it probes (patch 0016 non-mutex close-during-wait).
+# WINEMSYNC=1 (msync) and WINEMSYNC=0 (wineserver oracle), restarting
+# wineserver between arms so the STATUS and timing can be diffed cleanly.
+# See the C file's header for what it probes (patch 0007 close-during-wait).
 #
 # Usage: scripts/run-msync-close-test.sh <bottle-dir> [iters]   (default iters: 1)
 #   <bottle-dir> is a bottle's WINEPREFIX directory, e.g.
@@ -35,6 +35,8 @@ run_mode() {
     (
         eval "$(bottle_shellenv "$BOTTLE")"
         export WINEDEBUG="-all"
+        wineserver -k >/dev/null 2>&1 || true
+        wineserver -w >/dev/null 2>&1 || true
         export WINEMSYNC="$mode"
         exec wine64 "$OUT" "$ITERS" 2>&1
     ) | grep -aE 'RESULT|===' || true

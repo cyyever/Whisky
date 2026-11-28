@@ -172,12 +172,12 @@ apply_patches() {
 # bottle_shellenv <bottle-dir> — emit shell `export` lines (for `eval`) that
 # reproduce the runtime environment the Whisky app sets for a Wine launch.
 # Replaces the deleted `WhiskyCmd shellenv <bottle>` CLI. Values are kept in sync
-# with WhiskyKit/Sources/WhiskyKit/Wine/Wine.swift (constructWineEnvironment) and
+# with Whisky/Core/Wine/Wine.swift (constructWineEnvironment) and
 # BottleSettings.swift (environmentVariables):
 #   * PATH gains Wine/bin so wine64/wineserver are directly on PATH;
 #   * WINEPREFIX points at the bottle;
 #   * DYLD_FALLBACK_LIBRARY_PATH points at Wine/lib (dylib resolution);
-#   * WINEMSYNC is 1 for an explicit msync selection, otherwise 0.
+#   * WINEMSYNC defaults to 1 (matching patch 0007's inproc_sync backend).
 #     An existing WINEMSYNC override takes precedence for diagnostic runs.
 # Deliberately does NOT emit WINEDLLOVERRIDES (the app no longer sets it — patch
 # 0012's builtin load order handles D3D/Vulkan).
@@ -191,15 +191,7 @@ bottle_shellenv() {
     printf 'export PATH=%q\n' "$wine_dir/bin:$PATH"
     printf 'export WINEPREFIX=%q\n' "$bottle_dir"
     printf 'export DYLD_FALLBACK_LIBRARY_PATH=%q\n' "$wine_dir/lib"
-    # msync defaults ON in Whisky (Wine.swift no longer writes enhancedSync).
-    # Only disable if Metadata.plist explicitly selects a non-msync mode, and
-    # always let an explicit WINEMSYNC override take precedence.
-    if plutil -p "$bottle_dir/Metadata.plist" 2>/dev/null |
-            grep -A2 '"enhancedSync"' | grep -q '"none"'; then
-        printf 'export WINEMSYNC=${WINEMSYNC:-0}\n'
-    else
-        printf 'export WINEMSYNC=${WINEMSYNC:-1}\n'
-    fi
+    printf 'export WINEMSYNC=${WINEMSYNC:-1}\n'
 }
 
 # whisky_ncpu — bounded parallelism for make/ninja/cmake/xcodebuild so heavy

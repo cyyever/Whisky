@@ -1,24 +1,23 @@
 /*
- * msync-mixed-wait-test — verify WaitForMultipleObjects on a mix of msync and
- * server-side handles under WINEMSYNC=1.
+ * msync-mixed-wait-test — verify WaitForMultipleObjects across heterogeneous
+ * sync objects (semaphores, manual/auto events, overlapped named pipes) under
+ * WINEMSYNC=1.
  *
  * Covers:
- *   1. RE2 idle-worker shape: [msync semaphore, manual-reset event (server
- *      under default WINEMSYNC_NO_MANUALEVENT=1)]:
- *        - signaling the msync handle while waiting wakes promptly
- *        - signaling the server handle while waiting wakes promptly
- *        - timeout=0 poll sees a signaled server handle (not skipped!)
+ *   1. RE2 idle-worker shape: [semaphore, manual-reset event]:
+ *        - signaling the semaphore while waiting wakes promptly
+ *        - signaling the manual-reset event while waiting wakes promptly
+ *        - timeout=0 poll sees a signaled manual-reset event (not skipped!)
  *        - timeout=0 poll returns WAIT_TIMEOUT when neither is signaled
  *        - finite timeout expires cleanly
  *        - legitimate >5s INFINITE wait wakes cleanly on signal without
- *          lost wakeup or bogus "mixed wait looping >5s" ERR spam
- *   2. Always-server handle shape: [msync auto-reset event, overlapped named
- *      pipe with ov.hEvent == NULL] (exercises msync_wait_mixed_any even if
- *      WINEMSYNC_NO_MANUALEVENT=0):
- *        - signaling the msync event while pipe connect is pending
+ *          lost wakeup
+ *   2. Overlapped I/O handle shape: [auto-reset event, overlapped named pipe
+ *      with ov.hEvent == NULL]:
+ *        - signaling the event while pipe connect is pending
  *        - completing the pipe connect while waiting
  *        - timeout=0 poll sees the signaled pipe
- *        - WaitAll (msync_wait_mixed_all) succeeds when both are signaled
+ *        - WaitAll succeeds when both are signaled
  *
  * Build:
  *   x86_64-w64-mingw32-gcc -O2 -Wall -Wextra -o msync-mixed-wait-test.exe \
@@ -28,8 +27,7 @@
  *   WINEMSYNC=1 wine64 msync-mixed-wait-test.exe [long_wait_ms]
  *   WINEMSYNC=0 wine64 msync-mixed-wait-test.exe [long_wait_ms]
  *
- * Default long_wait_ms is 5500 (past the old 5s diagnostic threshold).
- * Check that stderr under WINEMSYNC=1 contains no "mixed wait looping >5s".
+ * Default long_wait_ms is 5500.
  */
 
 #include <windows.h>
@@ -238,7 +236,7 @@ static void test_auto_event_and_named_pipe(void)
     CHECK(r == WAIT_OBJECT_0 + 1, "2d: timeout=0 missed signaled pipe (got 0x%lx)",
           (unsigned long)r);
 
-    /* 2e. WaitAll (msync_wait_mixed_all) when both are signaled */
+    /* 2e. WaitAll when both are signaled */
     SetEvent(ev);
     r = WaitForMultipleObjects(2, handles, TRUE, 1000);
     CHECK(r == WAIT_OBJECT_0, "2e: WaitAll expected WAIT_OBJECT_0, got 0x%lx", (unsigned long)r);

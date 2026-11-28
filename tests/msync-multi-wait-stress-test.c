@@ -17,12 +17,12 @@
  *      Pass `--port-churn` from the runner script across N short invocations
  *      while measuring `wineserver`'s Mach port count before and after.
  *
- *   3. Manual-reset event mixed-wait / flapping regression:
- *      With manual-reset events handled natively by msync (no
- *      WINEMSYNC_NO_MANUALEVENT=1 fallback), flapping a manual-reset event
- *      with multiple waiters in WaitForMultipleObjects({manual, auto}) must
- *      not busy-spin once reset, must wake promptly when signaled, and must
- *      consume negligible CPU while parked.
+ *   3. Manual-reset event flapping regression:
+ *      With manual-reset events handled natively by msync, flapping a
+ *      manual-reset event with multiple waiters in
+ *      WaitForMultipleObjects({manual, auto}) must not busy-spin once reset,
+ *      must wake promptly when signaled, and must consume negligible CPU while
+ *      parked.
  *
  *   4. Destroyed handle wake in WaitForMultipleObjects:
  *      Closing one handle in a multi-object wait while another signals must

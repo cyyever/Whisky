@@ -41,9 +41,8 @@ if [ ! -f "$EXE" ] || [ "$SRC" -nt "$EXE" ]; then
     "$CC" -O2 -o "$EXE" "$SRC" -ld3d9 -lgdi32 -luser32 || exit 1
 fi
 
-# bottle_shellenv, not a hand-built env: it emits WINEMSYNC from the bottle's
-# enhancedSync, and getting that wrong kills wine in msync_init before main()
-# — which would look exactly like the hang under test.
+# bottle_shellenv, not a hand-built env: keeps PATH, WINEPREFIX,
+# DYLD_FALLBACK_LIBRARY_PATH, and WINEMSYNC aligned with Whisky's launch env.
 eval "$(bottle_shellenv "$BOTTLE")"
 export WINEDEBUG=-all
 

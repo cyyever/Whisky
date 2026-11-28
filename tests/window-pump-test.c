@@ -12,12 +12,10 @@
  * drained. A timeout means the pump is dead, which is a Wine-side problem, not
  * an app-side one.
  *
- * This exists for Steam's "Special Offers" news window, which cannot be closed
- * while msync is enabled (it closes with WINEMSYNC=0). The output that matters
- * is the thread id: MRING (WINE_MRING=1, /tmp/mring_<pid>.log) records each
- * blocked thread's tid, so a hung window here can be matched against the object
- * its thread is actually parked on -- which is the step that turns "some thread
- * is looping on a timeout" into "the thread that owns this window is".
+ * This exists for Steam's "Special Offers" news window, which used to hang
+ * under old msync. The output prints the owning thread id in hex (matching
+ * WINEDEBUG's line prefix) so a hung window can be matched against Wine debug
+ * traces or `sample`.
  *
  * Exit code is the number of non-pumping visible windows, so it doubles as a
  * pass/fail check (0 = every window pumps).
@@ -55,9 +53,7 @@ static BOOL CALLBACK visit( HWND hwnd, LPARAM param )
                               SMTO_ABORTIFHUNG | SMTO_BLOCK, PUMP_TIMEOUT_MS, &result );
     scan->checked++;
 
-    /* Hex, because that is what everything we cross-reference prints: MRING
-     * writes tid=%04x, and WINEDEBUG's line prefix is the same id. Decimal here
-     * would silently fail to match and cost a capture. */
+    /* Hex, matching WINEDEBUG's tid=%04x line prefix. */
     printf( "%-6s hwnd=%08lx pid=%04lx tid=%04lx class=%-28ls %ls\n",
             ok ? "pump" : "HUNG", (unsigned long)(ULONG_PTR)hwnd,
             (unsigned long)pid, (unsigned long)tid, class_name, title );
@@ -78,9 +74,6 @@ int main( void )
 
     printf( "\n%d visible window(s) checked, %d not pumping.\n", scan.checked, scan.hung );
     if (scan.hung)
-        printf( "Next: grep the tid above across every MRING log (needs WINE_MRING=1)\n"
-                "to see which object that thread is parked on. The logs are named by\n"
-                "*unix* pid while the pid above is Wine's, so search them all:\n"
-                "    grep -l 'tid=<tid>' /tmp/mring_*.log\n" );
+        printf( "Next: inspect the tid above with WINEDEBUG=+msync,+msg or `sample`.\n" );
     return scan.hung;
 }

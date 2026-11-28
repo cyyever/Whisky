@@ -23,8 +23,7 @@ import SemanticVersion
 /// Decode-time resilience for the bottle-settings structs below.
 ///
 /// Every settings field has a sensible default, and the loader is meant to fall
-/// back to it when a value can't be read — the migration comments throughout
-/// (`esync → msync`) depend on that. But `decodeIfPresent` only
+/// back to it when a value can't be read. But `decodeIfPresent` only
 /// tolerates an *absent* key: a key that is *present but malformed* — a stale
 /// on-disk format, a removed enum case, a truncated write, a hand-edit — makes
 /// it throw. One field throwing fails the entire `init(from:)`, and the bottle

@@ -32,12 +32,6 @@
  *     that is running answers WM_NULL immediately; a parked one cannot answer at
  *     all. Counting dispatched messages would not distinguish "slow" from "dead".
  *
- * Note the WINEMSYNC_NO_* gates cannot be used to narrow this down: switching an
- * object class to the server routes the whole wait into msync_wait_mixed_any(),
- * a polling loop, which cannot hang however broken the object is. Any gate would
- * look equally exculpatory. Use WINE_MRING=1 instead — it names the object a
- * parked thread is on and whether that object is already signaled.
- *
  * Build:
  *   x86_64-w64-mingw32-gcc -O2 -o msync-msgloop-hang-test.exe msync-msgloop-hang-test.c
  * Run:
@@ -47,9 +41,6 @@
  *   wineserver oracle, so confirm with:
  *       WINEMSYNC=0 wine64 msync-msgloop-hang-test.exe
  *   A stall under BOTH is a bug in this test or a loaded machine.
- *
- *   WINE_MRING=1 arms the in-tree wait-path tracer (patches/proton-wine/0010),
- *   which writes /tmp/mring_<pid>.log while this runs.
  */
 
 #include <windows.h>
