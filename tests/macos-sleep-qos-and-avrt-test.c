@@ -191,13 +191,24 @@ static int test_kqueue_socket_churn(void)
             printf("FAIL: send iter=%d err=%d\n", i, WSAGetLastError());
             return 1;
         }
-        if (WaitForSingleObject(ev_s, 3000) != WAIT_OBJECT_0) {
-            printf("FAIL: server wait timeout iter=%d\n", i);
-            return 1;
+        int r = -1;
+        DWORD deadline = GetTickCount() + 3000;
+        for (;;) {
+            WSANETWORKEVENTS ne;
+            WSAEnumNetworkEvents(s, ev_s, &ne);
+            r = recv(s, buf, sizeof(buf), 0);
+            if (r != SOCKET_ERROR || WSAGetLastError() != WSAEWOULDBLOCK)
+                break;
+            DWORD now = GetTickCount();
+            if ((int)(deadline - now) <= 0)
+                break;
+            if (WaitForSingleObject(ev_s, deadline - now) != WAIT_OBJECT_0) {
+                printf("FAIL: server wait timeout iter=%d\n", i);
+                return 1;
+            }
         }
-        int r = recv(s, buf, sizeof(buf), 0);
         if (r != sizeof(msg) || memcmp(buf, msg, sizeof(msg)) != 0) {
-            printf("FAIL: recv mismatch iter=%d r=%d\n", i, r);
+            printf("FAIL: recv mismatch iter=%d r=%d err=%d\n", i, r, WSAGetLastError());
             return 1;
         }
         /* Re-arm / clear events right before close to stress changelist flush */
