@@ -35,7 +35,7 @@ SWIFTLINT ?= swiftlint
 # interleave, and none of it is the slow part -- the scripts parallelise inside.
 .NOTPARALLEL:
 
-.PHONY: all help x86-deps llvm-x86 ffmpeg gstreamer kosmickrisp proton proton-debug proton-asan clean-proton \
+.PHONY: all help x86-deps llvm-x86 ffmpeg gstreamer kosmickrisp vulkan-validation proton proton-debug proton-asan clean-proton \
         dxvk mullion proxychains app app-asan app-tsan app-release install-app lint format lint-swiftlint test fuzz run submodule clean check-proton-src
 
 all: app proton  ## Build everything (app + Proton)
@@ -99,6 +99,13 @@ kosmickrisp: $(KK_STAMP)  ## Build Mesa's x86_64 KosmicKrisp Vulkan-on-Metal dri
 $(KK_STAMP): $(X86_DEPS_STAMP) $(SCRIPTS_DIR)/build-kosmickrisp-x86.sh $(SCRIPTS_DIR)/lib/common.sh \
              $(wildcard $(CURDIR)/patches/mesa/*.patch) $(MESA_SRC_HEAD)
 	$(SCRIPTS_DIR)/build-kosmickrisp-x86.sh
+
+VVL_STAMP := $(CURDIR)/vendor/vulkan-validation/.built
+
+vulkan-validation: $(VVL_STAMP)  ## Build x86_64 Khronos Vulkan Validation Layers into vendor/vulkan-validation
+
+$(VVL_STAMP): $(X86_DEPS_STAMP) $(SCRIPTS_DIR)/build-vulkan-validation-x86.sh $(SCRIPTS_DIR)/lib/common.sh
+	$(SCRIPTS_DIR)/build-vulkan-validation-x86.sh
 
 # === Proton (the shipped Wine backend) ===
 
@@ -230,7 +237,7 @@ format:  ## Reformat the Swift sources in place (swift-format)
 lint-swiftlint:  ## Run the strict SwiftLint checks used by CI (SwiftLint 0.65.1)
 	@$(SWIFTLINT) lint --strict
 
-test:  ## Run Whisky automated regression suite (ASan + UBSan + LSan + TSan + RTSan + TySan + libFuzzer + Metal Validation)
+test:  ## Run Whisky automated regression suite (ASan + UBSan + LSan + TSan + RTSan + TySan + libFuzzer + Vulkan/Metal Validation)
 	@$(CURDIR)/tests/run-all.sh
 
 fuzz:  ## Run deeper libFuzzer pass (30s per target under ASan + UBSan + LSan)

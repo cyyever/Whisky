@@ -579,27 +579,33 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Check whether VK_KHR_swapchain_mutable_format is advertised (matches DXVK). */
+    /* Check whether VK_KHR_swapchain_mutable_format and its dependency
+     * VK_KHR_image_format_list are advertised (matches DXVK). */
     int has_mutable_format = 0;
+    int has_image_format_list = 0;
     uint32_t ext_count = 0;
     p_vkEnumerateDeviceExtensionProperties(phys_dev, NULL, &ext_count, NULL);
     if (ext_count > 0) {
         VkExtensionProperties *exts = calloc(ext_count, sizeof(*exts));
         p_vkEnumerateDeviceExtensionProperties(phys_dev, NULL, &ext_count, exts);
         for (uint32_t i = 0; i < ext_count; i++) {
-            if (strcmp(exts[i].extensionName, "VK_KHR_swapchain_mutable_format") == 0) {
+            if (strcmp(exts[i].extensionName, "VK_KHR_swapchain_mutable_format") == 0)
                 has_mutable_format = 1;
-                break;
-            }
+            else if (strcmp(exts[i].extensionName, "VK_KHR_image_format_list") == 0)
+                has_image_format_list = 1;
         }
         free(exts);
     }
+    if (!has_image_format_list)
+        has_mutable_format = 0;
 
-    const char *dev_exts[2];
+    const char *dev_exts[3];
     uint32_t dev_ext_count = 0;
     dev_exts[dev_ext_count++] = "VK_KHR_swapchain";
-    if (has_mutable_format)
+    if (has_mutable_format) {
+        dev_exts[dev_ext_count++] = "VK_KHR_image_format_list";
         dev_exts[dev_ext_count++] = "VK_KHR_swapchain_mutable_format";
+    }
 
     float q_prio = 1.0f;
     VkDeviceQueueCreateInfo q_ci;

@@ -97,6 +97,7 @@ vendor/ffmpeg/
 vendor/ffmpeg-x86/
 vendor/gstreamer-x86/
 vendor/kosmickrisp/
+vendor/vulkan-validation/
 vendor/vkd3d-proton/
 vendor/mullion-build-x86_64/
 vendor/mullion-install-x86_64/

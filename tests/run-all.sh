@@ -82,6 +82,12 @@ export MTL_DEBUG_LAYER=1
 export MTL_DEBUG_LAYER_WARNING_MODE=nslog
 export MTL_SHADER_VALIDATION=1
 
+# Enable Khronos Vulkan Validation Layers when built into vendor/vulkan-validation/.
+if [ -f "$PROJECT_DIR/vendor/vulkan-validation/VkLayer_khronos_validation.json" ]; then
+    export VK_LAYER_PATH="$PROJECT_DIR/vendor/vulkan-validation"
+    export VK_INSTANCE_LAYERS="VK_LAYER_KHRONOS_validation"
+fi
+
 run_case() {
     local name="$1"
     shift
@@ -217,6 +223,11 @@ if [ -x "$WINE" ]; then
             # 1) DPI-unaware window: verify 0 VK_SUBOPTIMAL_KHR AND no fshack compute double-blit on macOS.
             WINEPREFIX="$dpi_prefix" WINEDEBUG=warn+vulkan \
                 perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" 2>"$vk_stderr" || rc=$?
+            if [ "$rc" -eq 0 ] && grep -q "Validation Error:" "$vk_stderr"; then
+                echo "FAIL: Vulkan Validation Layer reported errors on DPI-unaware swapchain"
+                grep -A 3 "Validation Error:" "$vk_stderr"
+                rc=1
+            fi
             if [ "$rc" -eq 0 ] && grep -q "Enabled fullscreen hack on swapchain" "$vk_stderr"; then
                 echo "FAIL: Vulkan fshack compute double-blit activated on macOS DPI-unaware surface"
                 grep "Enabled fullscreen hack" "$vk_stderr"
@@ -227,7 +238,12 @@ if [ -x "$WINE" ]; then
             # 2) DPI-aware window: verify full 2x Retina swapchain (1280x720) with 0 VK_SUBOPTIMAL_KHR.
             if [ "$rc" -eq 0 ]; then
                 WINEPREFIX="$dpi_prefix" WINEDEBUG=-all \
-                    perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" --dpi-aware || rc=$?
+                    perl -e 'alarm 45; exec @ARGV' "$WINE" "$exe" --dpi-aware 2>"$vk_stderr" || rc=$?
+                if [ "$rc" -eq 0 ] && grep -q "Validation Error:" "$vk_stderr"; then
+                    echo "FAIL: Vulkan Validation Layer reported errors on DPI-aware swapchain"
+                    grep -A 3 "Validation Error:" "$vk_stderr"
+                    rc=1
+                fi
             fi
             WINEPREFIX="$dpi_prefix" "$WS" -k >/dev/null 2>&1 || true
             return "$rc"
