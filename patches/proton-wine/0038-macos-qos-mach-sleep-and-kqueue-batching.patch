@@ -1,18 +1,20 @@
-Subject: macos: mach_wait_until NtDelayExecution, QoS/avrt priority mapping, LatencyCritical, and batched kqueue
+Subject: macos: mach_wait_until NtDelayExecution, avrt MMCSS, LatencyCritical, batched kqueue, and sched debug
 
 1. dlls/ntdll/unix/sync.c: Use mach_wait_until() for short non-alertable
    NtDelayExecution() sleeps (<=30s) on macOS instead of select() + spurious
    NtYieldExecution(), eliminating macOS timer-coalescing jitter on Sleep(1..16).
-2. dlls/ntdll/unix/thread.c & dlls/avrt/main.c: Map ThreadBasePriority to
-   macOS pthread_set_qos_class_self_np() (P-core USER_INTERACTIVE for high/audio
-   threads, E-core UTILITY/BACKGROUND for low-priority workers) and implement
-   avrt.dll MMCSS priority elevation/restoration on top of SetThreadPriority()
-   using a crash-safe opaque handle table.
+   Includes WHISKY_NO_MACH_SLEEP=1 / WHISKY_MACH_SLEEP_YIELD=1 A/B switches.
+2. dlls/avrt/main.c: Implement MMCSS task priority elevation/restoration on
+   top of SetThreadPriority() using a crash-safe opaque handle table (routing
+   through wineserver's existing Mach apply_thread_priority() rather than a
+   redundant ntdll self-only pthread_set_qos_class_self_np override).
 3. dlls/winemac.drv/cocoa_app.m: Add NSActivityLatencyCritical when App Nap is
-   disabled so macOS disables timer coalescing for active Wine processes.
+   disabled (disableable via WHISKY_NO_LATENCY_CRITICAL=1).
 4. server/fd.c: Batch steady-state kqueue EV_ADD/EV_ENABLE/EV_DISABLE changes
    into main_loop_epoll()'s kevent() call and emit delta-only filter updates,
    while flushing synchronously before EV_DELETE to stay fd-reuse safe.
+5. server/thread.c & unix/sync.c & cocoa_app.m: Add zero-overhead
+   WHISKY_SCHED_DEBUG=1 diagnostic logging for Mach QoS/sleep/AppNap state.
 
 diff --git a/dlls/avrt/main.c b/dlls/avrt/main.c
 index 68af35c..fd4b0ba 100644
@@ -181,7 +183,7 @@ diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
 index d369e3b..c24e75e 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
-@@ -2657,7 +2657,46 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+@@ -2657,16 +2657,79 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
          LARGE_INTEGER now;
          timeout_t when, diff;
  
@@ -190,103 +192,123 @@ index d369e3b..c24e75e 100644
 +        if (!when) return NtYieldExecution();
 +
 +#ifdef __APPLE__
-+        if (when < 0)
 +        {
-+            ULONGLONG rel_100ns = (ULONGLONG)(-when);
-+            if (rel_100ns <= 30 * (ULONGLONG)TICKSPERSEC)
++            static int mach_sleep_mode = -1;
++            if (mach_sleep_mode == -1)
 +            {
-+                static mach_timebase_info_data_t tb;
-+                uint64_t ticks, deadline;
-+
-+                if (!tb.denom) mach_timebase_info( &tb );
-+                ticks = (uint64_t)(((__uint128_t)rel_100ns * 100 * tb.denom + tb.numer - 1) / tb.numer);
-+                deadline = mach_absolute_time() + ticks;
-+                while (mach_wait_until( deadline ) == KERN_ABORTED && mach_absolute_time() < deadline) {}
-+                return STATUS_SUCCESS;
++                const char *no_mach = getenv( "WHISKY_NO_MACH_SLEEP" );
++                const char *do_yield = getenv( "WHISKY_MACH_SLEEP_YIELD" );
++                const char *dbg = getenv( "WHISKY_SCHED_DEBUG" );
++                if (no_mach && atoi( no_mach )) mach_sleep_mode = 1;
++                else if (do_yield && atoi( do_yield )) mach_sleep_mode = 2;
++                else mach_sleep_mode = 0;
++                if (dbg && atoi( dbg ))
++                    fprintf( stderr, "[whisky-sched] NtDelayExecution mode=%s\n",
++                             mach_sleep_mode == 1 ? "select+yield" :
++                             mach_sleep_mode == 2 ? "mach+yield" : "mach" );
 +            }
-+            NtQuerySystemTime( &now );
-+            when = now.QuadPart - when;
-+        }
-+        else
-+        {
-+            NtQuerySystemTime( &now );
-+            diff = when - now.QuadPart;
-+            if (diff <= 0) return STATUS_SUCCESS;
-+            if (diff <= 30 * (timeout_t)TICKSPERSEC)
++            if (mach_sleep_mode != 1)
 +            {
-+                static mach_timebase_info_data_t tb;
-+                uint64_t ticks, deadline;
++                if (mach_sleep_mode == 2) NtYieldExecution();
++                if (when < 0)
++                {
++                    ULONGLONG rel_100ns = (ULONGLONG)(-when);
++                    if (rel_100ns <= 30 * (ULONGLONG)TICKSPERSEC)
++                    {
++                        static mach_timebase_info_data_t tb;
++                        uint64_t ticks, deadline;
 +
-+                if (!tb.denom) mach_timebase_info( &tb );
-+                ticks = (uint64_t)(((__uint128_t)(ULONGLONG)diff * 100 * tb.denom + tb.numer - 1) / tb.numer);
-+                deadline = mach_absolute_time() + ticks;
-+                while (mach_wait_until( deadline ) == KERN_ABORTED && mach_absolute_time() < deadline) {}
-+                return STATUS_SUCCESS;
++                        if (!tb.denom) mach_timebase_info( &tb );
++                        ticks = (uint64_t)(((__uint128_t)rel_100ns * 100 * tb.denom + tb.numer - 1) / tb.numer);
++                        deadline = mach_absolute_time() + ticks;
++                        while (mach_wait_until( deadline ) == KERN_ABORTED && mach_absolute_time() < deadline) {}
++                        return STATUS_SUCCESS;
++                    }
++                    NtQuerySystemTime( &now );
++                    when = now.QuadPart - when;
++                }
++                else
++                {
++                    NtQuerySystemTime( &now );
++                    diff = when - now.QuadPart;
++                    if (diff <= 0) return STATUS_SUCCESS;
++                    if (diff <= 30 * (timeout_t)TICKSPERSEC)
++                    {
++                        static mach_timebase_info_data_t tb;
++                        uint64_t ticks, deadline;
++
++                        if (!tb.denom) mach_timebase_info( &tb );
++                        ticks = (uint64_t)(((__uint128_t)(ULONGLONG)diff * 100 * tb.denom + tb.numer - 1) / tb.numer);
++                        deadline = mach_absolute_time() + ticks;
++                        while (mach_wait_until( deadline ) == KERN_ABORTED && mach_absolute_time() < deadline) {}
++                        return STATUS_SUCCESS;
++                    }
++                }
++                goto do_select;
 +            }
 +        }
-+#else
++#endif
 +        if (when < 0)
          {
              NtQuerySystemTime( &now );
              when = now.QuadPart - when;
-@@ -2667,6 +2706,7 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+         }
+ 
+         /* Note that we yield after establishing the desired timeout, but
             we only care about the result of the yield for zero timeouts */
          status = NtYieldExecution();
          if (!when) return status;
-+#endif
  
++#ifdef __APPLE__
++    do_select:
++#endif
          for (;;)
          {
-diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
-index b40109e..0e434be 100644
---- a/dlls/ntdll/unix/thread.c
-+++ b/dlls/ntdll/unix/thread.c
-@@ -33,6 +33,9 @@
- #include <stdlib.h>
- #include <string.h>
- #include <pthread.h>
-+#ifdef __APPLE__
-+#include <pthread/qos.h>
-+#endif
- #include <signal.h>
- #include <sys/types.h>
- #include <unistd.h>
-@@ -2557,6 +2560,22 @@ NTSTATUS WINAPI NtSetInformationThread( HANDLE handle, THREADINFOCLASS class,
-             status = wine_server_call( req );
-         }
-         SERVER_END_REQ;
-+#ifdef __APPLE__
-+        if (!status && handle == GetCurrentThread())
-+        {
-+            int prio = (int)*base_priority;
-+            if (prio >= 2)
-+                pthread_set_qos_class_self_np( QOS_CLASS_USER_INTERACTIVE, 0 );
-+            else if (prio == 1)
-+                pthread_set_qos_class_self_np( QOS_CLASS_USER_INTERACTIVE, -2 );
-+            else if (prio == 0)
-+                pthread_set_qos_class_self_np( QOS_CLASS_USER_INITIATED, 0 );
-+            else if (prio >= -2)
-+                pthread_set_qos_class_self_np( QOS_CLASS_UTILITY, 0 );
-+            else
-+                pthread_set_qos_class_self_np( QOS_CLASS_BACKGROUND, 0 );
-+        }
-+#endif
-         return status;
-     }
- 
+             struct timeval tv;
 diff --git a/dlls/winemac.drv/cocoa_app.m b/dlls/winemac.drv/cocoa_app.m
-index 13c8b09..2fa3e99 100644
+index 13c8b09..8552509 100644
 --- a/dlls/winemac.drv/cocoa_app.m
 +++ b/dlls/winemac.drv/cocoa_app.m
-@@ -268,7 +268,7 @@ - (void) transformProcessToForeground:(BOOL)activateIfTransformed
+@@ -268,7 +268,14 @@ - (void) transformProcessToForeground:(BOOL)activateIfTransformed
  
              if (!enable_app_nap)
              {
 -                [[[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
-+                [[[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical
++                const char *no_lc = getenv("WHISKY_NO_LATENCY_CRITICAL");
++                const char *dbg = getenv("WHISKY_SCHED_DEBUG");
++                NSActivityOptions opts = NSActivityUserInitiatedAllowingIdleSystemSleep;
++                if (!(no_lc && atoi(no_lc)))
++                    opts |= NSActivityLatencyCritical;
++                if (dbg && atoi(dbg))
++                    fprintf(stderr, "[whisky-sched] NSActivityOptions=0x%llx\n", (unsigned long long)opts);
++                [[[NSProcessInfo processInfo] beginActivityWithOptions:opts
                                                                  reason:@"Running Windows program"] retain]; // intentional leak
              }
  
+diff --git a/server/thread.c b/server/thread.c
+index 2e94c8a..8031c92 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -386,6 +386,19 @@ static void apply_thread_priority( struct thread *thread )
+                            THREAD_TIME_CONSTRAINT_POLICY_COUNT );
+     }
+     mach_port_deallocate( mach_task_self(), thread_port );
++    {
++        static int sched_dbg = -1;
++        if (sched_dbg == -1)
++        {
++            const char *e = getenv( "WHISKY_SCHED_DEBUG" );
++            sched_dbg = (e && atoi( e )) ? 1 : 0;
++        }
++        if (sched_dbg)
++            fprintf( stderr, "[whisky-sched-srv] tid=%04x unix_pid=%d unix_tid=%d base=%d prio=%d eff=%d tqos=%d lqos=%d imp=%d ts=%d\n",
++                     thread->id, thread->unix_pid, thread->unix_tid, thread->base_priority, thread->priority,
++                     effective_priority, throughput_qos, latency_qos, thread_precedence_policy.importance,
++                     thread_extended_policy.timeshare );
++    }
+ }
+ 
+ #else
 diff --git a/server/fd.c b/server/fd.c
 index 69d7bcb..301e5df 100644
 --- a/server/fd.c
